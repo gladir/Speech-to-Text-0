@@ -33,8 +33,8 @@ End;
 PBinary = ^TBinary;
 TSamples = array of Single;
 TOptions = record
-Input, Output, Model, VADModel, Whisper, Dictionary, Acoustic, AlignText: string;
-PrepareOnly, TextOnly, CheckAcoustic: Boolean;
+Input, Output, Model, VADModel, Dictionary, Acoustic, AlignText: string;
+PrepareOnly, TextOnly, CheckAcoustic, CheckWhisper, CheckVAD: Boolean;
 End;
 
 Const
@@ -666,167 +666,6 @@ Begin
  End;
  CloseBinary(S);
 End;
-{$IFDEF MSWINDOWS}
-
- Function QuoteArgument(const S: string): string;
- Var
-  I, J, Slashes: Integer;
- Begin
-  { Convention argv Windows: doubler les antislashs precedant un guillemet
-    ou le guillemet final. Aucun interpreteur de commandes n'est utilise. }
-  Result := '"'; Slashes := 0;
-  For I := 1 to Length(S) do    if S[I] = '\' Then Inc(Slashes)
-  else
-  Begin
-   if S[I] = '"' Then Begin
-    For J := 1 to Slashes * 2 + 1 do Result := Result + '\';
-   End
-   else
-   For J := 1 to Slashes do Result := Result + '\';
-   Result := Result + S[I]; Slashes := 0;
-  End;
-  For J := 1 to Slashes * 2 do Result := Result + '\';
-  Result := Result + '"';
- End;
-
- Procedure RunTool(const Exe: string; const Args: array of string);
- Var
-  SI: TStartupInfo;
-  PI: TProcessInformation;
-  SA: TSecurityAttributes;
-  ReadPipe, WritePipe, NullInput: THandle;
-  Command, Executable, Log: string;
-  PathBuffer: array[0..32767] of Char;
-  Buffer: array[0..4095] of Byte;
-  Count, Status, ErrorCode: DWORD;
-  I: Integer;
-
- Procedure CloseHandles;Begin
-  if ReadPipe <> 0 Then CloseHandle(ReadPipe);
-  if WritePipe <> 0 Then CloseHandle(WritePipe);
-  if NullInput <> INVALID_HANDLE_VALUE Then CloseHandle(NullInput);
-  if PI.hThread <> 0 Then CloseHandle(PI.hThread);
-  if PI.hProcess <> 0 Then CloseHandle(PI.hProcess);
- End;
-
- Procedure LaunchError(const Detail: string; Code: DWORD);Begin
-  CloseHandles;
-  Fail(Exe + ': ' + Detail + ' (code ' + IntToStr(Code) + ')');
- End;
- Begin
-  FillChar(SI, SizeOf(SI), 0); FillChar(PI, SizeOf(PI), 0);
-  ReadPipe := 0; WritePipe := 0; NullInput := INVALID_HANDLE_VALUE;
-  Count := SearchPath(nil, PChar(Exe), '.exe', Length(PathBuffer), @PathBuffer[0], nil);
-  if (Count = 0) or (Count >= DWORD(Length(PathBuffer))) Then    LaunchError(
-  'executable introuvable', GetLastError);
-  Executable := PChar(@PathBuffer[0]);
-  Command := QuoteArgument(Executable);
-  For I := 0 to High(Args) do Command := Command + ' ' + QuoteArgument(Args[I]);
-  if Length(Command) >= 32767 Then LaunchError('ligne de commande trop longue', 87);
-  FillChar(SA, SizeOf(SA), 0); SA.nLength := SizeOf(SA); SA.bInheritHandle := True;
-  if not CreatePipe(ReadPipe, WritePipe, @SA, 0) Then LaunchError(
-  'creation du pipe impossible', GetLastError);
-  if not SetHandleInformation(ReadPipe, HANDLE_FLAG_INHERIT, 0) Then    LaunchError(
-  'configuration du pipe impossible', GetLastError);
-  NullInput := CreateFile('NUL', GENERIC_READ, FILE_SHARE_READ or FILE_SHARE_WRITE,
-  @SA, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-  if NullInput = INVALID_HANDLE_VALUE Then LaunchError('ouverture NUL impossible',
-  GetLastError);
-  SI.cb := SizeOf(SI); SI.dwFlags := STARTF_USESTDHANDLES;
-  SI.hStdInput := NullInput; SI.hStdOutput := WritePipe; SI.hStdError := WritePipe;
-  if not CreateProcess(PChar(Executable), PChar(Command), nil, nil, True,
-  CREATE_NO_WINDOW, nil, nil, SI, PI) Then LaunchError('lancement impossible',
-  GetLastError);
-  CloseHandle(WritePipe); WritePipe := 0;
-  CloseHandle(NullInput); NullInput := INVALID_HANDLE_VALUE;
-  repeat
-  if not ReadFile(ReadPipe, Buffer, SizeOf(Buffer), Count, nil) Then Begin
-   ErrorCode := GetLastError;
-   if ErrorCode <> ERROR_BROKEN_PIPE Then Begin
-    TerminateProcess(PI.hProcess, 1);
-    WaitForSingleObject(PI.hProcess, INFINITE);
-    LaunchError('lecture des diagnostics impossible', ErrorCode);
-   End;
-   Break;
-  End;
-  if Count = 0 Then Break;
-  SetString(Log, PChar(@Buffer[0]), Count); Write(StdErr, Log);
-  until False;
-  if WaitForSingleObject(PI.hProcess, INFINITE) = WAIT_FAILED Then    LaunchError(
-  'attente du moteur impossible', GetLastError);
-  if not GetExitCodeProcess(PI.hProcess, Status) Then LaunchError(
-  'code de retour inaccessible', GetLastError);
-  CloseHandles;
-  if Status <> 0 Then Fail(Exe + ': echec, code ' + IntToStr(Status));
- End;
-{$ELSE}
-
- Function FindExecutable(const Name: string): string;
- Var
-  Paths, Part: string;
-  I: Integer;
- Begin
-  if Pos('/', Name) > 0 Then Exit(ExpandFileName(Name));
-  Paths := DOS.GetEnv('PATH');
-  repeat
-  I := Pos(':', Paths);
-  if I = 0 Then Part := Paths else Part := Copy(Paths, 1, I - 1);
-  if Part = '' Then Part := '.';
-  Result := IncludeTrailingPathDelimiter(Part) + Name;
-  if FileExists(Result) and (fpAccess(PChar(Result), X_OK) = 0) Then Exit;
-  if I = 0 Then Break;
-  Delete(Paths, 1, I);
-  until False;
-  Fail('Executable introuvable: ' + Name);
- End;
-
- Procedure RunTool(const Exe: string; const Args: array of string);
- Var
-  Pipes: array[0..1] of cint;
-  PID, WaitResult: TPid;
-  NullInput, Status, I: cint;
-  N: Int64;
-  Buffer: array[0..4095] of Byte;
-  Executable, Log: string;
-  Arguments: array of PChar;
- Begin
-  Executable := FindExecutable(Exe);
-  SetLength(Arguments, Length(Args) + 2);
-  Arguments[0] := PChar(Executable);
-  For I := 0 to High(Args) do Arguments[I + 1] := PChar(Args[I]);
-  Arguments[High(Arguments)] := nil;
-  if fpPipe(Pipes) <> 0 Then Fail('Creation du pipe impossible: ' + Exe);
-  PID := fpFork;
-  if PID < 0 Then Begin
-   fpClose(Pipes[0]); fpClose(Pipes[1]); Fail('Creation du processus impossible: ' + Exe);
-  End;
-  if PID = 0 Then Begin
-   fpClose(Pipes[0]);
-   NullInput := fpOpen('/dev/null', O_RDONLY);
-   if (NullInput < 0) or (fpDup2(NullInput, 0) < 0) or
-   (fpDup2(Pipes[1], 1) < 0) or (fpDup2(Pipes[1], 2) < 0) Then fpExit(126);
-   if NullInput > 2 Then fpClose(NullInput);
-   if Pipes[1] > 2 Then fpClose(Pipes[1]);
-   fpExecV(PChar(Executable), @Arguments[0]);
-   fpExit(127);
-  End;
-  fpClose(Pipes[1]);
-  repeat
-  N := fpRead(Pipes[0], Buffer, SizeOf(Buffer));
-  if (N < 0) and (fpGetErrNo = ESysEINTR) Then Continue;
-  if N <= 0 Then Break;
-  SetString(Log, PChar(@Buffer[0]), N); Write(StdErr, Log);
-  until False;
-  fpClose(Pipes[0]);
-  repeat
-  WaitResult := fpWaitPid(PID, @Status, 0);
-  until (WaitResult >= 0) or (fpGetErrNo <> ESysEINTR);
-  if (N < 0) or (WaitResult < 0) Then Fail('Lecture/attente du moteur impossible: ' + Exe)
-  ;
-  if Status <> 0 Then Fail(Exe + ': echec, statut POSIX ' + IntToStr(Status));
- End;
-{$ENDIF}
-
 { Aligneur interne: lecture des donnees Kaldi, sans executable ni DLL MFA.
   Implementations procedurales des formats binaires et du decodeur GMM-HMM. }
 Type
@@ -1854,13 +1693,568 @@ Begin
  WriteAlignmentGrid(Grid, Length(Audio), M, Words, Nodes, Path);
 End;
 
+{ Inference Whisper/Silero en Pascal procedural. Les conventions de tenseurs
+  suivent les formats publics GGML et les architectures de leurs auteurs.
+  Voir THIRD_PARTY_NOTICES.md pour les licences et references. }
+Type
+ TTensor = record Name: string; Dims: array[0..3] of Integer; Rank: Integer; Data: TSamples; End;
+ TTensors = array of TTensor;
+ TMatrix = record Rows, Cols: Integer; Data: TSamples; End;
+ TAttentionWeights = record Q, QB, K, V, VB, O, OB, LN, LNB: Integer; End;
+ TWhisperLayer = record
+  Attention, Cross: TAttentionWeights;
+  MLP0, MLP0B, MLP2, MLP2B, MLPNorm, MLPNormB: Integer;
+ End;
+ TWhisperModel = record
+  Tensors: TTensors;
+  Vocab: TStringVector;
+  AudioContext, AudioWidth, AudioHeads, AudioLayers, TextContext, TextWidth, TextHeads, TextLayers, MelCount, VocabCount: Integer;
+  Conv1, Conv1B, Conv2, Conv2B, AudioPosition, AudioNorm, AudioNormB, TextPosition, TextNorm, TextNormB, Embedding: Integer;
+  Encoder, Decoder: array of TWhisperLayer;
+  Filters: TSamples;
+  EOT, SOT, French, Transcribe, NoSpeech, NoTimestamps: Integer;
+ End;
+ TDecoderCache = record SelfK, SelfV, CrossK, CrossV: TMatrix; End;
+ TDecoderCaches = array of TDecoderCache;
+ TSpeechRange = record First, Last: Integer; End;
+ TSpeechRanges = array of TSpeechRange;
+ TSileroModel = record
+  Tensors: TTensors;
+  Basis, IH, IHB, HH, HHB, FinalWeight, FinalBias: Integer;
+  Conv, Bias: array[0..3] of Integer;
+ End;
+
+Function HalfToSingle(Value: Word): Single;
+Var Bits, Mantissa, Exponent: LongWord;
+Begin
+ Bits := LongWord(Value and $8000) shl 16;
+ Mantissa := Value and $3FF; Exponent := (Value shr 10) and 31;
+ if Exponent = 0 Then Begin
+  if Mantissa <> 0 Then Begin
+   Exponent := 113;
+   While (Mantissa and $400) = 0 do Begin Mantissa := Mantissa shl 1; Dec(Exponent); End;
+   Bits := Bits or (Exponent shl 23) or ((Mantissa and $3FF) shl 13);
+  End;
+ End else if Exponent = 31 Then Bits := Bits or $7F800000 or (Mantissa shl 13)
+ else Bits := Bits or ((Exponent + 112) shl 23) or (Mantissa shl 13);
+ Move(Bits, Result, 4);
+End;
+
+Procedure ReadFloatArray(var S: TBinary; Count, Kind: Integer; out Values: TSamples);
+Var I: Integer; Raw: array of Word;
+Begin
+ if not (Kind in [0,1]) Then Fail('Tenseur GGML quantifie/non pris en charge; utiliser un modele FP16 ou FP32.');
+ if (Count < 0) or (Int64(Count) * (4 - Kind * 2) > S.Size - S.Position) Then Fail('Tenseur GGML tronque.');
+ SetLength(Values, Count);
+ if Kind = 0 Then Begin if Count > 0 Then ReadBytes(S, Values[0], Count * 4); End
+ else Begin
+  SetLength(Raw, Count); if Count > 0 Then ReadBytes(S, Raw[0], Count * 2);
+  For I := 0 to Count - 1 do Values[I] := HalfToSingle(Raw[I]);
+ End;
+ For I := 0 to Count - 1 do if IsNan(Values[I]) or IsInfinite(Values[I]) Then Fail('Poids GGML non fini.');
+End;
+
+Procedure ReadTensorTable(var S: TBinary; out Tensors: TTensors);
+Var N, I, J, Count, NameLength, Kind: Integer; Total: Int64; Name: string;
+Begin
+ SetLength(Tensors, 0); Total := 0;
+ While S.Position < S.Size do Begin
+  N := Length(Tensors); if N >= 2000 Then Fail('Trop de tenseurs GGML.');
+  SetLength(Tensors, N + 1);
+  Tensors[N].Rank := Bounded(LongInt(U32(S)), 0, 4, 'rang GGML');
+  NameLength := Bounded(LongInt(U32(S)), 1, 256, 'nom tenseur'); Kind := LongInt(U32(S));
+  Count := 1;
+  For I := 0 to 3 do Begin
+   Tensors[N].Dims[I] := 1;
+   if I < Tensors[N].Rank Then Tensors[N].Dims[I] := Bounded(LongInt(U32(S)), 1, 100000, 'dimension tenseur');
+   if Int64(Count) * Tensors[N].Dims[I] > 300000000 Then Fail('Tenseur GGML trop grand.');
+   Count := Count * Tensors[N].Dims[I];
+  End;
+  Total := Total + Int64(Count) * 4;
+  if Total > 1400000000 Then Fail('Modele trop grand pour cette implementation CPU (1,4 Go de poids FP32 maximum).');
+  SetLength(Name, NameLength); ReadBytes(S, Name[1], NameLength);
+  For J := 0 to N - 1 do if Tensors[J].Name = Name Then Fail('Tenseur GGML repete: ' + Name);
+  Tensors[N].Name := Name; ReadFloatArray(S, Count, Kind, Tensors[N].Data);
+ End;
+End;
+
+Function TensorID(const Tensors: TTensors; const Name: string; const Shape: array of Integer): Integer;
+Var I, J: Integer;
+Begin
+ For I := 0 to High(Tensors) do if Tensors[I].Name = Name Then Begin
+  For J := 0 to High(Shape) do if Tensors[I].Dims[J] <> Shape[J] Then Fail('Dimensions incorrectes: ' + Name);
+  For J := Length(Shape) to 3 do if Tensors[I].Dims[J] <> 1 Then Fail('Dimensions supplementaires: ' + Name);
+  Exit(I);
+ End;
+ Fail('Tenseur manquant: ' + Name); Result := -1;
+End;
+
+Procedure BindAttention(const T: TTensors; const Prefix, Norm: string; Width: Integer; out W: TAttentionWeights);
+Begin
+ W.Q := TensorID(T, Prefix + '.query.weight', [Width,Width]);
+ W.QB := TensorID(T, Prefix + '.query.bias', [Width]);
+ W.K := TensorID(T, Prefix + '.key.weight', [Width,Width]);
+ W.V := TensorID(T, Prefix + '.value.weight', [Width,Width]);
+ W.VB := TensorID(T, Prefix + '.value.bias', [Width]);
+ W.O := TensorID(T, Prefix + '.out.weight', [Width,Width]);
+ W.OB := TensorID(T, Prefix + '.out.bias', [Width]);
+ W.LN := TensorID(T, Norm + '.weight', [Width]); W.LNB := TensorID(T, Norm + '.bias', [Width]);
+End;
+
+Procedure BindWhisperLayer(const T: TTensors; const Prefix: string; Width: Integer; Decoder: Boolean; out L: TWhisperLayer);
+Begin
+ BindAttention(T, Prefix + '.attn', Prefix + '.attn_ln', Width, L.Attention);
+ if Decoder Then BindAttention(T, Prefix + '.cross_attn', Prefix + '.cross_attn_ln', Width, L.Cross);
+ L.MLP0 := TensorID(T, Prefix + '.mlp.0.weight', [Width,Width*4]);
+ L.MLP0B := TensorID(T, Prefix + '.mlp.0.bias', [Width*4]);
+ L.MLP2 := TensorID(T, Prefix + '.mlp.2.weight', [Width*4,Width]);
+ L.MLP2B := TensorID(T, Prefix + '.mlp.2.bias', [Width]);
+ L.MLPNorm := TensorID(T, Prefix + '.mlp_ln.weight', [Width]);
+ L.MLPNormB := TensorID(T, Prefix + '.mlp_ln.bias', [Width]);
+End;
+
+Procedure LoadWhisper(const FileName: string; out M: TWhisperModel);
+Var S: TBinary; I, Count, N, Kind: Integer;
+Begin
+ OpenBinary(S, FileName, False);
+ if U32(S) <> $67676D6C Then Fail('Modele Whisper GGML requis (GGUF/ONNX non pris en charge).');
+ M.VocabCount := Bounded(LongInt(U32(S)), 51865, 51866, 'vocabulaire Whisper multilingue');
+ M.AudioContext := Bounded(LongInt(U32(S)), 1500, 1500, 'contexte audio Whisper');
+ M.AudioWidth := Bounded(LongInt(U32(S)), 4, 1536, 'largeur encodeur');
+ M.AudioHeads := Bounded(LongInt(U32(S)), 1, 32, 'tetes encodeur');
+ M.AudioLayers := Bounded(LongInt(U32(S)), 1, 32, 'couches encodeur');
+ M.TextContext := Bounded(LongInt(U32(S)), 8, 448, 'contexte texte');
+ M.TextWidth := Bounded(LongInt(U32(S)), 4, 1536, 'largeur decodeur');
+ M.TextHeads := Bounded(LongInt(U32(S)), 1, 32, 'tetes decodeur');
+ M.TextLayers := Bounded(LongInt(U32(S)), 1, 32, 'couches decodeur');
+ M.MelCount := LongInt(U32(S)); Kind := LongInt(U32(S));
+ if not (M.MelCount in [80,128]) or (M.AudioWidth <> M.TextWidth) or
+  (M.AudioWidth mod M.AudioHeads <> 0) or (M.TextWidth mod M.TextHeads <> 0) Then Fail('Architecture Whisper non prise en charge.');
+ if not (Kind in [0,1]) Then Fail('Modele Whisper FP16/FP32 non quantifie requis.');
+ if (U32(S) <> LongWord(M.MelCount)) or (U32(S) <> 201) Then Fail('Filtres mel Whisper invalides.');
+ ReadFloatArray(S, M.MelCount * 201, 0, M.Filters);
+ Count := Bounded(LongInt(U32(S)), 50257, M.VocabCount, 'tokens GGML');
+ SetLength(M.Vocab, M.VocabCount);
+ For I := 0 to Count - 1 do Begin
+  N := Bounded(LongInt(U32(S)), 0, 4096, 'longueur token'); SetLength(M.Vocab[I], N);
+  if N > 0 Then ReadBytes(S, M.Vocab[I][1], N);
+ End;
+ ReadTensorTable(S, M.Tensors); CloseBinary(S);
+ M.Conv1 := TensorID(M.Tensors, 'encoder.conv1.weight', [3,M.MelCount,M.AudioWidth]);
+ M.Conv1B := TensorID(M.Tensors, 'encoder.conv1.bias', [1,M.AudioWidth]);
+ M.Conv2 := TensorID(M.Tensors, 'encoder.conv2.weight', [3,M.AudioWidth,M.AudioWidth]);
+ M.Conv2B := TensorID(M.Tensors, 'encoder.conv2.bias', [1,M.AudioWidth]);
+ M.AudioPosition := TensorID(M.Tensors, 'encoder.positional_embedding', [M.AudioWidth,M.AudioContext]);
+ M.AudioNorm := TensorID(M.Tensors, 'encoder.ln_post.weight', [M.AudioWidth]);
+ M.AudioNormB := TensorID(M.Tensors, 'encoder.ln_post.bias', [M.AudioWidth]);
+ M.Embedding := TensorID(M.Tensors, 'decoder.token_embedding.weight', [M.TextWidth,M.VocabCount]);
+ M.TextPosition := TensorID(M.Tensors, 'decoder.positional_embedding', [M.TextWidth,M.TextContext]);
+ M.TextNorm := TensorID(M.Tensors, 'decoder.ln.weight', [M.TextWidth]);
+ M.TextNormB := TensorID(M.Tensors, 'decoder.ln.bias', [M.TextWidth]);
+ SetLength(M.Encoder, M.AudioLayers); SetLength(M.Decoder, M.TextLayers);
+ For I := 0 to M.AudioLayers - 1 do BindWhisperLayer(M.Tensors, 'encoder.blocks.' + IntToStr(I), M.AudioWidth, False, M.Encoder[I]);
+ For I := 0 to M.TextLayers - 1 do BindWhisperLayer(M.Tensors, 'decoder.blocks.' + IntToStr(I), M.TextWidth, True, M.Decoder[I]);
+ M.EOT := 50257; M.SOT := 50258; M.French := 50265;
+ M.Transcribe := 50359 + M.VocabCount - 51865;
+ M.NoSpeech := 50362 + M.VocabCount - 51865; M.NoTimestamps := 50363 + M.VocabCount - 51865;
+ WriteLn(StdErr, 'Whisper natif: ', M.AudioLayers, ' couches encodeur, ', M.TextLayers, ' couches decodeur, largeur ', M.AudioWidth, '.');
+End;
+
+{$IFDEF CPU386}
+{$ASMMODE INTEL}
+Function NeuralDot(A, B: PSingle; N: LongInt): Single; register; assembler; nostackframe;
+asm
+ push esi
+ push edi
+ mov esi,eax
+ mov edi,edx
+ xorps xmm0,xmm0
+@@vector:
+ cmp ecx,4
+ jl @@tail
+ movups xmm1,[esi]
+ movups xmm2,[edi]
+ mulps xmm1,xmm2
+ addps xmm0,xmm1
+ add esi,16
+ add edi,16
+ sub ecx,4
+ jmp @@vector
+@@tail:
+ test ecx,ecx
+ jz @@sum
+ movss xmm1,[esi]
+ mulss xmm1,[edi]
+ addss xmm0,xmm1
+ add esi,4
+ add edi,4
+ dec ecx
+ jmp @@tail
+@@sum:
+ movaps xmm1,xmm0
+ movhlps xmm1,xmm0
+ addps xmm0,xmm1
+ movaps xmm1,xmm0
+ shufps xmm1,xmm1,$55
+ addss xmm0,xmm1
+ sub esp,4
+ movss [esp],xmm0
+ fld dword ptr [esp]
+ add esp,4
+ pop edi
+ pop esi
+end;
+{$ELSE}
+Function NeuralDot(A, B: PSingle; N: LongInt): Single;
+Var I: Integer; Value: Double;
+Begin
+ Value := 0;
+ For I := 1 to N do Begin Value := Value + A^ * B^; Inc(A); Inc(B); End;
+ Result := Value;
+End;
+{$ENDIF}
+
+Procedure MatrixSize(var M: TMatrix; Rows, Cols: Integer);
+Begin
+ if (Rows < 0) or (Cols <= 0) or (Int64(Rows) * Cols > 100000000) Then Fail('Matrice neuronale trop grande.');
+ M.Rows := Rows; M.Cols := Cols; SetLength(M.Data, Rows * Cols);
+End;
+
+Procedure Dense(const X: TMatrix; const T: TTensors; Weight, Bias: Integer; out Y: TMatrix);
+Var I, J, Width: Integer; Value: Single;
+Begin
+ Width := T[Weight].Dims[1];
+ if X.Cols <> T[Weight].Dims[0] Then Fail('Dimension de projection neuronale invalide.');
+ MatrixSize(Y, X.Rows, Width);
+ For I := 0 to X.Rows - 1 do For J := 0 to Width - 1 do Begin
+  Value := NeuralDot(@X.Data[I * X.Cols], @T[Weight].Data[J * X.Cols], X.Cols);
+  if Bias >= 0 Then Value := Value + T[Bias].Data[J];
+  Y.Data[I * Width + J] := Value;
+ End;
+End;
+
+Function StableTanh(Value: Double): Double;
+Begin
+ if Value > 15 Then Exit(1); if Value < -15 Then Exit(-1);
+ Result := 2 / (1 + Exp(-2 * Value)) - 1;
+End;
+
+Function Sigmoid(Value: Double): Double;
+Begin
+ if Value >= 0 Then Result := 1 / (1 + Exp(-Value))
+ else Begin Value := Exp(Value); Result := Value / (1 + Value); End;
+End;
+
+Procedure GELU(var X: TMatrix);
+Var I: Integer; V: Double;
+Begin
+ For I := 0 to High(X.Data) do Begin
+  V := X.Data[I]; X.Data[I] := 0.5 * V * (1 + StableTanh(0.7978845608028654 * V * (1 + 0.044715 * V * V)));
+ End;
+End;
+
+Procedure NeuralNorm(const X: TMatrix; const T: TTensors; Weight, Bias: Integer; out Y: TMatrix);
+Var I, J, Offset: Integer; Mean, Variance, V, Scale: Double;
+Begin
+ MatrixSize(Y, X.Rows, X.Cols);
+ For I := 0 to X.Rows - 1 do Begin
+  Offset := I * X.Cols; Mean := 0; Variance := 0;
+  For J := 0 to X.Cols - 1 do Mean := Mean + X.Data[Offset + J];
+  Mean := Mean / X.Cols;
+  For J := 0 to X.Cols - 1 do Begin V := X.Data[Offset + J] - Mean; Variance := Variance + V * V; End;
+  Scale := 1 / Sqrt(Variance / X.Cols + 1E-5);
+  For J := 0 to X.Cols - 1 do Y.Data[Offset + J] := (X.Data[Offset + J] - Mean) * Scale * T[Weight].Data[J] + T[Bias].Data[J];
+ End;
+End;
+
+Procedure Residual(var X: TMatrix; const Y: TMatrix);
+Var I: Integer;
+Begin
+ if (X.Rows <> Y.Rows) or (X.Cols <> Y.Cols) Then Fail('Dimension residuelle invalide.');
+ For I := 0 to High(X.Data) do X.Data[I] := X.Data[I] + Y.Data[I];
+End;
+
+Procedure Conv1D(const X: TMatrix; const T: TTensors; Weight, Bias, Stride, Padding: Integer; out Y: TMatrix);
+Var I, J, C, K, Source, Width, Kernel, Rows: Integer; Patch: TSamples; Value: Single;
+Begin
+ Kernel := T[Weight].Dims[0]; Width := T[Weight].Dims[2];
+ if T[Weight].Dims[1] <> X.Cols Then Fail('Canaux de convolution invalides.');
+ Rows := (X.Rows + 2 * Padding - Kernel) div Stride + 1; MatrixSize(Y, Rows, Width);
+ SetLength(Patch, X.Cols * Kernel);
+ For I := 0 to Rows - 1 do Begin
+  For C := 0 to X.Cols - 1 do For K := 0 to Kernel - 1 do Begin
+   Source := I * Stride - Padding + K;
+   if (Source < 0) or (Source >= X.Rows) Then Patch[C * Kernel + K] := 0
+   else Patch[C * Kernel + K] := X.Data[Source * X.Cols + C];
+  End;
+  For J := 0 to Width - 1 do Begin
+   Value := NeuralDot(@Patch[0], @T[Weight].Data[J * Length(Patch)], Length(Patch));
+   if Bias >= 0 Then Value := Value + T[Bias].Data[J]; Y.Data[I * Width + J] := Value;
+  End;
+ End;
+End;
+
+Procedure NeuralAttention(const Q, K, V: TMatrix; KeyCount, Heads: Integer; out Y: TMatrix);
+Var I, J, H, D, Width: Integer; Scores, Transposed: TSamples; Scale, Peak, Sum, Value: Double;
+Begin
+ if (Q.Cols <> K.Cols) or (K.Cols <> V.Cols) or (KeyCount <= 0) or (KeyCount > K.Rows) or
+  (KeyCount > V.Rows) or (Q.Cols mod Heads <> 0) Then Fail('Dimensions attention invalides.');
+ Width := Q.Cols div Heads; Scale := 1 / Sqrt(Width);
+ MatrixSize(Y, Q.Rows, Q.Cols); SetLength(Scores, KeyCount); SetLength(Transposed, KeyCount * V.Cols);
+ For J := 0 to KeyCount - 1 do For D := 0 to V.Cols - 1 do Transposed[D * KeyCount + J] := V.Data[J * V.Cols + D];
+ For I := 0 to Q.Rows - 1 do For H := 0 to Heads - 1 do Begin
+  Peak := -1E30;
+  For J := 0 to KeyCount - 1 do Begin
+   Value := NeuralDot(@Q.Data[I * Q.Cols + H * Width], @K.Data[J * K.Cols + H * Width], Width) * Scale;
+   Scores[J] := Value; if Value > Peak Then Peak := Value;
+  End;
+  Sum := 0;
+  For J := 0 to KeyCount - 1 do Begin Scores[J] := Exp(Scores[J] - Peak); Sum := Sum + Scores[J]; End;
+  For J := 0 to KeyCount - 1 do Scores[J] := Scores[J] / Sum;
+  For D := 0 to Width - 1 do Y.Data[I * Y.Cols + H * Width + D] :=
+   NeuralDot(@Scores[0], @Transposed[(H * Width + D) * KeyCount], KeyCount);
+ End;
+End;
+
+Procedure NeuralMLP(var X: TMatrix; const T: TTensors; const L: TWhisperLayer);
+Var N, A, B: TMatrix;
+Begin
+ NeuralNorm(X, T, L.MLPNorm, L.MLPNormB, N);
+ Dense(N, T, L.MLP0, L.MLP0B, A); GELU(A); Dense(A, T, L.MLP2, L.MLP2B, B); Residual(X, B);
+End;
+
+Procedure EncodeWhisper(const Mel: TMatrix; const M: TWhisperModel; out Encoded: TMatrix);
+Var X, N, Q, K, V, A, B: TMatrix; I, J: Integer; W: TAttentionWeights;
+Begin
+ Conv1D(Mel, M.Tensors, M.Conv1, M.Conv1B, 1, 1, X); GELU(X);
+ Conv1D(X, M.Tensors, M.Conv2, M.Conv2B, 2, 1, Encoded); GELU(Encoded);
+ For J := 0 to High(Encoded.Data) do Encoded.Data[J] := Encoded.Data[J] + M.Tensors[M.AudioPosition].Data[J];
+ For I := 0 to M.AudioLayers - 1 do Begin
+  WriteLn(StdErr, 'Whisper: encodeur ', I + 1, '/', M.AudioLayers);
+  W := M.Encoder[I].Attention;
+  NeuralNorm(Encoded, M.Tensors, W.LN, W.LNB, N);
+  Dense(N, M.Tensors, W.Q, W.QB, Q); Dense(N, M.Tensors, W.K, -1, K); Dense(N, M.Tensors, W.V, W.VB, V);
+  NeuralAttention(Q, K, V, K.Rows, M.AudioHeads, A); Dense(A, M.Tensors, W.O, W.OB, B); Residual(Encoded, B);
+  NeuralMLP(Encoded, M.Tensors, M.Encoder[I]);
+ End;
+ NeuralNorm(Encoded, M.Tensors, M.AudioNorm, M.AudioNormB, N); Encoded := N;
+End;
+
+Procedure InitDecoderCache(const Encoded: TMatrix; const M: TWhisperModel; out Cache: TDecoderCaches);
+Var I: Integer; W: TAttentionWeights;
+Begin
+ SetLength(Cache, M.TextLayers);
+ For I := 0 to M.TextLayers - 1 do Begin
+  W := M.Decoder[I].Cross;
+  Dense(Encoded, M.Tensors, W.K, -1, Cache[I].CrossK); Dense(Encoded, M.Tensors, W.V, W.VB, Cache[I].CrossV);
+  MatrixSize(Cache[I].SelfK, M.TextContext, M.TextWidth); MatrixSize(Cache[I].SelfV, M.TextContext, M.TextWidth);
+ End;
+End;
+
+Procedure DecoderStep(Token, Position: Integer; const M: TWhisperModel; var Cache: TDecoderCaches; out Logits: TMatrix);
+Var X, N, Q, K, V, A, B: TMatrix; I, J: Integer; W: TAttentionWeights;
+Begin
+ Bounded(Token, 0, M.VocabCount - 1, 'token decodeur'); Bounded(Position, 0, M.TextContext - 1, 'position decodeur');
+ MatrixSize(X, 1, M.TextWidth);
+ For J := 0 to M.TextWidth - 1 do X.Data[J] := M.Tensors[M.Embedding].Data[Token * M.TextWidth + J] +
+  M.Tensors[M.TextPosition].Data[Position * M.TextWidth + J];
+ For I := 0 to M.TextLayers - 1 do Begin
+  W := M.Decoder[I].Attention; NeuralNorm(X, M.Tensors, W.LN, W.LNB, N);
+  Dense(N, M.Tensors, W.Q, W.QB, Q); Dense(N, M.Tensors, W.K, -1, K); Dense(N, M.Tensors, W.V, W.VB, V);
+  Move(K.Data[0], Cache[I].SelfK.Data[Position * M.TextWidth], M.TextWidth * 4);
+  Move(V.Data[0], Cache[I].SelfV.Data[Position * M.TextWidth], M.TextWidth * 4);
+  NeuralAttention(Q, Cache[I].SelfK, Cache[I].SelfV, Position + 1, M.TextHeads, A);
+  Dense(A, M.Tensors, W.O, W.OB, B); Residual(X, B);
+  W := M.Decoder[I].Cross; NeuralNorm(X, M.Tensors, W.LN, W.LNB, N); Dense(N, M.Tensors, W.Q, W.QB, Q);
+  NeuralAttention(Q, Cache[I].CrossK, Cache[I].CrossV, Cache[I].CrossK.Rows, M.TextHeads, A);
+  Dense(A, M.Tensors, W.O, W.OB, B); Residual(X, B);
+  NeuralMLP(X, M.Tensors, M.Decoder[I]);
+ End;
+ NeuralNorm(X, M.Tensors, M.TextNorm, M.TextNormB, N); Dense(N, M.Tensors, M.Embedding, -1, Logits);
+End;
+
+{ Whisper: DFT 400 points, fenetre Hann periodique et filtres mel du modele.
+  Les tables trigonométriques sont calculees une fois; aucun moteur FFT externe. }
+Procedure WhisperMel(const Audio: TSamples; First, Last: Integer; const M: TWhisperModel; out Mel: TMatrix);
+Var C, S, Frame, Power: TSamples; I, J, K, P: Integer; A, B, V, Peak: Double;
+Begin
+ SetLength(C, 201 * 400); SetLength(S, 201 * 400); SetLength(Frame, 400); SetLength(Power, 201);
+ For K := 0 to 200 do For J := 0 to 399 do Begin
+  A := 2 * Pi * K * J / 400; B := 0.5 - 0.5 * Cos(2 * Pi * J / 400);
+  C[K * 400 + J] := B * Cos(A); S[K * 400 + J] := B * Sin(A);
+ End;
+ MatrixSize(Mel, 3000, M.MelCount); Peak := -10;
+ For I := 0 to 2999 do Begin
+  if I * 160 - 200 < Last - First Then Begin
+   For J := 0 to 399 do Begin
+    P := I * 160 + J - 200; if P < 0 Then P := -P;
+    if P < Last - First Then Frame[J] := Audio[First + P] else Frame[J] := 0;
+   End;
+   For K := 0 to 200 do Begin
+    A := NeuralDot(@Frame[0], @C[K * 400], 400); B := NeuralDot(@Frame[0], @S[K * 400], 400);
+    Power[K] := A * A + B * B;
+   End;
+   For K := 0 to M.MelCount - 1 do Begin
+    V := NeuralDot(@Power[0], @M.Filters[K * 201], 201);
+    if V < 1E-10 Then V := 1E-10;
+    V := Ln(V) / Ln(10); Mel.Data[I * M.MelCount + K] := V;
+    if V > Peak Then Peak := V;
+   End;
+  End else For K := 0 to M.MelCount - 1 do Mel.Data[I * M.MelCount + K] := -10;
+ End;
+ For I := 0 to High(Mel.Data) do Begin
+  V := Mel.Data[I]; if V < Peak - 8 Then V := Peak - 8;
+  Mel.Data[I] := (V + 4) / 4;
+ End;
+End;
+
+Procedure LoadSilero(const Name: string; out M: TSileroModel);
+Const Ins: array[0..3] of Integer = (129,128,64,64);
+ Outs: array[0..3] of Integer = (128,64,64,128);
+Var S: TBinary; I, N, Major, Minor: Integer; ModelType, Prefix: string;
+Begin
+ OpenBinary(S, Name, False);
+ if U32(S) <> $67676D6C Then Fail('Signature GGML Silero incorrecte.');
+ N := Bounded(LongInt(U32(S)), 1, 64, 'type Silero'); SetLength(ModelType, N); ReadBytes(S, ModelType[1], N);
+ Major := U32(S); Minor := U32(S); N := U32(S);
+ if (ModelType <> 'silero-16k') or not ((Major = 5) or ((Major = 6) and (Minor <= 2))) Then
+  Fail('Modele Silero non pris en charge (16 kHz, v5 ou v6.0..6.2 requis).');
+ if U32(S) <> 512 Then Fail('Fenetre Silero non prise en charge.');
+ if U32(S) <> 64 Then Fail('Contexte Silero non pris en charge.');
+ if U32(S) <> 4 Then Fail('Architecture Silero non prise en charge.');
+ For I := 0 to 3 do Begin
+  if U32(S) <> LongWord(Ins[I]) Then Fail('Entree convolution Silero incorrecte.');
+  if U32(S) <> LongWord(Outs[I]) Then Fail('Sortie convolution Silero incorrecte.');
+  if U32(S) <> 3 Then Fail('Noyau Silero incorrect.');
+ End;
+ For I := 1 to 3 do if U32(S) <> 128 Then Fail('Dimension LSTM Silero incorrecte.');
+ if U32(S) <> 1 Then Fail('Sortie Silero incorrecte.');
+ ReadTensorTable(S, M.Tensors); CloseBinary(S);
+ M.Basis := TensorID(M.Tensors, '_model.stft.forward_basis_buffer', [256,1,258]);
+ For I := 0 to 3 do Begin
+  Prefix := '_model.encoder.' + IntToStr(I) + '.reparam_conv';
+  M.Conv[I] := TensorID(M.Tensors, Prefix + '.weight', [3,Ins[I],Outs[I]]);
+  M.Bias[I] := TensorID(M.Tensors, Prefix + '.bias', [Outs[I]]);
+ End;
+ M.IH := TensorID(M.Tensors, '_model.decoder.rnn.weight_ih', [128,512]);
+ M.HH := TensorID(M.Tensors, '_model.decoder.rnn.weight_hh', [128,512]);
+ M.IHB := TensorID(M.Tensors, '_model.decoder.rnn.bias_ih', [512]);
+ M.HHB := TensorID(M.Tensors, '_model.decoder.rnn.bias_hh', [512]);
+ M.FinalWeight := TensorID(M.Tensors, '_model.decoder.decoder.2.weight', [128]);
+ M.FinalBias := TensorID(M.Tensors, '_model.decoder.decoder.2.bias', [1]);
+End;
+
+Procedure NeuralReLU(var X: TMatrix);
+Var I: Integer;
+Begin For I := 0 to High(X.Data) do if X.Data[I] < 0 Then X.Data[I] := 0; End;
+
+Function SileroStep(const Audio: TSamples; Offset: Integer; const M: TSileroModel; var H, Cell: TMatrix): Double;
+Var X, Y, Spectrum, A, B: TMatrix; I, J, P, Stride: Integer; V: Double;
+Begin
+ { Meme fenetre 512 et padding reflectif que le lecteur GGML whisper.cpp. }
+ MatrixSize(X, 640, 1);
+ For I := 0 to 639 do Begin
+  P := I - 64; if P < 0 Then P := -P; if P >= 512 Then P := 1022 - P;
+  if Offset + P < Length(Audio) Then X.Data[I] := Audio[Offset + P] else X.Data[I] := 0;
+ End;
+ Conv1D(X, M.Tensors, M.Basis, -1, 128, 0, Y); MatrixSize(Spectrum, 4, 129);
+ For I := 0 to 3 do For J := 0 to 128 do
+  Spectrum.Data[I * 129 + J] := Sqrt(Sqr(Y.Data[I * 258 + J]) + Sqr(Y.Data[I * 258 + J + 129]));
+ X := Spectrum;
+ For I := 0 to 3 do Begin
+  if (I = 1) or (I = 2) Then Stride := 2 else Stride := 1;
+  Conv1D(X, M.Tensors, M.Conv[I], M.Bias[I], Stride, 1, Y); NeuralReLU(Y); X := Y;
+  Y.Data := nil;
+ End;
+ Dense(X, M.Tensors, M.IH, M.IHB, A); Dense(H, M.Tensors, M.HH, M.HHB, B);
+ For I := 0 to 511 do A.Data[I] := A.Data[I] + B.Data[I];
+ For I := 0 to 127 do Begin
+  Cell.Data[I] := Sigmoid(A.Data[128 + I]) * Cell.Data[I] + Sigmoid(A.Data[I]) * StableTanh(A.Data[256 + I]);
+  H.Data[I] := Sigmoid(A.Data[384 + I]) * StableTanh(Cell.Data[I]);
+ End;
+ V := M.Tensors[M.FinalBias].Data[0];
+ For I := 0 to 127 do if H.Data[I] > 0 Then V := V + H.Data[I] * M.Tensors[M.FinalWeight].Data[I];
+ Result := Sigmoid(V);
+End;
+
+Procedure DetectSpeech(const Audio: TSamples; const M: TSileroModel; out Ranges: TSpeechRanges);
+Var H, Cell: TMatrix; Offset, Start, Quiet, N: Integer; P: Double;
+Procedure AddRange(First, Last: Integer);
+Begin
+ if Last - First < 4000 Then Exit;
+ First := Max(0, First - 480); Last := Min(Length(Audio), Last + 480);
+ N := Length(Ranges);
+ if (N > 0) and (First - Ranges[N - 1].Last <= 16000) and
+  (Last - Ranges[N - 1].First <= 480000) Then Ranges[N - 1].Last := Last
+ else Begin
+  if (N > 0) and (First < Ranges[N - 1].Last) Then First := Ranges[N - 1].Last;
+  While First < Last do Begin
+   N := Length(Ranges); SetLength(Ranges, N + 1);
+   Ranges[N].First := First; Ranges[N].Last := Min(Last, First + 480000); First := Ranges[N].Last;
+  End;
+ End;
+End;
+Begin
+ SetLength(Ranges, 0); MatrixSize(H, 1, 128); MatrixSize(Cell, 1, 128);
+ Offset := 0; Start := -1; Quiet := -1;
+ While Offset < Length(Audio) do Begin
+  P := SileroStep(Audio, Offset, M, H, Cell);
+  if P >= 0.5 Then Begin if Start < 0 Then Start := Offset; Quiet := -1; End
+  else if (P < 0.35) and (Start >= 0) Then Begin
+   if Quiet < 0 Then Quiet := Offset;
+   if Offset - Quiet >= 3200 Then Begin AddRange(Start, Quiet); Start := -1; Quiet := -1; End;
+  End;
+  Inc(Offset, 512);
+ End;
+ if Start >= 0 Then AddRange(Start, Length(Audio));
+ { Les plages sont des bornes VAD, pas des horodatages de mots Whisper. }
+End;
+
+Function DecodeFrench(const Audio: TSamples; First, Last: Integer; const M: TWhisperModel): string;
+Var Mel, Encoded, Logits: TMatrix; Cache: TDecoderCaches; Position, Token, I, Best: Integer; Peak: Single;
+Begin
+ WhisperMel(Audio, First, Last, M, Mel); EncodeWhisper(Mel, M, Encoded);
+ Mel.Data := nil; InitDecoderCache(Encoded, M, Cache); Encoded.Data := nil;
+ DecoderStep(M.SOT, 0, M, Cache, Logits); DecoderStep(M.French, 1, M, Cache, Logits);
+ DecoderStep(M.Transcribe, 2, M, Cache, Logits); DecoderStep(M.NoTimestamps, 3, M, Cache, Logits);
+ Result := ''; Position := 4;
+ repeat
+  Best := M.EOT; Peak := -1E30;
+  For I := 0 to M.EOT do Begin
+   if (I < M.EOT) and (M.Vocab[I] = '') Then Continue;
+   if (Position = 4) and ((I = M.EOT) or (M.Vocab[I] = ' ')) Then Continue;
+   if Logits.Data[I] > Peak Then Begin Peak := Logits.Data[I]; Best := I; End;
+  End;
+  Token := Best; if Token = M.EOT Then Break;
+  Result := Result + M.Vocab[Token];
+  if Position >= M.TextContext Then Fail('Limite du contexte Whisper atteinte sans fin de texte; aucune sortie partielle publiee.');
+  DecoderStep(Token, Position, M, Cache, Logits); Inc(Position);
+ until False;
+ Result := Trim(Result);
+End;
+
+Function JSONString(const S: string): string;
+Const Hex: string = '0123456789abcdef';
+Var I, B: Integer;
+Begin
+ Result := '"';
+ For I := 1 to Length(S) do Begin
+  B := Ord(S[I]);
+  if (S[I] = '"') or (S[I] = '\') Then Result := Result + '\' + S[I]
+  else if B < 32 Then Result := Result + '\u00' + Hex[B div 16 + 1] + Hex[B mod 16 + 1]
+  else Result := Result + S[I];
+ End;
+ Result := Result + '"';
+End;
+
 Procedure Help;Begin
  WriteLn('WAV2FRA - Cette commande permet d''effectuer la transcription francaise locale.');
  WriteLn;
  WriteLn('WAV2FRA entree.wav --model modele.bin --vad-model silero.bin [options]');
  WriteLn;
  WriteLn('  --output PREFIXE     Sorties PREFIXE.txt/.json/.TextGrid');
- WriteLn('  --whisper EXE        whisper-cli (defaut)');
+ WriteLn('  --check-whisper      Verifier le modele GGML --model, sans WAV');
+ WriteLn('  --check-vad          Verifier le modele GGML --vad-model, sans WAV');
  WriteLn('  --dictionary FICHIER Dictionnaire MFA UTF-8 (.dict), obligatoire pour aligner');
  WriteLn('  --acoustic CHEMIN    Archive MFA .zip, dossier ou .alimdl/.mdl avec fichiers associes');
  WriteLn('  --align-text FICHIER Aligner un texte UTF-8 connu, sans appeler Whisper');
@@ -1869,6 +2263,8 @@ Procedure Help;Begin
  WriteLn('  --prepare-only       Conversion seule vers PREFIXE.wav, sans modeles');
  WriteLn('  --help, /?           Cette aide');
  WriteLn;
+ WriteLn('Whisper et Silero CPU internes: poids GGML FP16/FP32, sans executable externe.');
+ WriteLn('Decodeur glouton francais; modeles quantifies et GPU non pris en charge.');
  WriteLn('Alignement GMM-HMM natif: aucun executable MFA/Kaldi necessaire.');
  WriteLn('Donnees MFA requises: meta.json, phones.txt, tree, final.alimdl et lda.mat si utilise.');
  WriteLn('Pas de lecture haut-parleur; le fichier est analyse. Sorties UTF-8.');
@@ -1881,7 +2277,7 @@ Var
  K, V: string;
 Begin
  O.Input := ''; O.Output := ''; O.Model := ''; O.VADModel := '';
- O.Whisper := 'whisper-cli'; O.AlignText := '';
+ O.AlignText := ''; O.CheckWhisper := False; O.CheckVAD := False;
  O.Dictionary := ''; O.Acoustic := '';
  O.PrepareOnly := False; O.TextOnly := False; O.CheckAcoustic := False;
  I := 1;
@@ -1890,17 +2286,19 @@ Begin
   if K = '--prepare-only' Then O.PrepareOnly := True
   else if K = '--text-only' Then O.TextOnly := True
   else if K = '--check-acoustic' Then O.CheckAcoustic := True
+  else if K = '--check-whisper' Then O.CheckWhisper := True
+  else if K = '--check-vad' Then O.CheckVAD := True
+  else if K = '--whisper' Then Fail('--whisper supprime: la reconnaissance est maintenant interne.')
   else if K = '--mfa' Then Fail('--mfa supprime: l''alignement est maintenant interne.')
   else if Copy(K, 1, 2) = '--' Then Begin
    if not ((K = '--output') or (K = '--model') or (K = '--vad-model') or
-   (K = '--whisper') or (K = '--align-text') or (K = '--dictionary') or
+   (K = '--align-text') or (K = '--dictionary') or
    (K = '--acoustic')) Then Fail('Option inconnue: ' + K);
    Inc(I); if I > ParamCount Then Fail('Valeur manquante: ' + K);
    V := ParamStr(I); if V = '' Then Fail('Valeur vide: ' + K);
    if K = '--output' Then O.Output := V
    else if K = '--model' Then O.Model := V
    else if K = '--vad-model' Then O.VADModel := V
-   else if K = '--whisper' Then O.Whisper := V
    else if K = '--align-text' Then O.AlignText := V
    else if K = '--dictionary' Then O.Dictionary := V
    else if K = '--acoustic' Then O.Acoustic := V;
@@ -1908,6 +2306,13 @@ Begin
   else if O.Input = '' Then O.Input := K
   else Fail('Argument inattendu: ' + K);
   Inc(I);
+ End;
+ if O.CheckWhisper or O.CheckVAD Then Begin
+  if O.CheckAcoustic or O.PrepareOnly or O.TextOnly or (O.AlignText <> '') or
+   (O.CheckWhisper and O.CheckVAD) Then Fail('Modes de verification incompatibles.');
+  if O.CheckWhisper and not FileExists(O.Model) Then Fail('--model requis.');
+  if O.CheckVAD and not FileExists(O.VADModel) Then Fail('--vad-model requis.');
+  Exit;
  End;
  if (O.CheckAcoustic and (O.PrepareOnly or O.TextOnly or (O.AlignText <> ''))) or
     (O.PrepareOnly and (O.TextOnly or (O.AlignText <> ''))) or
@@ -1970,22 +2375,32 @@ End;
 
 Procedure Transcribe(const O: TOptions; const Audio: TSamples);
 Var
- Work, Wav, Prefix, Grid, Txt, GridText: string;
+ Work, Prefix, Grid, Txt, GridText, Segment, JSON: string;
+ M: TWhisperModel; VAD: TSileroModel; Ranges: TSpeechRanges; I: Integer;
 Begin
  MustBeNew(O.Output + '.txt'); MustBeNew(O.Output + '.json');
  if not O.TextOnly Then MustBeNew(O.Output + '.TextGrid');
  Work := CreateWorkDir;
  WorkDirectory := Work;
- Wav := Work + DirectorySeparator + 'audio.wav';
  Prefix := Work + DirectorySeparator + 'transcript';
  Grid := Work + DirectorySeparator + 'phones.TextGrid';
- WriteWave(Wav, Audio);
- WriteLn(StdErr, 'Detection Silero et reconnaissance Whisper en francais...');
- RunTool(O.Whisper, ['-m', ExpandFileName(O.Model), '-f', Wav, '-l', 'fr',
- '--vad', '-vm', ExpandFileName(O.VADModel), '-otxt', '-oj', '-of', Prefix]);
- if not FileExists(Prefix + '.txt') or not FileExists(Prefix + '.json') Then      Fail(
- 'Whisper n''a pas produit les fichiers TXT et JSON attendus.');
- Txt := Trim(LoadText(Prefix + '.txt'));
+ WriteLn(StdErr, 'Chargement des modeles Whisper et Silero internes...');
+ LoadWhisper(O.Model, M); LoadSilero(O.VADModel, VAD);
+ DetectSpeech(Audio, VAD, Ranges); SetLength(VAD.Tensors, 0);
+ WriteLn(StdErr, 'Plages de parole: ', Length(Ranges));
+ Txt := ''; JSON := '{"language":"fr","timing":"vad_segments","segments":[';
+ For I := 0 to High(Ranges) do Begin
+  WriteLn(StdErr, 'Transcription de la plage ', I + 1, '/', Length(Ranges));
+  Segment := DecodeFrench(Audio, Ranges[I].First, Ranges[I].Last, M);
+  if (Txt <> '') and (Segment <> '') Then Txt := Txt + ' ';
+  Txt := Txt + Segment;
+  if I > 0 Then JSON := JSON + ',';
+  JSON := JSON + '{"start":' + AudioDuration(Ranges[I].First) + ',"end":' +
+   AudioDuration(Ranges[I].Last) + ',"text":' + JSONString(Segment) + '}';
+ End;
+ JSON := JSON + '],"text":' + JSONString(Txt) + '}' + LineEnding;
+ SetLength(M.Tensors, 0);
+ SaveText(Prefix + '.txt', Txt + LineEnding); SaveText(Prefix + '.json', JSON);
  if not O.TextOnly Then Begin
   if Txt <> '' Then Begin
    InternalAlign(Audio, Txt, O.Dictionary, O.Acoustic, Grid);
@@ -2014,6 +2429,7 @@ Var
  Rate: LongWord;
  I: Integer;
  AcousticModel: TKaldiModel;
+ WhisperModel: TWhisperModel; VADModel: TSileroModel;
 
 BEGIN
  InitializeArguments;
@@ -2025,6 +2441,8 @@ BEGIN
   Help; Halt(1);
  End;
  Parse(O);
+ if O.CheckWhisper Then Begin LoadWhisper(O.Model, WhisperModel); WriteLn('Modele Whisper lisible.'); Halt(0); End;
+ if O.CheckVAD Then Begin LoadSilero(O.VADModel, VADModel); WriteLn('Modele Silero lisible.'); Halt(0); End;
  if O.CheckAcoustic Then Begin
   LoadKaldiModel(O.Acoustic, AcousticModel); WriteLn('Modele MFA/Kaldi lisible par l''aligneur interne.'); Halt(0);
  End;
