@@ -826,8 +826,10 @@ End;
 {$ENDIF}
 
 Procedure Help;Begin
- WriteLn('WAV2FRA - transcription francaise locale (Free Pascal)');
+ WriteLn('WAV2FRA - Cette commande permet d''effectuer la transcription francaise locale.');
+ WriteLn;
  WriteLn('WAV2FRA entree.wav --model modele.bin --vad-model silero.bin [options]');
+ WriteLn;
  WriteLn('  --output PREFIXE     Sorties PREFIXE.txt/.json/.TextGrid');
  WriteLn('  --whisper EXE        whisper-cli (defaut)');
  WriteLn('  --mfa EXE            mfa (defaut), MFA 3.x avec align_one');
@@ -835,7 +837,8 @@ Procedure Help;Begin
  WriteLn('  --acoustic NOM       french_mfa (defaut), ou modele MFA .zip');
  WriteLn('  --text-only          Sans alignement mots/phonemes, ni dependance MFA');
  WriteLn('  --prepare-only       Conversion seule vers PREFIXE.wav, sans modeles');
- WriteLn('  --help               Cette aide');
+ WriteLn('  --help, /?           Cette aide');
+ WriteLn;
  WriteLn('Les modeles multilingues Whisper, Silero et MFA doivent etre installes.');
  WriteLn('Pas de lecture haut-parleur; le fichier est analyse. Sorties UTF-8.');
  WriteLn('PCM 8/16/24/32 bits, float32; 1..8 canaux; 8..192 kHz; 256 Mio/30 min max.');
@@ -971,7 +974,8 @@ Var
 
 BEGIN
  InitializeArguments;
- For I := 1 to ParamCount do      if ParamStr(I) = '--help' Then Begin
+ For I := 1 to ParamCount do
+  if (ParamStr(I) = '--help') or (ParamStr(I) = '/?') Then Begin
   Help; Halt(0);
  End;
  if ParamCount = 0 Then Begin
