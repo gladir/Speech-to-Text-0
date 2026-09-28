@@ -166,17 +166,17 @@ Begin
 End;
 
 Function CreateDir(const Name: string): Boolean;Begin
-  {$PUSH}{$I-}
+  {$I-}
  MkDir(Name);
  Result := IOResult = 0;
-  {$POP}
+  {$I+}
 End;
 
 Function RemoveDir(const Name: string): Boolean;Begin
-  {$PUSH}{$I-}
+  {$I-}
  RmDir(Name);
  Result := IOResult = 0;
-  {$POP}
+  {$I+}
 End;
 
 Function DeleteFile(const Name: string): Boolean;
@@ -184,10 +184,10 @@ Var
  F: File;
 Begin
  Assign(F, Name);
-  {$PUSH}{$I-}
+  {$I-}
  Erase(F);
  Result := IOResult = 0;
-  {$POP}
+  {$I+}
 End;
 
 Function CreateWorkDir: string;
@@ -229,16 +229,14 @@ End;
 { Fonctions numeriques locales: aucune dependance directe a l'unite Math.
   Abs, Sin, Cos, Pi, Round et Trunc sont fournis par l'unite System. }
 
-Function Min(A, B: Integer): Integer;
-overload;
+Function MinInt(A, B: Integer): Integer;
 Begin
- if A < B Then Result := A else Result := B;
+ if A < B Then MinInt := A else MinInt := B;
 End;
 
-Function Min(A, B: Double): Double;
-overload;
+Function MinDouble(A, B: Double): Double;
 Begin
- if A < B Then Result := A else Result := B;
+ if A < B Then MinDouble := A else MinDouble := B;
 End;
 
 Function Max(A, B: Integer): Integer;Begin
@@ -290,9 +288,9 @@ Begin
   { Fermer les fichiers encore ouverts avant de supprimer les temporaires.
     Les pointeurs concernent des records toujours presents sur la pile. }
  For I := 0 to High(OpenFiles) do    if OpenFiles[I] <> nil Then Begin
-      {$PUSH}{$I-}
+      {$I-}
   Close(OpenFiles[I]^.Handle); ErrorCode := IOResult;
-      {$POP}
+      {$I+}
   if ErrorCode <> 0 Then WriteLn(StdErr, 'Fermeture incomplete: ', OpenFiles[I]^.Name);
   OpenFiles[I] := nil;
  End;
@@ -309,23 +307,23 @@ Begin
  S.Writing := Writing; S.Size := 0;
  Assign(S.Handle, Name);
  OldMode := FileMode; FileMode := $20; { lecture, partage sans ecriture }
-  {$PUSH}{$I-}
+  {$I-}
  if Writing Then Rewrite(S.Handle, 1) else Reset(S.Handle, 1);
  ErrorCode := IOResult;
-  {$POP}
+  {$I+}
  FileMode := OldMode;
  if ErrorCode <> 0 Then Fail('Ouverture impossible: ' + Name + ' (code ' + IntToStr(
  ErrorCode) + ')');
  I := 0;
  While (I <= High(OpenFiles)) and (OpenFiles[I] <> nil) do Inc(I);
  if I > High(OpenFiles) Then Begin
-    {$PUSH}{$I-}Close(S.Handle); ErrorCode := IOResult;{$POP}
+    {$I-}Close(S.Handle); ErrorCode := IOResult;{$I+}
   Fail('Trop de fichiers ouverts.');
  End;
  OpenFiles[I] := @S;
-  {$PUSH}{$I-}
+  {$I-}
  S.Size := FileSize(S.Handle); ErrorCode := IOResult;
-  {$POP}
+  {$I+}
  if ErrorCode <> 0 Then Fail('Taille inaccessible: ' + Name);
 End;
 
@@ -334,9 +332,9 @@ Var
  Count, ErrorCode: LongInt;
 Begin
  if not S.Writing or (S.Used = 0) Then Exit;
-  {$PUSH}{$I-}
+  {$I-}
  BlockWrite(S.Handle, S.Buffer, S.Used, Count); ErrorCode := IOResult;
-  {$POP}
+  {$I+}
  if (ErrorCode <> 0) or (Count <> S.Used) Then Fail('Ecriture incomplete: ' + S.Name);
  S.Used := 0;
 End;
@@ -346,7 +344,7 @@ Var
  I, ErrorCode: Integer;
 Begin
  FlushBinary(S);
-  {$PUSH}{$I-}Close(S.Handle); ErrorCode := IOResult;{$POP}
+  {$I-}Close(S.Handle); ErrorCode := IOResult;{$I+}
  For I := 0 to High(OpenFiles) do    if OpenFiles[I] = @S Then OpenFiles[I] := nil;
  if ErrorCode <> 0 Then Fail('Fermeture impossible: ' + S.Name);
 End;
@@ -359,13 +357,13 @@ Begin
  P := @Dest;
  While Count > 0 do Begin
   if S.Index = S.Used Then Begin
-      {$PUSH}{$I-}
+      {$I-}
    BlockRead(S.Handle, S.Buffer, SizeOf(S.Buffer), S.Used); ErrorCode := IOResult;
-      {$POP}
+      {$I+}
    if (ErrorCode <> 0) or (S.Used = 0) Then Fail('Lecture incomplete: ' + S.Name);
    S.Index := 0;
   End;
-  N := Min(Count, S.Used - S.Index);
+  N := MinInt(Count, S.Used - S.Index);
   Move(S.Buffer[S.Index], P^, N);
   Inc(P, N); Inc(S.Index, N); Inc(S.Position, N); Dec(Count, N);
  End;
@@ -378,7 +376,7 @@ Var
 Begin
  P := @Source;
  While Count > 0 do Begin
-  N := Min(Count, SizeOf(S.Buffer) - S.Used);
+  N := MinInt(Count, SizeOf(S.Buffer) - S.Used);
   Move(P^, S.Buffer[S.Used], N);
   Inc(P, N); Inc(S.Used, N); Inc(S.Position, N); Dec(Count, N);
   if S.Used = SizeOf(S.Buffer) Then FlushBinary(S);
@@ -390,7 +388,7 @@ Var
  ErrorCode: Integer;
 Begin
  FlushBinary(S);
-  {$PUSH}{$I-}Seek(S.Handle, Position); ErrorCode := IOResult;{$POP}
+  {$I-}Seek(S.Handle, Position); ErrorCode := IOResult;{$I+}
  if ErrorCode <> 0 Then Fail('Position inaccessible: ' + S.Name);
  S.Position := Position; S.Index := 0; S.Used := 0;
 End;
@@ -557,12 +555,12 @@ Begin
  SetLength(Dest, Count);
   { Sinc fenetree Hann, filtre anti-repliement avant sous-echantillonnage.
     Le support augmente avec le rapport des frequences. }
- Cutoff := 0.94 * Min(1.0, TargetRate / Rate);
+ Cutoff := 0.94 * MinDouble(1.0, TargetRate / Rate);
  Radius := Ceil(16 / Cutoff);
  For I := 0 to Count - 1 do Begin
   Position := I * (Double(Rate) / TargetRate);
   Center := Floor(Position); Total := 0; Norm := 0;
-  For J := Max(0, Center - Radius) to Min(High(Source), Center + Radius) do Begin
+  For J := Max(0, Center - Radius) to MinInt(High(Source), Center + Radius) do Begin
    Distance := Position - J;
    if Abs(Distance) >= Radius Then Continue;
    Angle := Pi * Distance * Cutoff;
@@ -1237,7 +1235,7 @@ Begin
   SetLength(Delta, Length(Base));
   For Frame := 0 to High(Base) do For I := 0 to 12 do Begin
    X := 0;
-   For J := -2 to 2 do X := X + J * Base[Max(0, Min(High(Base), Frame + J))][I];
+   For J := -2 to 2 do X := X + J * Base[Max(0, MinInt(High(Base), Frame + J))][I];
    Delta[Frame][I] := X / 10;
   End;
  End;
@@ -1247,7 +1245,7 @@ Begin
    For I := 0 to M.Dimension - 1 do Begin
     X := 0; Offset := I * M.LdaCols;
     For J := -3 to 3 do For K := 0 to 12 do
-     X := X + M.LDA[Offset + (J + 3) * 13 + K] * Base[Max(0, Min(High(Base), Frame + J))][K];
+     X := X + M.LDA[Offset + (J + 3) * 13 + K] * Base[Max(0, MinInt(High(Base), Frame + J))][K];
     if M.LdaCols = 92 Then X := X + M.LDA[Offset + 91];
     Features[Frame][I] := X;
    End;
@@ -1255,7 +1253,7 @@ Begin
    Features[Frame][I] := Base[Frame][I];
    if M.Dimension = 39 Then Begin
     Features[Frame][I + 13] := Delta[Frame][I]; X := 0;
-    For J := -2 to 2 do X := X + J * Delta[Max(0, Min(High(Base), Frame + J))][I];
+    For J := -2 to 2 do X := X + J * Delta[Max(0, MinInt(High(Base), Frame + J))][I];
     Features[Frame][I + 26] := X / 10;
    End;
   End;
@@ -1460,7 +1458,7 @@ Begin
  if Length(Nodes) > 12000 Then Fail('Trop de phonemes pour l''alignement.');
  For P := 0 to High(Nodes) do
   For L := Max(-1, P - 2) to P - 1 do if Adjacent(L, P) Then
-   For R := P + 1 to Min(Length(Nodes), P + 2) do if Adjacent(P, R) Then Begin
+   For R := P + 1 to MinInt(Length(Nodes), P + 2) do if Adjacent(P, R) Then Begin
     C := Length(Contexts); SetLength(Contexts, C + 1);
     Contexts[C].Node := P; Contexts[C].LeftNode := L; Contexts[C].RightNode := R;
     Contexts[C].FirstState := Length(States);
@@ -1614,8 +1612,8 @@ Begin
    if Tier = 1 Then Begin if Owner >= 0 Then LabelText := Words[Owner].WordText; End
    else LabelText := M.PhoneNames[Nodes[Owner].Phone];
    Inc(Index); PutLine('        intervals [' + IntToStr(Index) + ']:');
-   PutLine('            xmin = ' + AudioDuration(Min(SampleCount, First * AlignHop)));
-   if Last = Length(Path) Then T := SampleCount else T := Min(SampleCount, Last * AlignHop);
+   PutLine('            xmin = ' + AudioDuration(MinInt(SampleCount, First * AlignHop)));
+   if Last = Length(Path) Then T := SampleCount else T := MinInt(SampleCount, Last * AlignHop);
    PutLine('            xmax = ' + AudioDuration(T)); PutLine('            text = ' + GridQuote(LabelText));
    First := Last;
   End;
@@ -2124,7 +2122,7 @@ Var H, Cell: TMatrix; Offset, Start, Quiet, N: Integer; P: Double;
 Procedure AddRange(First, Last: Integer);
 Begin
  if Last - First < 4000 Then Exit;
- First := Max(0, First - 480); Last := Min(Length(Audio), Last + 480);
+ First := Max(0, First - 480); Last := MinInt(Length(Audio), Last + 480);
  N := Length(Ranges);
  if (N > 0) and (First - Ranges[N - 1].Last <= 16000) and
   (Last - Ranges[N - 1].First <= 480000) Then Ranges[N - 1].Last := Last
@@ -2132,7 +2130,7 @@ Begin
   if (N > 0) and (First < Ranges[N - 1].Last) Then First := Ranges[N - 1].Last;
   While First < Last do Begin
    N := Length(Ranges); SetLength(Ranges, N + 1);
-   Ranges[N].First := First; Ranges[N].Last := Min(Last, First + 480000); First := Ranges[N].Last;
+   Ranges[N].First := First; Ranges[N].Last := MinInt(Last, First + 480000); First := Ranges[N].Last;
   End;
  End;
 End;
