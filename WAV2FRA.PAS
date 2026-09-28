@@ -1,3 +1,11 @@
+{ @author: Sylvain Maltais (support@gladir.com)
+  @created: 2026
+  @version: 1.00
+  @website(https://www.gladir.com/speech-to-text-0)
+  @abstract(Target: Free Pascal 3.2
+  @description: Extrait les paroles fran‡aise d'un fichier .WAV
+}
+
 Program WAV2FRA;
 {$mode fpc}{$H+}
 {$modeswitch result+}{$modeswitch out+}
@@ -240,25 +248,25 @@ Begin
 End;
 
 Function Max(A, B: Integer): Integer;Begin
- if A > B Then Result := A else Result := B;
+ if A > B Then Max := A else Max := B;
 End;
 
 Function EnsureRange(Value, LowerBound, UpperBound: Double): Double;Begin
- if Value < LowerBound Then Result := LowerBound
- else if Value > UpperBound Then Result := UpperBound
- else Result := Value;
+ if Value < LowerBound Then EnsureRange := LowerBound
+ else if Value > UpperBound Then EnsureRange := UpperBound
+ else EnsureRange := Value;
 End;
 { Les appels du reechantillonneur portent sur des valeurs finies dont
   les arrondis sont representables en Int64. Trunc arrondit vers zero. }
 
 Function Floor(Value: Double): Int64;Begin
- Result := Trunc(Value);
- if Value < Result Then Dec(Result);
+ Floor := Trunc(Value);
+ if Value < Floor Then Dec(Floor);
 End;
 
 Function Ceil(Value: Double): Int64;Begin
- Result := Trunc(Value);
- if Value > Result Then Inc(Result);
+ Ceil := Trunc(Value);
+ if Value > Ceil Then Inc(Ceil);
 End;
 { Inspection IEEE 754 binary32 sans operation flottante, y compris pour
   les NaN signalants. Ces fonctions servent aux echantillons WAV float32. }
@@ -268,7 +276,7 @@ Var
  Bits: LongWord;
 Begin
  Move(Value, Bits, SizeOf(Bits));
- Result := ((Bits and $7F800000) = $7F800000) and
+ IsNan := ((Bits and $7F800000) = $7F800000) and
  ((Bits and $007FFFFF) <> 0);
 End;
 
@@ -277,7 +285,7 @@ Var
  Bits: LongWord;
 Begin
  Move(Value, Bits, SizeOf(Bits));
- Result := (Bits and $7FFFFFFF) = $7F800000;
+ IsInfinite := (Bits and $7FFFFFFF) = $7F800000;
 End;
 
 Procedure Fail(const S: string);
