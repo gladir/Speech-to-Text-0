@@ -19,6 +19,8 @@ Uses DOS
 ;
 
 Type
+ { Le mode FPC classique definit Integer sur 16 bits: indices audio en 32 bits. }
+ Integer = LongInt;
   { Fichier binaire tamponne, manipule uniquement par des procedures. }
  TBinary = record
  Handle: File;
@@ -828,8 +830,6 @@ End;
 { Aligneur interne: lecture des donnees Kaldi, sans executable ni DLL MFA.
   Implementations procedurales des formats binaires et du decodeur GMM-HMM. }
 Type
- { Le mode FPC classique definit Integer sur 16 bits: indices audio en 32 bits. }
- Integer = LongInt;
  TIntVector = array of LongInt;
  TRealVector = array of Single;
  TStringVector = array of string;
