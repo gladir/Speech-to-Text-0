@@ -10,13 +10,7 @@ Program WAV2FRA;
   peut donc aussi produire des frontieres phonetiques incorrectes.
   Turbo Pascal DOS ne fournit pas la memoire requise pour ce pipeline. }
 
-Uses DOS
-{$IFDEF MSWINDOWS}
- , Windows
-{$ELSE}
- , BaseUnix, Unix
-{$ENDIF}
-;
+Uses DOS;
 
 Type
  { Le mode FPC classique definit Integer sur 16 bits: indices audio en 32 bits. }
@@ -50,40 +44,62 @@ Var
 Procedure Fail(const S: string);Forward;
 Procedure CleanupWork;Forward;
 {$IFDEF MSWINDOWS}
-
- Type
-  TWideArguments = array[0..65535] of PWideChar;
-  PWideArguments = ^TWideArguments;
-
- Function DecodeCommandLine(Command: PWideChar; var Count: LongInt): PWideArguments;
- stdcall; external 'shell32.dll' name 'CommandLineToArgvW';
+Procedure ParseWindowsArguments(const Line: string);
+Var
+ I, J, Slashes, Count: Integer;
+ Quoted: Boolean;
+ Value: string;
+Begin
+ { System.CmdLine fournit la ligne brute. Decoder localement les guillemets
+   et antislashs, sans Windows ni import de shell32.dll.
+   Le nom de programme suit les regles particulieres du premier argument. }
+ SetLength(CommandArguments, 1);
+ CommandArguments[0] := System.ParamStr(0);
+ I := 1; Quoted := False;
+ While (I <= Length(Line)) and (Line[I] in [' ', #9]) do Inc(I);
+ While I <= Length(Line) do Begin
+  if Line[I] = '"' Then Quoted := not Quoted
+  else if not Quoted and (Line[I] in [' ', #9]) Then Break;
+  Inc(I);
+ End;
+ While I <= Length(Line) do Begin
+  While (I <= Length(Line)) and (Line[I] in [' ', #9]) do Inc(I);
+  if I > Length(Line) Then Break;
+  Value := ''; Quoted := False;
+  While I <= Length(Line) do Begin
+   if not Quoted and (Line[I] in [' ', #9]) Then Break;
+   Slashes := 0;
+   While (I <= Length(Line)) and (Line[I] = '\') do Begin Inc(Slashes); Inc(I); End;
+   if (I <= Length(Line)) and (Line[I] = '"') Then Begin
+    For J := 1 to Slashes div 2 do Value := Value + '\';
+    if Odd(Slashes) Then Value := Value + '"'
+    else if Quoted and (I < Length(Line)) and (Line[I + 1] = '"') Then Begin
+     Value := Value + '"'; Inc(I);
+    End
+    else Quoted := not Quoted;
+    Inc(I);
+   End
+   else Begin
+    For J := 1 to Slashes do Value := Value + '\';
+    if I > Length(Line) Then Break;
+    if not Quoted and (Line[I] in [' ', #9]) Then Break;
+    Value := Value + Line[I]; Inc(I);
+   End;
+  End;
+  Count := Length(CommandArguments); SetLength(CommandArguments, Count + 1);
+  CommandArguments[Count] := Value;
+ End;
+End;
 {$ENDIF}
 
 Procedure InitializeArguments;
-Var
- I, Count: LongInt;
- {$IFDEF MSWINDOWS}
-  Values: PWideArguments;
-  Size: LongInt;
- {$ENDIF}
+{$IFNDEF MSWINDOWS}
+Var I, Count: Integer;
+{$ENDIF}
 Begin
  {$IFDEF MSWINDOWS}
-  { Le ParamStr Win32 de FPC 3.2 ne decode pas les antislashs et guillemets
-    comme les moteurs C/C++. Decoder aussi l'entree selon la convention OS. }
-  Values := DecodeCommandLine(GetCommandLineW, Count);
-  if Values = nil Then Fail('Lecture de la ligne de commande impossible.');
-  SetLength(CommandArguments, Count);
-  For I := 0 to Count - 1 do Begin
-   Size := WideCharToMultiByte(CP_ACP, 0, Values^[I], -1, nil, 0, nil, nil);
-   if Size = 0 Then Begin
-    LocalFree(HLOCAL(Values)); Fail('Conversion d''argument impossible.');
-   End;
-   SetLength(CommandArguments[I], Size);
-   WideCharToMultiByte(CP_ACP, 0, Values^[I], -1, PChar(CommandArguments[I]), Size, nil,
-   nil);
-   SetLength(CommandArguments[I], Size - 1);
-  End;
-  LocalFree(HLOCAL(Values));
+  if System.CmdLine = nil Then Fail('Ligne de commande indisponible.');
+  ParseWindowsArguments(System.CmdLine);
  {$ELSE}
   Count := System.ParamCount + 1;
   SetLength(CommandArguments, Count);
