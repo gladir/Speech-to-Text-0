@@ -11,9 +11,15 @@ program WAV2FRA;
   peut donc aussi produire des frontieres phonetiques incorrectes.
   Turbo Pascal DOS ne fournit ni la memoire ni Process pour ce pipeline. }
 
-uses Classes, SysUtils, Process;
+uses DOS, Classes, Process;
 
 type
+  { Exception propre au programme; les erreurs des unites FCL sont
+    interceptees separement comme objets, sans importer SysUtils. }
+  EWavError = class(TObject)
+    Message: string;
+    constructor Create(const Text: string);
+  end;
   TSamples = array of Single;
   TOptions = record
     Input, Output, Model, VADModel, Whisper, MFA, Dictionary, Acoustic: string;
@@ -24,6 +30,214 @@ const
   TargetRate = 16000;
   MaxInputBytes = 268435456; { limite explicite: 256 Mio }
   MaxSeconds = 1800;
+  fmOpenRead = $0000;
+  fmShareDenyWrite = $0020;
+
+constructor EWavError.Create(const Text: string);
+begin
+  inherited Create;
+  Message := Text;
+end;
+
+{ Services locaux remplacant les appels directs a SysUtils. Les unites
+  Classes et Process conservent leurs propres dependances internes. }
+function IntToStr(Value: Int64): string;
+begin
+  Str(Value, Result);
+end;
+
+function Trim(const Text: string): string;
+var First, Last: Integer;
+begin
+  First := 1; Last := Length(Text);
+  while (First <= Last) and (Text[First] <= ' ') do Inc(First);
+  while (Last >= First) and (Text[Last] <= ' ') do Dec(Last);
+  Result := Copy(Text, First, Last - First + 1);
+end;
+
+function LowerCase(const Text: string): string;
+var I: Integer;
+begin
+  { Seul le suffixe ASCII des noms de modeles est compare. }
+  Result := Text;
+  for I := 1 to Length(Result) do
+    if Result[I] in ['A'..'Z'] then Result[I] := Chr(Ord(Result[I]) + 32);
+end;
+
+function IsPathDelimiter(C: Char): Boolean;
+begin
+  {$IFDEF MSWINDOWS}
+  Result := C in ['/', '\'];
+  {$ELSE}
+  Result := C = '/';
+  {$ENDIF}
+end;
+
+function IncludeTrailingPathDelimiter(const Path: string): string;
+begin
+  Result := Path;
+  if (Result = '') or not IsPathDelimiter(Result[Length(Result)]) then
+    Result := Result + DirectorySeparator;
+end;
+
+function ExtractFileName(const Path: string): string;
+var I: Integer;
+begin
+  I := Length(Path);
+  while (I > 0) and not IsPathDelimiter(Path[I]) do Dec(I);
+  Result := Copy(Path, I + 1, Length(Path) - I);
+end;
+
+function ExtractFileDir(const Path: string): string;
+var I: Integer;
+begin
+  I := Length(Path);
+  while (I > 0) and not IsPathDelimiter(Path[I]) do Dec(I);
+  { Conserver le separateur des racines / et C:\. }
+  if (I = 1) {$IFDEF MSWINDOWS}or ((I = 3) and (Path[2] = ':')){$ENDIF} then
+    Result := Copy(Path, 1, I)
+  else if I > 0 then Result := Copy(Path, 1, I - 1)
+  else Result := '';
+end;
+
+function ChangeFileExt(const Path, Extension: string): string;
+var I: Integer;
+begin
+  I := Length(Path);
+  while (I > 0) and not IsPathDelimiter(Path[I]) and (Path[I] <> '.') do Dec(I);
+  if (I > 0) and (Path[I] = '.') then Result := Copy(Path, 1, I - 1) + Extension
+  else Result := Path + Extension;
+end;
+
+function ExpandFileName(const Path: string): string;
+var Current: string;
+begin
+  { Construire un chemin absolu sans limite ShortString. Les composants
+    . et .. restent resolves par le systeme de fichiers. }
+  GetDir(0, Current);
+  {$IFDEF MSWINDOWS}
+  if (Length(Path) >= 2) and (Path[2] = ':') then
+  begin
+    if (Length(Path) >= 3) and IsPathDelimiter(Path[3]) then Exit(Path);
+    if UpCase(Path[1]) in ['A'..'Z'] then
+      GetDir(Ord(UpCase(Path[1])) - Ord('A') + 1, Current);
+    Exit(IncludeTrailingPathDelimiter(Current) + Copy(Path, 3, Length(Path)));
+  end;
+  if (Length(Path) >= 2) and IsPathDelimiter(Path[1]) and IsPathDelimiter(Path[2]) then
+    Exit(Path);
+  if (Path <> '') and IsPathDelimiter(Path[1]) then Exit(Copy(Current, 1, 2) + Path);
+  {$ELSE}
+  if (Path <> '') and IsPathDelimiter(Path[1]) then Exit(Path);
+  {$ENDIF}
+  Result := IncludeTrailingPathDelimiter(Current) + Path;
+end;
+
+function PathAttributes(const Name: string; out Attributes: Word): Boolean;
+var F: File;
+begin
+  Assign(F, Name);
+  DOS.GetFAttr(F, Attributes);
+  Result := DosError = 0;
+end;
+
+function FileExists(const Name: string): Boolean;
+var Attributes: Word;
+begin
+  Result := PathAttributes(Name, Attributes);
+  if Result then Result := (Attributes and Directory) = 0;
+end;
+
+function DirectoryExists(const Name: string): Boolean;
+var Attributes: Word;
+begin
+  Result := PathAttributes(Name, Attributes);
+  if Result then Result := (Attributes and Directory) <> 0;
+end;
+
+function CreateDir(const Name: string): Boolean;
+begin
+  {$PUSH}{$I-}
+  MkDir(Name);
+  Result := IOResult = 0;
+  {$POP}
+end;
+
+function RemoveDir(const Name: string): Boolean;
+begin
+  {$PUSH}{$I-}
+  RmDir(Name);
+  Result := IOResult = 0;
+  {$POP}
+end;
+
+function DeleteFile(const Name: string): Boolean;
+var F: File;
+begin
+  Assign(F, Name);
+  {$PUSH}{$I-}
+  Erase(F);
+  Result := IOResult = 0;
+  {$POP}
+end;
+
+function CreateWorkDir: string;
+var Root: string; Attempt: Integer;
+begin
+  {$IFDEF MSWINDOWS}
+  Root := DOS.GetEnv('TEMP');
+  if Root = '' then Root := DOS.GetEnv('TMP');
+  if Root = '' then GetDir(0, Root);
+  {$ELSE}
+  Root := DOS.GetEnv('TMPDIR');
+  if Root = '' then Root := '/tmp';
+  {$ENDIF}
+  Root := IncludeTrailingPathDelimiter(ExpandFileName(Root));
+  Randomize;
+  for Attempt := 1 to 100 do
+  begin
+    Result := Root + 'wav2fra-' + IntToStr(Random(High(LongInt))) + '-' +
+      IntToStr(Random(High(LongInt)));
+    { MkDir est atomique: ne jamais reutiliser un dossier deja existant. }
+    if CreateDir(Result) then Exit;
+    if not FileExists(Result) and not DirectoryExists(Result) then Break;
+  end;
+  raise EWavError.Create('Creation du dossier temporaire impossible: ' + Root);
+end;
+
+{$IFDEF MSWINDOWS}
+procedure OSSleep(Milliseconds: LongWord); stdcall; external 'kernel32.dll' name 'Sleep';
+{$ELSE}
+  {$IFDEF UNIX}
+function USleep(Microseconds: LongWord): LongInt; cdecl; external 'c' name 'usleep';
+  {$ELSE}
+    {$FATAL Plateforme non prise en charge: Windows ou Unix requis}
+  {$ENDIF}
+{$ENDIF}
+
+procedure Sleep(Milliseconds: LongWord);
+begin
+  {$IFDEF MSWINDOWS}
+  OSSleep(Milliseconds);
+  {$ELSE}
+  { Fractionner pour respecter la limite de usleep (< 1 seconde). }
+  while Milliseconds >= 1000 do
+  begin
+    USleep(999000); Dec(Milliseconds, 999);
+  end;
+  USleep(Milliseconds * 1000);
+  {$ENDIF}
+end;
+
+function AudioDuration(SampleCount: Integer): string;
+var Fraction: string;
+begin
+  { 1/16000 = 0.0000625: representation exacte, independante de la locale. }
+  Fraction := IntToStr((SampleCount mod TargetRate) * 625);
+  while Length(Fraction) < 7 do Fraction := '0' + Fraction;
+  while (Length(Fraction) > 1) and (Fraction[Length(Fraction)] = '0') do
+    SetLength(Fraction, Length(Fraction) - 1);
+  Result := IntToStr(SampleCount div TargetRate) + '.' + Fraction;
+end;
 
 { Fonctions numeriques locales: aucune dependance directe a l'unite Math.
   Abs, Sin, Cos, Pi, Round et Trunc sont fournis par l'unite System. }
@@ -82,7 +296,7 @@ end;
 
 procedure Fail(const S: string);
 begin
-  raise Exception.Create(S);
+  raise EWavError.Create(S);
 end;
 
 function U16(S: TStream): Word;
@@ -393,13 +607,11 @@ begin
 end;
 
 procedure Transcribe(const O: TOptions; const Audio: TSamples);
-var Work, Wav, Prefix, Grid, Txt: string; G: TGuid; Lines: TStringList;
+var Work, Wav, Prefix, Grid, Txt: string; Lines: TStringList;
 begin
   MustBeNew(O.Output + '.txt'); MustBeNew(O.Output + '.json');
   if not O.TextOnly then MustBeNew(O.Output + '.TextGrid');
-  if CreateGUID(G) <> 0 then Fail('Creation du dossier temporaire impossible.');
-  Work := IncludeTrailingPathDelimiter(GetTempDir(False)) + 'wav2fra-' + GUIDToString(G);
-  if not CreateDir(Work) then Fail('Creation du dossier temporaire impossible.');
+  Work := CreateWorkDir;
   Wav := Work + DirectorySeparator + 'audio.wav';
   Prefix := Work + DirectorySeparator + 'transcript';
   Grid := Work + DirectorySeparator + 'phones.TextGrid';
@@ -428,8 +640,7 @@ begin
           Lines.Clear;
           Lines.Add('File type = "ooTextFile"'); Lines.Add('Object class = "TextGrid"');
           Lines.Add(''); Lines.Add('xmin = 0');
-          Lines.Add('xmax = ' + StringReplace(FloatToStr(Length(Audio) / TargetRate),
-            DefaultFormatSettings.DecimalSeparator, '.', []));
+          Lines.Add('xmax = ' + AudioDuration(Length(Audio)));
           Lines.Add('tiers? <exists>'); Lines.Add('size = 0'); Lines.Add('item []:');
           Lines.SaveToFile(Grid);
         end;
@@ -466,6 +677,11 @@ begin
     end
     else Transcribe(O, Audio);
   except
-    on E: Exception do begin WriteLn(StdErr, 'WAV2FRA: ', E.Message); Halt(1); end;
+    on E: EWavError do begin WriteLn(StdErr, 'WAV2FRA: ', E.Message); Halt(1); end;
+    on E: TObject do
+    begin
+      WriteLn(StdErr, 'WAV2FRA: erreur du systeme ou du moteur (', E.ClassName, ').');
+      Halt(1);
+    end;
   end;
 end.
