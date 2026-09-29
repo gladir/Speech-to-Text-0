@@ -960,6 +960,8 @@ Type
  Files: TStringVector;
  Model, Language: string;
  Threads, Processors: Integer;
+ OffsetMS, DurationMS, OffsetIndex: Integer;
+ ShowIndex: Boolean;
 End;
 TSegment = record First, Last: Integer;
 Text, Language: string;
@@ -992,6 +994,9 @@ Procedure Help;Begin
  WriteLn('  -m NOM, --model NOM  Modele GGML FP16/FP32 (defaut models/ggml-base.en.bin)');
  WriteLn(
  '  -f NOM, --file NOM   Fichier WAV; option repetable, cumulable avec les fichiers positionnels');
+ WriteLn('  -ot N, --offset-t N  Debut en millisecondes (defaut 0)');
+ WriteLn('  -on N, --offset-n N  Premier index affiche des segments (defaut 0)');
+ WriteLn('  -d N, --duration N   Duree en millisecondes (0 = jusqu''a la fin)');
  WriteLn('  -l CODE, --language CODE  Langue Whisper, ou auto (defaut en; francais: fr)');
  WriteLn(
  '      --               Fin des options; les arguments suivants sont des fichiers');
@@ -1017,6 +1022,19 @@ Begin
  if (Code <> 0) or (V < 1) or (V > Maximum) Then Fail(Option + ': valeur entre 1 et ' +
  IntToStr(Maximum) + ' requise.');
  PositiveInteger := V;
+End;
+
+Function NonNegativeInteger(const Text, Option: string): Integer;
+Var
+ I, V, Code: Integer;
+Begin
+ if Text = '' Then Fail('Valeur vide: ' + Option);
+ For I := 1 to Length(Text) do if not (Text[I] in ['0'..'9']) Then
+  Fail('Entier positif ou nul requis: ' + Option);
+ Val(Text, V, Code);
+ if (Code <> 0) or (V < 0) Then
+  Fail(Option + ': valeur entre 0 et 2147483647 requise.');
+ NonNegativeInteger := V;
 End;
 
 Function LanguageIndex(const Name: string): Integer;
@@ -1048,6 +1066,7 @@ Var
 Begin
  O.Threads := 1; O.Processors := 1; O.Model := 'models/ggml-base.en.bin';
  O.Language := 'en';
+ O.OffsetMS := 0; O.DurationMS := 0; O.OffsetIndex := 0; O.ShowIndex := False;
  SetLength(O.Files, 0); Positional := False; I := 1;
  if ParamCount = 0 Then Begin
   Help; Halt(1);
@@ -1064,6 +1083,9 @@ Begin
   End
   else if (Arg = '-t') or (Arg = '--threads') or (Arg = '-p') or (Arg = '--processors') or
   (Arg = '-m') or (Arg = '--model') or (Arg = '-f') or (Arg = '--file') or
+  (Arg = '-ot') or (Arg = '--offset-t') or
+  (Arg = '-on') or (Arg = '--offset-n') or
+  (Arg = '-d') or (Arg = '--duration') or
   (Arg = '-l') or (Arg = '--language') Then Begin
    Inc(I); if I > ParamCount Then Fail('Valeur manquante: ' + Arg);
    Value := ParamStr(I); if Value = '' Then Fail('Valeur vide: ' + Arg);
@@ -1073,6 +1095,13 @@ Begin
    Value, Arg, 8)
    else if (Arg = '-m') or (Arg = '--model') Then O.Model := Value
    else if (Arg = '-l') or (Arg = '--language') Then O.Language := Value
+   else if (Arg = '-ot') or (Arg = '--offset-t') Then
+    O.OffsetMS := NonNegativeInteger(Value, Arg)
+   else if (Arg = '-d') or (Arg = '--duration') Then
+    O.DurationMS := NonNegativeInteger(Value, Arg)
+   else if (Arg = '-on') or (Arg = '--offset-n') Then Begin
+    O.OffsetIndex := NonNegativeInteger(Value, Arg); O.ShowIndex := True;
+   End
    else AddInput(O, Value);
   End
   else if (Arg <> '') and (Arg[1] = '-') Then Fail('Option non prise en charge: ' + Arg)
@@ -1194,7 +1223,8 @@ Procedure TranscribeFile(const Name: string; const O: TOptions; var M: TWhisperM
 Var
  Source, Audio: TSamples;
  Rate: LongWord;
- Workers, I, J, Language: Integer;
+ Workers, I, J, Language, FirstSample, LastSample, Selected: Integer;
+ Boundary, SegmentIndex: Int64;
  Jobs: array[0..7] of TProcessorJob;
  Handles: array[0..7] of TThreadID;
  UTF8Text: UTF8String;
@@ -1206,13 +1236,26 @@ Begin
  'Le modele .en ne prend en charge que l''anglais.');
  if Language >= 99 + M.VocabCount - 51865 Then Fail(
  'Langue absente de ce modele Whisper.');
- Workers := MinInt(O.Processors, Length(Audio));
+ { Calcul en 64 bits avant de borner aux echantillons disponibles. }
+ Boundary := Int64(O.OffsetMS) * TargetRate div 1000;
+ if Boundary >= Length(Audio) Then Begin
+  WriteLn(StdErr, 'Fichier: ', Name, ' | aucune portion audio apres le decalage.');
+  Exit;
+ End;
+ FirstSample := Boundary; LastSample := Length(Audio);
+ if O.DurationMS > 0 Then Begin
+  Boundary := Int64(FirstSample) + Int64(O.DurationMS) * TargetRate div 1000;
+  if Boundary < LastSample Then LastSample := Boundary;
+ End;
+ Selected := LastSample - FirstSample;
+ if Selected <= 0 Then Exit;
+ Workers := MinInt(O.Processors, Selected);
  WriteLn(StdErr, 'Fichier: ', Name, ' | ', O.Threads, ' thread(s) x ', Workers,
- ' processeur(s), langue=', O.Language, ', duree=', TimeStamp(Length(Audio)));
+ ' processeur(s), langue=', O.Language, ', debut=', TimeStamp(FirstSample), ', duree=', TimeStamp(Selected));
  For I := 0 to Workers - 1 do Begin
   Jobs[I].Model := @M; Jobs[I].Audio := @Audio; Jobs[I].Language := Language;
-  Jobs[I].First := Int64(Length(Audio)) * I div Workers;
-  Jobs[I].Last := Int64(Length(Audio)) * (I + 1) div Workers;
+  Jobs[I].First := FirstSample + Int64(Selected) * I div Workers;
+  Jobs[I].Last := FirstSample + Int64(Selected) * (I + 1) div Workers;
  End;
  For I := 1 to Workers - 1 do Begin
   Handles[I] := BeginThread(@ProcessorWorker, @Jobs[I]);
@@ -1223,11 +1266,14 @@ Begin
  End;
  ProcessorWorker(@Jobs[0]);
  For I := 1 to Workers - 1 do JoinThread(Handles[I]);
+ SegmentIndex := O.OffsetIndex;
  For I := 0 to Workers - 1 do
  For J := 0 to High(Jobs[I].Segments) do  if Jobs[I].Segments[J].Text <> '' Then Begin
    { Les tokens GGML contiennent des octets UTF-8, parfois des caracteres
      coupes entre tokens. Ne declarer l'encodage qu'apres leur assemblage. }
   SetString(UTF8Text, PChar(Jobs[I].Segments[J].Text), Length(Jobs[I].Segments[J].Text));
+  if O.ShowIndex Then Write('[', SegmentIndex, '] ');
+  Inc(SegmentIndex);
   WriteLn('[', TimeStamp(Jobs[I].Segments[J].First), ' --> ',
   TimeStamp(Jobs[I].Segments[J].Last), '] ', UTF8Text);
  End;
