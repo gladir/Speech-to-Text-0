@@ -7,6 +7,8 @@
 
 Program WAV2FRA;
 
+{$A-}
+
 {$mode fpc}{$H+}
 {$modeswitch result+}{$modeswitch out+}
 { Free Pascal 3.2+. Compile: fpc -O2 WAV2FRA.PAS
@@ -908,8 +910,8 @@ Begin
   if Int64(R.Position) + N + Extra + Comment - 1 > Length(Archive) Then Fail(
   'Nom ZIP tronque.');
   Name := Copy(Archive, R.Position, N); Inc(R.Position, N + Extra + Comment);
-  if (Name <> Member) and (Copy(Name, Length(Name) - Length(Member), Length(Member) + 1) <
-  > '/' + Member) Then Continue;
+  if (Name <> Member) and (Copy(Name, Length(Name) - Length(Member), Length(Member) + 1)
+  <> '/' + Member) Then Continue;
   if Found Then Fail('Plusieurs fichiers ' + Member + ' dans l''archive.');
   Found := True;
   if (Flags and 1) <> 0 Then Fail('ZIP chiffre non accepte.');
