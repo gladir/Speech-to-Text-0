@@ -1,29 +1,38 @@
-Program WhisperCLI;
+Program WHISPERCLI;
+{$A-}
 {$MODE FPC}{$H+}
 { Moteur Whisper procedural integre. Free Pascal 3.2+, memoire 32/64 bits.
   Pas de moteur externe, objets, SysUtils, Classes ou Math.
   L'inference neuronale et les tableaux dynamiques ne tiennent pas dans
   l'environnement 16 bits de Turbo Pascal DOS.
   Reference des architectures et licences: THIRD_PARTY_NOTICES.md. }
+
 Uses DOS;
+
 Type
  Integer = LongInt;
  TBinary = record
-  Handle: File; Name: string; Size, Position: Int64;
-  Buffer: array[0..8191] of Byte; Used, Index: LongInt; Writing: Boolean;
- End;
- PBinary = ^TBinary;
- TSamples = array of Single;
- TStringVector = array of string;
+ Handle: File;
+ Name: string;
+ Size, Position: Int64;
+ Buffer: array[0..8191] of Byte;
+ Used, Index: LongInt;
+ Writing: Boolean;
+End;
+PBinary = ^TBinary;
+TSamples = array of Single;
+TStringVector = array of string;
+
 Const
  TargetRate = 16000;
  MaxInputBytes = 268435456;
  MaxSeconds = 1800;
  NativeVersion = '1.0.0';
+
 Var
  OpenFiles: array[0..7] of PBinary;
  ThreadCount: Integer;
-Procedure Fail(const S: string); Forward;
+Procedure Fail(const S: string);Forward;
 
 Function IntToStr(Value: Int64): string;Begin
  Str(Value, IntToStr);
@@ -462,8 +471,8 @@ Begin
   Tensors[N].Name := Name; ReadFloatArray(S, Count, Kind, Tensors[N].Data);
  End;
 End;
-
 Function TensorID(const Tensors: TTensors; const Name: string;
+
 const Shape: array of Integer): Integer;
 Var
  I, J: Integer;
@@ -473,12 +482,14 @@ Begin
   'Dimensions incorrectes: ' + Name);
   For J := Length(Shape) to 3 do if Tensors[I].Dims[J] <> 1 Then Fail(
   'Dimensions supplementaires: ' + Name);
-  Begin TensorID := I; Exit; End;
+  Begin
+   TensorID := I; Exit;
+  End;
  End;
  Fail('Tenseur manquant: ' + Name); TensorID := -1;
 End;
-
 Procedure BindAttention(const T: TTensors; const Prefix, Norm: string; Width: Integer;
+
 var W: TAttentionWeights);Begin
  W.Q := TensorID(T, Prefix + '.query.weight', [Width,Width]);
  W.QB := TensorID(T, Prefix + '.query.bias', [Width]);
@@ -490,8 +501,8 @@ var W: TAttentionWeights);Begin
  W.LN := TensorID(T, Norm + '.weight', [Width]);
  W.LNB := TensorID(T, Norm + '.bias', [Width]);
 End;
-
 Procedure BindWhisperLayer(const T: TTensors; const Prefix: string; Width: Integer;
+
 Decoder: Boolean; var L: TWhisperLayer);Begin
  BindAttention(T, Prefix + '.attn', Prefix + '.attn_ln', Width, L.Attention);
  if Decoder Then BindAttention(T, Prefix + '.cross_attn', Prefix + '.cross_attn_ln',
@@ -635,13 +646,14 @@ Type
  TFloatMemory = array[0..268435455] of Single;
  PFloatMemory = ^TFloatMemory;
  TDenseJob = record
-  X, Weight, Bias, Y: PFloatMemory;
-  First, Last, Inputs, Outputs: Integer;
- End;
- PDenseJob = ^TDenseJob;
+ X, Weight, Bias, Y: PFloatMemory;
+ First, Last, Inputs, Outputs: Integer;
+End;
+PDenseJob = ^TDenseJob;
 
 Procedure JoinThread(Handle: TThreadID);
-Var Code: LongWord;
+Var
+ Code: LongWord;
 Begin
  Code := WaitForThreadTerminate(Handle, -1);
  CloseThread(Handle);
@@ -649,20 +661,26 @@ Begin
 End;
 
 Function DenseWorker(Parameter: Pointer): PtrInt;
-Var Job: PDenseJob; Index, Row, Col: Integer; Value: Single;
+Var
+ Job: PDenseJob;
+ Index, Row, Col: Integer;
+ Value: Single;
 Begin
  Job := Parameter;
  For Index := Job^.First to Job^.Last - 1 do Begin
   Row := Index div Job^.Outputs; Col := Index mod Job^.Outputs;
-  Value := NeuralDot(@Job^.X^[Row * Job^.Inputs], @Job^.Weight^[Col * Job^.Inputs], Job^.Inputs);
+  Value := NeuralDot(@Job^.X^[Row * Job^.Inputs], @Job^.Weight^[Col * Job^.Inputs],
+  Job^.Inputs);
   if Job^.Bias <> nil Then Value := Value + Job^.Bias^[Col];
   Job^.Y^[Index] := Value;
  End;
  DenseWorker := 0;
 End;
 
-Procedure Dense(const X: TMatrix; const T: TTensors; Weight, Bias: Integer; var Y: TMatrix);
-Var Width, Count, Workers, I, J: Integer;
+Procedure Dense(const X: TMatrix; const T: TTensors; Weight, Bias: Integer;
+var Y: TMatrix);
+Var
+ Width, Count, Workers, I, J: Integer;
  Jobs: array[0..63] of TDenseJob;
  Handles: array[0..63] of TThreadID;
 Begin
@@ -691,7 +709,11 @@ Begin
 End;
 
 Function StableTanh(Value: Double): Double;Begin
- if Value > 15 Then Begin StableTanh := 1; Exit; End; if Value < -15 Then Begin StableTanh := -1; Exit; End;
+ if Value > 15 Then Begin
+  StableTanh := 1; Exit;
+ End; if Value < -15 Then Begin
+  StableTanh := -1; Exit;
+ End;
  StableTanh := 2 / (1 + Exp(-2 * Value)) - 1;
 End;
 
@@ -714,8 +736,8 @@ Begin
   ;
  End;
 End;
-
 Procedure NeuralNorm(const X: TMatrix; const T: TTensors; Weight, Bias: Integer;
+
 var Y: TMatrix);
 Var
  I, J, Offset: Integer;
@@ -742,8 +764,8 @@ Begin
  if (X.Rows <> Y.Rows) or (X.Cols <> Y.Cols) Then Fail('Dimension residuelle invalide.');
  For I := 0 to High(X.Data) do X.Data[I] := X.Data[I] + Y.Data[I];
 End;
-
 Procedure Conv1D(const X: TMatrix; const T: TTensors;
+
 Weight, Bias, Stride, Padding: Integer; var Y: TMatrix);
 Var
  I, J, C, K, Source, Width, Kernel, Rows: Integer;
@@ -767,8 +789,8 @@ Begin
   End;
  End;
 End;
-
 Procedure NeuralAttention(const Q, K, V: TMatrix; KeyCount, Heads: Integer;
+
 var Y: TMatrix);
 Var
  I, J, H, D, Width: Integer;
@@ -831,8 +853,8 @@ Begin
  End;
  NeuralNorm(Encoded, M.Tensors, M.AudioNorm, M.AudioNormB, N); Encoded := N;
 End;
-
 Procedure InitDecoderCache(const Encoded: TMatrix; const M: TWhisperModel;
+
 var Cache: TDecoderCaches);
 Var
  I: Integer;
@@ -847,8 +869,8 @@ Begin
   MatrixSize(Cache[I].SelfV, M.TextContext, M.TextWidth);
  End;
 End;
-
 Procedure DecoderStep(Token, Position: Integer; const M: TWhisperModel;
+
 var Cache: TDecoderCaches; var Logits: TMatrix);
 Var
  X, N, Q, K, V, A, B: TMatrix;
@@ -881,8 +903,8 @@ Begin
 End;
 { Whisper: DFT 400 points, fenetre Hann periodique et filtres mel du modele.
   Les tables trigonomÃƒÂ©triques sont calculees une fois; aucun moteur FFT externe. }
-
 Procedure WhisperMel(const Audio: TSamples; First, Last: Integer; const M: TWhisperModel;
+
 var Mel: TMatrix);
 Var
  C, S, Frame, Power: TSamples;
@@ -923,7 +945,6 @@ Begin
  End;
 End;
 
-
 Const
  LanguageCodes: array[0..99] of string[3] = (
  'en','zh','de','es','ru','ko','fr','ja','pt','tr','pl','ca','nl','ar','sv','it',
@@ -933,73 +954,85 @@ Const
  'km','sn','yo','so','af','oc','ka','be','tg','sd','gu','am','yi','lo','uz','fo',
  'ht','ps','tk','nn','mt','sa','lb','my','bo','tl','mg','as','tt','haw','ln','ha',
  'ba','jw','su','yue');
+
 Type
  TOptions = record
-  Files: TStringVector;
-  Model, Language: string;
-  Threads, Processors: Integer;
- End;
- TSegment = record First, Last: Integer; Text, Language: string; End;
- TSegments = array of TSegment;
- PWhisperModel = ^TWhisperModel;
- PSamples = ^TSamples;
- TProcessorJob = record
-  Model: PWhisperModel;
-  Audio: PSamples;
-  First, Last, Language: Integer;
-  Segments: TSegments;
- End;
- PProcessorJob = ^TProcessorJob;
+ Files: TStringVector;
+ Model, Language: string;
+ Threads, Processors: Integer;
+End;
+TSegment = record First, Last: Integer;
+Text, Language: string;
+End;
+TSegments = array of TSegment;
+PWhisperModel = ^TWhisperModel;
+PSamples = ^TSamples;
+TProcessorJob = record
+Model: PWhisperModel;
+Audio: PSamples;
+First, Last, Language: Integer;
+Segments: TSegments;
+End;
+PProcessorJob = ^TProcessorJob;
 
-Procedure Version;
-Begin
+Procedure Version;Begin
  WriteLn('WHISPER-CLI.PAS ', NativeVersion, ' - moteur Whisper natif en Pascal');
  WriteLn('whisper.cpp: non lie; compatibilite partielle de la ligne de commande.');
 End;
 
-Procedure Help;
-Begin
+Procedure Help;Begin
  WriteLn('Usage: whisper-cli [options] fichier0.wav fichier1.wav ...');
  WriteLn('   ou: whisper-cli [options] -f fichier.wav');
  WriteLn;
  WriteLn('  -h, --help           Affiche cette aide (/? accepte aussi)');
  WriteLn('      --version        Version du port Pascal autonome');
- WriteLn('  -t N, --threads N    Threads de calcul matriciel par processeur (1..64, defaut 1)');
+ WriteLn(
+ '  -t N, --threads N    Threads de calcul matriciel par processeur (1..64, defaut 1)');
  WriteLn('  -p N, --processors N Portions audio traitees en parallele (1..8, defaut 1)');
  WriteLn('  -m NOM, --model NOM  Modele GGML FP16/FP32 (defaut models/ggml-base.en.bin)');
- WriteLn('  -f NOM, --file NOM   Fichier WAV; option repetable, cumulable avec les fichiers positionnels');
+ WriteLn(
+ '  -f NOM, --file NOM   Fichier WAV; option repetable, cumulable avec les fichiers positionnels');
  WriteLn('  -l CODE, --language CODE  Langue Whisper, ou auto (defaut en; francais: fr)');
- WriteLn('      --               Fin des options; les arguments suivants sont des fichiers');
+ WriteLn(
+ '      --               Fin des options; les arguments suivants sont des fichiers');
  WriteLn;
  WriteLn('Decodeur CPU glouton integre, aucun outil externe. Texte UTF-8 sur stdout.');
  WriteLn('Temps affiches: bornes des portions audio, pas alignement mot par mot.');
  WriteLn('WAV PCM/float32, 256 Mio/30 min maximum. Pour MP3: convertir avec MP32WAV.');
- WriteLn('Modeles quantifies/GGUF, GPU et autres options whisper.cpp non pris en charge.');
+ WriteLn('Modeles quantifies/GGUF, GPU et autres options whisper.cpp non pris en charge.')
+ ;
  WriteLn('Les poids de modele restent des fichiers de donnees necessaires.');
  WriteLn('Free Pascal 3.2+ requis; Turbo Pascal DOS ne peut pas executer ce moteur.');
  WriteLn('Parallelisme avec System: disponible dans cette version sous Windows.');
 End;
 
 Function PositiveInteger(const Text, Option: string; Maximum: Integer): Integer;
-Var I, V, Code: Integer;
+Var
+ I, V, Code: Integer;
 Begin
  if Text = '' Then Fail('Valeur vide: ' + Option);
- For I := 1 to Length(Text) do if not (Text[I] in ['0'..'9']) Then Fail('Entier positif requis: ' + Option);
+ For I := 1 to Length(Text) do if not (Text[I] in ['0'..'9']) Then Fail(
+ 'Entier positif requis: ' + Option);
  Val(Text, V, Code);
- if (Code <> 0) or (V < 1) or (V > Maximum) Then Fail(Option + ': valeur entre 1 et ' + IntToStr(Maximum) + ' requise.');
+ if (Code <> 0) or (V < 1) or (V > Maximum) Then Fail(Option + ': valeur entre 1 et ' +
+ IntToStr(Maximum) + ' requise.');
  PositiveInteger := V;
 End;
 
 Function LanguageIndex(const Name: string): Integer;
-Var I: Integer;
+Var
+ I: Integer;
 Begin
  LanguageIndex := -1; if Name = 'auto' Then Exit;
- For I := 0 to High(LanguageCodes) do if Name = LanguageCodes[I] Then Begin LanguageIndex := I; Exit; End;
+ For I := 0 to High(LanguageCodes) do if Name = LanguageCodes[I] Then Begin
+  LanguageIndex := I; Exit;
+ End;
  Fail('Code de langue inconnu: ' + Name);
 End;
 
 Procedure AddInput(var O: TOptions; const Name: string);
-Var N: Integer;
+Var
+ N: Integer;
 Begin
  if Name = '' Then Fail('Nom de fichier audio vide.');
  N := Length(O.Files);
@@ -1008,24 +1041,36 @@ Begin
 End;
 
 Procedure ParseOptions(var O: TOptions);
-Var I, L: Integer; Arg, Value: string; Positional: Boolean;
+Var
+ I, L: Integer;
+ Arg, Value: string;
+ Positional: Boolean;
 Begin
- O.Threads := 1; O.Processors := 1; O.Model := 'models/ggml-base.en.bin'; O.Language := 'en';
+ O.Threads := 1; O.Processors := 1; O.Model := 'models/ggml-base.en.bin';
+ O.Language := 'en';
  SetLength(O.Files, 0); Positional := False; I := 1;
- if ParamCount = 0 Then Begin Help; Halt(1); End;
+ if ParamCount = 0 Then Begin
+  Help; Halt(1);
+ End;
  While I <= ParamCount do Begin
   Arg := ParamStr(I);
   if Positional Then AddInput(O, Arg)
   else if Arg = '--' Then Positional := True
-  else if (Arg = '-h') or (Arg = '--help') or (Arg = '/?') Then Begin Help; Halt(0); End
-  else if Arg = '--version' Then Begin Version; Halt(0); End
+  else if (Arg = '-h') or (Arg = '--help') or (Arg = '/?') Then Begin
+   Help; Halt(0);
+  End
+  else if Arg = '--version' Then Begin
+   Version; Halt(0);
+  End
   else if (Arg = '-t') or (Arg = '--threads') or (Arg = '-p') or (Arg = '--processors') or
-   (Arg = '-m') or (Arg = '--model') or (Arg = '-f') or (Arg = '--file') or
-   (Arg = '-l') or (Arg = '--language') Then Begin
+  (Arg = '-m') or (Arg = '--model') or (Arg = '-f') or (Arg = '--file') or
+  (Arg = '-l') or (Arg = '--language') Then Begin
    Inc(I); if I > ParamCount Then Fail('Valeur manquante: ' + Arg);
    Value := ParamStr(I); if Value = '' Then Fail('Valeur vide: ' + Arg);
-   if (Arg = '-t') or (Arg = '--threads') Then O.Threads := PositiveInteger(Value, Arg, 64)
-   else if (Arg = '-p') or (Arg = '--processors') Then O.Processors := PositiveInteger(Value, Arg, 8)
+   if (Arg = '-t') or (Arg = '--threads') Then O.Threads := PositiveInteger(Value, Arg,
+   64)
+   else if (Arg = '-p') or (Arg = '--processors') Then O.Processors := PositiveInteger(
+   Value, Arg, 8)
    else if (Arg = '-m') or (Arg = '--model') Then O.Model := Value
    else if (Arg = '-l') or (Arg = '--language') Then O.Language := Value
    else AddInput(O, Value);
@@ -1035,38 +1080,47 @@ Begin
   Inc(I);
  End;
  if Length(O.Files) = 0 Then Fail('Au moins un fichier WAV est requis.');
- if O.Threads * O.Processors > 64 Then Fail('Le produit threads * processors ne doit pas depasser 64.');
+ if O.Threads * O.Processors > 64 Then Fail(
+ 'Le produit threads * processors ne doit pas depasser 64.');
  {$IFNDEF MSWINDOWS}
- if (O.Threads > 1) or (O.Processors > 1) Then
-  Fail('Cette compilation sans gestionnaire POSIX exige -t 1 -p 1; parallelisme disponible sous Windows.');
+  if (O.Threads > 1) or (O.Processors > 1) Then  Fail(
+  'Cette compilation sans gestionnaire POSIX exige -t 1 -p 1; parallelisme disponible sous Windows.');
  {$ENDIF}
  L := LanguageIndex(O.Language);
- if not FileExists(O.Model) Then Fail('Modele introuvable: ' + O.Model + '; utiliser -m chemin_du_modele.bin');
- For I := 0 to High(O.Files) do if not FileExists(O.Files[I]) Then Fail('Fichier audio introuvable: ' + O.Files[I]);
+ if not FileExists(O.Model) Then Fail('Modele introuvable: ' + O.Model +
+ '; utiliser -m chemin_du_modele.bin');
+ For I := 0 to High(O.Files) do if not FileExists(O.Files[I]) Then Fail(
+ 'Fichier audio introuvable: ' + O.Files[I]);
 End;
-
 Function DecodeChunk(const Audio: TSamples; First, Last: Integer;
- const M: TWhisperModel; RequestedLanguage: Integer; var DetectedLanguage: Integer): string;
-Var Mel, Encoded, Logits: TMatrix; Cache: TDecoderCaches;
+
+const M: TWhisperModel; RequestedLanguage: Integer;
+var DetectedLanguage: Integer): string;
+Var
+ Mel, Encoded, Logits: TMatrix;
+ Cache: TDecoderCaches;
  Position, InitialPosition, Token, I, Best, LanguageCount, WordCount: Integer;
  Peak, Sum, NoSpeechProbability, LogProbability, Energy: Double;
 Begin
  DecodeChunk := ''; DetectedLanguage := RequestedLanguage;
- Energy := 0; For I := First to Last - 1 do Energy := Energy + Sqr(Audio[I]);
+ Energy := 0;
+ For I := First to Last - 1 do Energy := Energy + Sqr(Audio[I]);
  if (Last <= First) or (Energy / (Last - First) < 1E-12) Then Exit;
  WhisperMel(Audio, First, Last, M, Mel); EncodeWhisper(Mel, M, Encoded);
  Mel.Data := nil; InitDecoderCache(Encoded, M, Cache); Encoded.Data := nil;
  DecoderStep(M.SOT, 0, M, Cache, Logits);
- Peak := -1E30; For I := 0 to High(Logits.Data) do if Logits.Data[I] > Peak Then Peak := Logits.Data[I];
- Sum := 0; For I := 0 to High(Logits.Data) do Sum := Sum + Exp(Logits.Data[I] - Peak);
+ Peak := -1E30;
+ For I := 0 to High(Logits.Data) do if Logits.Data[I] > Peak Then Peak := Logits.Data[I];
+ Sum := 0;
+ For I := 0 to High(Logits.Data) do Sum := Sum + Exp(Logits.Data[I] - Peak);
  NoSpeechProbability := Exp(Logits.Data[M.NoSpeech] - Peak) / Sum;
  Position := 1;
  if M.VocabCount > 51864 Then Begin
   LanguageCount := 99 + M.VocabCount - 51865;
   if DetectedLanguage < 0 Then Begin
    DetectedLanguage := 0;
-   For I := 1 to LanguageCount - 1 do
-    if Logits.Data[M.SOT + 1 + I] > Logits.Data[M.SOT + 1 + DetectedLanguage] Then DetectedLanguage := I;
+   For I := 1 to LanguageCount - 1 do    if Logits.Data[M.SOT + 1 + I] >
+   Logits.Data[M.SOT + 1 + DetectedLanguage] Then DetectedLanguage := I;
   End;
   if DetectedLanguage >= LanguageCount Then Fail('Langue absente de ce modele Whisper.');
   DecoderStep(M.SOT + 1 + DetectedLanguage, Position, M, Cache, Logits); Inc(Position);
@@ -1075,29 +1129,37 @@ Begin
  DecoderStep(M.NoTimestamps, Position, M, Cache, Logits); Inc(Position);
  InitialPosition := Position; LogProbability := 0; WordCount := 0;
  Repeat
-  Best := M.EOT; Peak := -1E30;
-  For I := 0 to M.EOT do Begin
-   if (I < M.EOT) and (M.Vocab[I] = '') Then Continue;
-   if (Position = InitialPosition) and ((I = M.EOT) or (M.Vocab[I] = ' ')) Then Continue;
-   if Logits.Data[I] > Peak Then Begin Peak := Logits.Data[I]; Best := I; End;
+ Best := M.EOT; Peak := -1E30;
+ For I := 0 to M.EOT do Begin
+  if (I < M.EOT) and (M.Vocab[I] = '') Then Continue;
+  if (Position = InitialPosition) and ((I = M.EOT) or (M.Vocab[I] = ' ')) Then Continue;
+  if Logits.Data[I] > Peak Then Begin
+   Peak := Logits.Data[I]; Best := I;
   End;
-  Token := Best; if Token = M.EOT Then Break;
-  Sum := 0; For I := 0 to M.EOT do Sum := Sum + Exp(Logits.Data[I] - Peak);
-  LogProbability := LogProbability - Ln(Sum); Inc(WordCount);
-  DecodeChunk := DecodeChunk + M.Vocab[Token];
-  if Position >= M.TextContext Then Begin
-   if (NoSpeechProbability > 0.6) and (LogProbability / WordCount < -1) Then Begin DecodeChunk := ''; Exit; End;
-   Fail('Limite du contexte Whisper atteinte sans fin de texte.');
+ End;
+ Token := Best; if Token = M.EOT Then Break;
+ Sum := 0;
+ For I := 0 to M.EOT do Sum := Sum + Exp(Logits.Data[I] - Peak);
+ LogProbability := LogProbability - Ln(Sum); Inc(WordCount);
+ DecodeChunk := DecodeChunk + M.Vocab[Token];
+ if Position >= M.TextContext Then Begin
+  if (NoSpeechProbability > 0.6) and (LogProbability / WordCount < -1) Then Begin
+   DecodeChunk := ''; Exit;
   End;
-  DecoderStep(Token, Position, M, Cache, Logits); Inc(Position);
+  Fail('Limite du contexte Whisper atteinte sans fin de texte.');
+ End;
+ DecoderStep(Token, Position, M, Cache, Logits); Inc(Position);
  Until False;
- if (NoSpeechProbability > 0.6) and (WordCount > 0) Then
-  if LogProbability / WordCount < -1 Then DecodeChunk := '';
+ if (NoSpeechProbability > 0.6) and (WordCount > 0) Then  if LogProbability / WordCount <
+ -1 Then DecodeChunk := '';
  DecodeChunk := Trim(DecodeChunk);
 End;
 
 Function ProcessorWorker(Parameter: Pointer): PtrInt;
-Var Job: PProcessorJob; First, Last, N, Detected: Integer; Text: string;
+Var
+ Job: PProcessorJob;
+ First, Last, N, Detected: Integer;
+ Text: string;
 Begin
  Job := Parameter; First := Job^.First;
  While First < Job^.Last do Begin
@@ -1106,38 +1168,47 @@ Begin
   N := Length(Job^.Segments); SetLength(Job^.Segments, N + 1);
   Job^.Segments[N].First := First; Job^.Segments[N].Last := Last;
   Job^.Segments[N].Text := Text;
-  Job^.Segments[N].Language := ''; if Detected >= 0 Then Job^.Segments[N].Language := LanguageCodes[Detected];
+  Job^.Segments[N].Language := '';
+  if Detected >= 0 Then Job^.Segments[N].Language := LanguageCodes[Detected];
   First := Last;
  End;
  ProcessorWorker := 0;
 End;
 
-Function PadNumber(Value, Digits: Integer): string;
-Begin
+Function PadNumber(Value, Digits: Integer): string;Begin
  PadNumber := IntToStr(Value);
  While Length(PadNumber) < Digits do PadNumber := '0' + PadNumber;
 End;
 
 Function TimeStamp(Samples: Integer): string;
-Var MS: Integer;
+Var
+ MS: Integer;
 Begin
  MS := Int64(Samples) * 1000 div TargetRate;
- TimeStamp := PadNumber(MS div 3600000, 2) + ':' + PadNumber((MS div 60000) mod 60, 2) + ':' +
-  PadNumber((MS div 1000) mod 60, 2) + '.' + PadNumber(MS mod 1000, 3);
+ TimeStamp := PadNumber(MS div 3600000, 2) + ':' + PadNumber((MS div 60000) mod 60, 2) +
+ ':' +
+ PadNumber((MS div 1000) mod 60, 2) + '.' + PadNumber(MS mod 1000, 3);
 End;
 
 Procedure TranscribeFile(const Name: string; const O: TOptions; var M: TWhisperModel);
-Var Source, Audio: TSamples; Rate: LongWord; Workers, I, J, Language: Integer;
- Jobs: array[0..7] of TProcessorJob; Handles: array[0..7] of TThreadID;
+Var
+ Source, Audio: TSamples;
+ Rate: LongWord;
+ Workers, I, J, Language: Integer;
+ Jobs: array[0..7] of TProcessorJob;
+ Handles: array[0..7] of TThreadID;
  UTF8Text: UTF8String;
 Begin
- ReadWave(Name, Source, Rate); Resample(Source, Rate, Audio); Source := nil; RemoveDC(Audio);
+ ReadWave(Name, Source, Rate); Resample(Source, Rate, Audio); Source := nil;
+ RemoveDC(Audio);
  Language := LanguageIndex(O.Language);
- if (M.VocabCount = 51864) and (Language > 0) Then Fail('Le modele .en ne prend en charge que l''anglais.');
- if Language >= 99 + M.VocabCount - 51865 Then Fail('Langue absente de ce modele Whisper.');
+ if (M.VocabCount = 51864) and (Language > 0) Then Fail(
+ 'Le modele .en ne prend en charge que l''anglais.');
+ if Language >= 99 + M.VocabCount - 51865 Then Fail(
+ 'Langue absente de ce modele Whisper.');
  Workers := MinInt(O.Processors, Length(Audio));
  WriteLn(StdErr, 'Fichier: ', Name, ' | ', O.Threads, ' thread(s) x ', Workers,
-  ' processeur(s), langue=', O.Language, ', duree=', TimeStamp(Length(Audio)));
+ ' processeur(s), langue=', O.Language, ', duree=', TimeStamp(Length(Audio)));
  For I := 0 to Workers - 1 do Begin
   Jobs[I].Model := @M; Jobs[I].Audio := @Audio; Jobs[I].Language := Language;
   Jobs[I].First := Int64(Length(Audio)) * I div Workers;
@@ -1152,20 +1223,25 @@ Begin
  End;
  ProcessorWorker(@Jobs[0]);
  For I := 1 to Workers - 1 do JoinThread(Handles[I]);
- For I := 0 to Workers - 1 do For J := 0 to High(Jobs[I].Segments) do
-  if Jobs[I].Segments[J].Text <> '' Then Begin
+ For I := 0 to Workers - 1 do
+ For J := 0 to High(Jobs[I].Segments) do  if Jobs[I].Segments[J].Text <> '' Then Begin
    { Les tokens GGML contiennent des octets UTF-8, parfois des caracteres
      coupes entre tokens. Ne declarer l'encodage qu'apres leur assemblage. }
-   SetString(UTF8Text, PChar(Jobs[I].Segments[J].Text), Length(Jobs[I].Segments[J].Text));
-   WriteLn('[', TimeStamp(Jobs[I].Segments[J].First), ' --> ',
-    TimeStamp(Jobs[I].Segments[J].Last), '] ', UTF8Text);
-  End;
+  SetString(UTF8Text, PChar(Jobs[I].Segments[J].Text), Length(Jobs[I].Segments[J].Text));
+  WriteLn('[', TimeStamp(Jobs[I].Segments[J].First), ' --> ',
+  TimeStamp(Jobs[I].Segments[J].Last), '] ', UTF8Text);
+ End;
 End;
 
-Var Options: TOptions; Model: TWhisperModel; FileIndex: Integer;
-Begin
+Var
+ Options: TOptions;
+ Model: TWhisperModel;
+ FileIndex: Integer;
+
+BEGIN
  SetTextCodePage(Output, 65001);
  ParseOptions(Options); ThreadCount := Options.Threads;
  LoadWhisper(Options.Model, Model);
- For FileIndex := 0 to High(Options.Files) do TranscribeFile(Options.Files[FileIndex], Options, Model);
-End.
+ For FileIndex := 0 to High(Options.Files) do TranscribeFile(Options.Files[FileIndex],
+ Options, Model);
+END.
