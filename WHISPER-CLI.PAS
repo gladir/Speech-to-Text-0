@@ -32,10 +32,24 @@ Const
 Var
  OpenFiles: array[0..7] of PBinary;
  ThreadCount: Integer;
+ PendingExports: TStringVector;
+ SilentConsole, ConsoleReady: Boolean;
+ ConsoleLock: TRTLCriticalSection;
 Procedure Fail(const S: string);Forward;
 
 Function IntToStr(Value: Int64): string;Begin
  Str(Value, IntToStr);
+End;
+
+Function RealText(Value: Double): string;
+Begin Str(Value:0:6, RealText); End;
+
+Procedure Diagnostic(const Text: string);
+Begin
+ if SilentConsole Then Exit;
+ if ConsoleReady Then EnterCriticalSection(ConsoleLock);
+ WriteLn(StdErr, Text);
+ if ConsoleReady Then LeaveCriticalSection(ConsoleLock);
 End;
 
 Function Trim(const Text: string): string;
@@ -118,6 +132,7 @@ End;
 Procedure Fail(const S: string);
 Var
  I, ErrorCode: Integer;
+ F: File;
 Begin
  WriteLn(StdErr, 'WHISPER-CLI: ', S);
   { Fermer les fichiers encore ouverts avant de supprimer les temporaires.
@@ -128,6 +143,10 @@ Begin
       {$I+}
   if ErrorCode <> 0 Then WriteLn(StdErr, 'Fermeture incomplete: ', OpenFiles[I]^.Name);
   OpenFiles[I] := nil;
+ End;
+ For I := 0 to High(PendingExports) do Begin
+  Assign(F, PendingExports[I]);
+  {$I-} Erase(F); ErrorCode := IOResult; {$I+}
  End;
  Halt(1);
 End;
@@ -572,7 +591,7 @@ Begin
  M.Transcribe := 50359 + M.VocabCount - 51865;
  M.NoSpeech := 50362 + M.VocabCount - 51865;
  M.NoTimestamps := 50363 + M.VocabCount - 51865;
- WriteLn(StdErr, 'Whisper natif: ', M.AudioLayers, ' couches encodeur, ', M.TextLayers,
+ if not SilentConsole Then WriteLn(StdErr, 'Whisper natif: ', M.AudioLayers, ' couches encodeur, ', M.TextLayers,
  ' couches decodeur, largeur ', M.AudioWidth, '.');
 End;
 {$IFDEF CPU386}
@@ -905,7 +924,7 @@ End;
   Les tables trigonomÃƒÂ©triques sont calculees une fois; aucun moteur FFT externe. }
 Procedure WhisperMel(const Audio: TSamples; First, Last: Integer; const M: TWhisperModel;
 
-var Mel: TMatrix);
+AudioContext: Integer; var Mel: TMatrix);
 Var
  C, S, Frame, Power: TSamples;
  I, J, K, P: Integer;
@@ -918,8 +937,8 @@ Begin
   A := 2 * Pi * K * J / 400; B := 0.5 - 0.5 * Cos(2 * Pi * J / 400);
   C[K * 400 + J] := B * Cos(A); S[K * 400 + J] := B * Sin(A);
  End;
- MatrixSize(Mel, 3000, M.MelCount); Peak := -10;
- For I := 0 to 2999 do Begin
+ MatrixSize(Mel, AudioContext * 2, M.MelCount); Peak := -10;
+ For I := 0 to Mel.Rows - 1 do Begin
   if I * 160 - 200 < Last - First Then Begin
    For J := 0 to 399 do Begin
     P := I * 160 + J - 200; if P < 0 Then P := -P;
@@ -956,15 +975,40 @@ Const
  'ba','jw','su','yue');
 
 Type
+ TTokens = array of Integer;
+ TTimeHint = record Sample: Integer; Probability: Double; End;
+ TTimeHints = array of TTimeHint;
+ TExportFormat = (efTXT, efVTT, efSRT, efLRC, efCSV, efJSON, efWords, efHTML);
+ TExportFormats = set of TExportFormat;
+ TDecodeReport = record
+  Confidence: Double;
+  SpecialPrefix, SpecialSuffix, LogText: string;
+ End;
  TOptions = record
  Files: TStringVector;
+ OutputBases: TStringVector;
+ OutputFormats: TExportFormats;
+ FullJSON: Boolean;
+ FontPath: string;
  Model, Language: string;
  Threads, Processors: Integer;
  OffsetMS, DurationMS, OffsetIndex: Integer;
  ShowIndex: Boolean;
+ MaxContext, MaxLength, AudioContext: Integer;
+ SplitOnWord, CarryPrompt: Boolean;
+ Prompt: string;
+ BestOf, BeamSize: Integer;
+ Temperature, TemperatureInc: Double;
+ NoFallback: Boolean;
+ NoPrints, PrintSpecial, PrintColors, PrintProgress, NoTimestamps: Boolean;
+ PrintConfidence, LogScore: Boolean;
+ DetectLanguage, Translate: Boolean;
+ WordThreshold, EntropyThreshold, LogProbThreshold, NoSpeechThreshold: Double;
 End;
 TSegment = record First, Last: Integer;
 Text, Language: string;
+Confidence: Double;
+SpecialPrefix, SpecialSuffix: string;
 End;
 TSegments = array of TSegment;
 PWhisperModel = ^TWhisperModel;
@@ -972,10 +1016,54 @@ PSamples = ^TSamples;
 TProcessorJob = record
 Model: PWhisperModel;
 Audio: PSamples;
-First, Last, Language: Integer;
+First, Last, Language, WorkerIndex: Integer;
+LogText: string;
 Segments: TSegments;
+Options: ^TOptions;
+InitialTokens: TTokens;
 End;
 PProcessorJob = ^TProcessorJob;
+
+Const
+ ExportExtensions: array[TExportFormat] of string[5] =
+  ('.txt', '.vtt', '.srt', '.lrc', '.csv', '.json', '.wts', '.html');
+
+Function ExportBase(const O: TOptions; FileIndex: Integer): string;
+Begin
+ if FileIndex < Length(O.OutputBases) Then ExportBase := O.OutputBases[FileIndex]
+ else ExportBase := O.Files[FileIndex];
+End;
+
+Function CanonicalOutput(const Name: string): string;
+Var I: Integer;
+Begin
+ CanonicalOutput := FExpand(Name);
+ {$IFDEF MSWINDOWS}
+ For I := 1 to Length(CanonicalOutput) do
+  CanonicalOutput[I] := UpCase(CanonicalOutput[I]);
+ {$ENDIF}
+End;
+
+Procedure CheckExports(const O: TOptions);
+Var I, J, N: Integer; F: TExportFormat; Names: TStringVector;
+ Name, Canonical: string; Attributes: Word;
+Begin
+ Names := nil;
+ if Length(O.OutputBases) > Length(O.Files) Then Fail('Trop de noms --output-file.');
+ if O.DetectLanguage Then Exit;
+ if (efHTML in O.OutputFormats) and (O.FontPath <> '') Then
+  if not FileExists(O.FontPath) Then Fail('Police introuvable: ' + O.FontPath);
+ For I := 0 to High(O.Files) do For F := Low(TExportFormat) to High(TExportFormat) do
+  if F in O.OutputFormats Then Begin
+   Name := ExportBase(O, I) + ExportExtensions[F];
+   if Length(Name) > 255 Then Fail('Nom de sortie trop long: ' + Name);
+   if PathAttributes(Name, Attributes) Then Fail('Sortie deja existante: ' + Name);
+   Canonical := CanonicalOutput(Name);
+   For J := 0 to High(Names) do if Names[J] = Canonical Then
+    Fail('Plusieurs sorties portent le meme nom: ' + Name);
+   N := Length(Names); SetLength(Names, N + 1); Names[N] := Canonical;
+  End;
+End;
 
 Procedure Version;Begin
  WriteLn('WHISPER-CLI.PAS ', NativeVersion, ' - moteur Whisper natif en Pascal');
@@ -994,14 +1082,48 @@ Procedure Help;Begin
  WriteLn('  -m NOM, --model NOM  Modele GGML FP16/FP32 (defaut models/ggml-base.en.bin)');
  WriteLn(
  '  -f NOM, --file NOM   Fichier WAV; option repetable, cumulable avec les fichiers positionnels');
+ WriteLn('  -wt N, --word-thold N       Probabilite des reperes temporels (0..1, defaut 0.01)');
+ WriteLn('  -et N, --entropy-thold N    Entropie minimale des tokens recents (defaut 2.4)');
+ WriteLn('  -lpt N, --logprob-thold N   Log-probabilite moyenne minimale (defaut -1)');
+ WriteLn('  -nth N, --no-speech-thold N Probabilite de non-parole (0..1, defaut 0.6)');
+ WriteLn('  -bo N, --best-of N      Candidats echantillonnes (1..16, defaut 1)');
+ WriteLn('  -bs N, --beam-size N    Taille du faisceau a temperature 0 (1..16, defaut 1)');
+ WriteLn('  -tp N, --temperature N  Temperature entre 0 et 1 (defaut 0)');
+ WriteLn('  -tpi N, --temperature-inc N  Increment des reprises (0..1, defaut 0.2)');
+ WriteLn('  -nf, --no-fallback      Desactiver les nouvelles tentatives');
+ WriteLn('  -mc N, --max-context N  Tokens de contexte conserves (defaut 16384; 0 aucun)');
+ WriteLn('  -ml N, --max-len N      Caracteres par segment (0 sans limite)');
+ WriteLn('  -sow, --split-on-word   Preferer les coupures entre mots');
+ WriteLn('  -ac N, --audio-ctx N    Contexte encodeur (0 complet, sinon 1..1500)');
+ WriteLn('      --prompt TEXTE      Texte initial pour guider le decodeur');
+ WriteLn('      --carry-initial-prompt  Conserver le prompt a chaque fenetre');
  WriteLn('  -ot N, --offset-t N  Debut en millisecondes (defaut 0)');
  WriteLn('  -on N, --offset-n N  Premier index affiche des segments (defaut 0)');
  WriteLn('  -d N, --duration N   Duree en millisecondes (0 = jusqu''a la fin)');
+ WriteLn('  -np, --no-prints       Resultats seulement (les erreurs restent visibles)');
+ WriteLn('  -ps, --print-special   Afficher les tokens speciaux du prefixe et de fin');
+ WriteLn('  -pc, --print-colors    Couleurs ANSI selon le score de confiance');
+ WriteLn('  -pp, --print-progress  Progression par processeur sur stderr');
+ WriteLn('  -nt, --no-timestamps   Masquer les temps dans la console');
+ WriteLn('       --print-confidence  Score de confiance de la fenetre');
+ WriteLn('  -ls, --log-score       Scores des tokens retenus, sur stderr');
+ WriteLn('  -otxt, --output-txt     Export .txt');
+ WriteLn('  -ovtt, --output-vtt     Sous-titres .vtt');
+ WriteLn('  -osrt, --output-srt     Sous-titres .srt');
+ WriteLn('  -olrc, --output-lrc     Paroles synchronisees .lrc');
+ WriteLn('  -ocsv, --output-csv     Export .csv');
+ WriteLn('  -oj, --output-json      Export .json');
+ WriteLn('  -ojf, --output-json-full  JSON avec metadonnees et mots');
+ WriteLn('  -owts, --output-words   Mots horodates .wts (JSON) et lecteur .html');
+ WriteLn('  -of NOM, --output-file NOM  Base de sortie, repetable dans l''ordre des entrees');
+ WriteLn('  -fp NOM, --font-path NOM    Police locale du lecteur HTML');
+ WriteLn('  -dl, --detect-language  Detecter la langue puis quitter, sans transcription');
+ WriteLn('  -tr, --translate        Traduire vers l''anglais (modele multilingue)');
  WriteLn('  -l CODE, --language CODE  Langue Whisper, ou auto (defaut en; francais: fr)');
  WriteLn(
  '      --               Fin des options; les arguments suivants sont des fichiers');
  WriteLn;
- WriteLn('Decodeur CPU glouton integre, aucun outil externe. Texte UTF-8 sur stdout.');
+ WriteLn('Decodeur CPU integre (glouton, faisceau, echantillonnage), aucun outil externe. Texte UTF-8 sur stdout.');
  WriteLn('Temps affiches: bornes des portions audio, pas alignement mot par mot.');
  WriteLn('WAV PCM/float32, 256 Mio/30 min maximum. Pour MP3: convertir avec MP32WAV.');
  WriteLn('Modeles quantifies/GGUF, GPU et autres options whisper.cpp non pris en charge.')
@@ -1037,6 +1159,60 @@ Begin
  NonNegativeInteger := V;
 End;
 
+Function BoundedReal(const Text, Option: string; Lower, Upper: Double): Double;
+Var
+ I, Digits, BeforePoint, FirstNonZero, Kept, Exponent, Code, J: Integer;
+ V: Double;
+ PointSeen, Negative: Boolean;
+Begin
+ if Text = '' Then Fail('Valeur vide: ' + Option);
+ I := 1; Negative := False;
+ if Text[I] in ['+', '-'] Then Begin Negative := Text[I] = '-'; Inc(I); End;
+ Digits := 0; BeforePoint := 0; FirstNonZero := 0; Kept := 0;
+ V := 0; PointSeen := False; Exponent := 0;
+ While I <= Length(Text) do Begin
+  if Text[I] in ['e', 'E'] Then Break;
+  if Text[I] = '.' Then Begin
+   if PointSeen Then Fail('Nombre decimal invalide: ' + Option);
+   PointSeen := True;
+  End else Begin
+   if not (Text[I] in ['0'..'9']) Then Fail('Nombre decimal invalide: ' + Option);
+   Inc(Digits); if not PointSeen Then Inc(BeforePoint);
+   if (FirstNonZero = 0) and (Text[I] <> '0') Then FirstNonZero := Digits;
+   if (FirstNonZero > 0) and (Kept < 16) Then Begin
+    V := V * 10 + Ord(Text[I]) - Ord('0'); Inc(Kept);
+   End;
+  End;
+  Inc(I);
+ End;
+ if Digits = 0 Then Fail('Nombre decimal invalide: ' + Option);
+ if I <= Length(Text) Then Begin
+  Inc(I); J := I;
+  if I <= Length(Text) Then if Text[I] in ['+', '-'] Then Inc(I);
+  if I > Length(Text) Then Fail('Exposant invalide: ' + Option);
+  While I <= Length(Text) do Begin
+   if not (Text[I] in ['0'..'9']) Then Fail('Exposant invalide: ' + Option);
+   Inc(I);
+  End;
+  Val(Copy(Text, J, Length(Text) - J + 1), Exponent, Code);
+  if (Code <> 0) or (Exponent < -10000) or (Exponent > 10000) Then
+   Fail('Exposant hors limites: ' + Option);
+ End;
+ BoundedReal := 0; if FirstNonZero = 0 Then Exit;
+ Exponent := Exponent + BeforePoint - FirstNonZero;
+ For J := 2 to Kept do V := V / 10;
+ if Exponent > 300 Then Fail('Valeur trop grande: ' + Option);
+ if Exponent < -300 Then Fail(Option + ': valeur non nulle trop petite (minimum 1e-300).');
+ if Exponent > 0 Then For J := 1 to Exponent do V := V * 10
+ else For J := 1 to -Exponent do V := V / 10;
+ if Negative Then V := -V;
+ if (V < Lower) or (V > Upper) Then Fail('Valeur hors limites: ' + Option);
+ BoundedReal := V;
+End;
+
+Function UnitReal(const Text, Option: string): Double;
+Begin UnitReal := BoundedReal(Text, Option, 0, 1); End;
+
 Function LanguageIndex(const Name: string): Integer;
 Var
  I: Integer;
@@ -1060,12 +1236,24 @@ End;
 
 Procedure ParseOptions(var O: TOptions);
 Var
- I, L: Integer;
+ I, L, N: Integer;
  Arg, Value: string;
- Positional: Boolean;
+ PromptUTF8: UTF8String;
+ Positional, LanguageSet: Boolean;
 Begin
  O.Threads := 1; O.Processors := 1; O.Model := 'models/ggml-base.en.bin';
- O.Language := 'en';
+ O.Language := 'en'; LanguageSet := False;
+ O.NoPrints := False; O.PrintSpecial := False; O.PrintColors := False;
+ O.PrintProgress := False; O.NoTimestamps := False;
+ O.PrintConfidence := False; O.LogScore := False;
+ O.OutputFormats := []; O.FullJSON := False; O.FontPath := ''; O.OutputBases := nil;
+ O.DetectLanguage := False; O.Translate := False;
+ O.WordThreshold := 0.01; O.EntropyThreshold := 2.4;
+ O.LogProbThreshold := -1; O.NoSpeechThreshold := 0.6;
+ O.BestOf := 1; O.BeamSize := 1; O.Temperature := 0;
+ O.TemperatureInc := 0.2; O.NoFallback := False;
+ O.MaxContext := 16384; O.MaxLength := 0; O.AudioContext := 0;
+ O.SplitOnWord := False; O.CarryPrompt := False; O.Prompt := '';
  O.OffsetMS := 0; O.DurationMS := 0; O.OffsetIndex := 0; O.ShowIndex := False;
  SetLength(O.Files, 0); Positional := False; I := 1;
  if ParamCount = 0 Then Begin
@@ -1081,20 +1269,59 @@ Begin
   else if Arg = '--version' Then Begin
    Version; Halt(0);
   End
+  else if (Arg = '-np') or (Arg = '--no-prints') Then O.NoPrints := True
+  else if (Arg = '-ps') or (Arg = '--print-special') Then O.PrintSpecial := True
+  else if (Arg = '-pc') or (Arg = '--print-colors') Then O.PrintColors := True
+  else if (Arg = '-pp') or (Arg = '--print-progress') Then O.PrintProgress := True
+  else if (Arg = '-nt') or (Arg = '--no-timestamps') Then O.NoTimestamps := True
+  else if Arg = '--print-confidence' Then O.PrintConfidence := True
+  else if (Arg = '-ls') or (Arg = '--log-score') Then O.LogScore := True
+  else if (Arg = '-otxt') or (Arg = '--output-txt') Then Include(O.OutputFormats, efTXT)
+  else if (Arg = '-ovtt') or (Arg = '--output-vtt') Then Include(O.OutputFormats, efVTT)
+  else if (Arg = '-osrt') or (Arg = '--output-srt') Then Include(O.OutputFormats, efSRT)
+  else if (Arg = '-olrc') or (Arg = '--output-lrc') Then Include(O.OutputFormats, efLRC)
+  else if (Arg = '-ocsv') or (Arg = '--output-csv') Then Include(O.OutputFormats, efCSV)
+  else if (Arg = '-oj') or (Arg = '--output-json') Then Include(O.OutputFormats, efJSON)
+  else if (Arg = '-ojf') or (Arg = '--output-json-full') Then Begin
+   Include(O.OutputFormats, efJSON); O.FullJSON := True;
+  End
+  else if (Arg = '-owts') or (Arg = '--output-words') Then Begin
+   Include(O.OutputFormats, efWords); Include(O.OutputFormats, efHTML);
+  End
+  else if (Arg = '-dl') or (Arg = '--detect-language') Then O.DetectLanguage := True
+  else if (Arg = '-tr') or (Arg = '--translate') Then O.Translate := True
+  else if (Arg = '-nf') or (Arg = '--no-fallback') Then O.NoFallback := True
+  else if (Arg = '-sow') or (Arg = '--split-on-word') Then O.SplitOnWord := True
+  else if Arg = '--carry-initial-prompt' Then O.CarryPrompt := True
   else if (Arg = '-t') or (Arg = '--threads') or (Arg = '-p') or (Arg = '--processors') or
   (Arg = '-m') or (Arg = '--model') or (Arg = '-f') or (Arg = '--file') or
+  (Arg = '-of') or (Arg = '--output-file') or
+  (Arg = '-fp') or (Arg = '--font-path') or
+  (Arg = '-wt') or (Arg = '--word-thold') or
+  (Arg = '-et') or (Arg = '--entropy-thold') or
+  (Arg = '-lpt') or (Arg = '--logprob-thold') or
+  (Arg = '-nth') or (Arg = '--no-speech-thold') or
+  (Arg = '-bo') or (Arg = '--best-of') or
+  (Arg = '-bs') or (Arg = '--beam-size') or
+  (Arg = '-tp') or (Arg = '--temperature') or
+  (Arg = '-tpi') or (Arg = '--temperature-inc') or
+  (Arg = '-mc') or (Arg = '--max-context') or
+  (Arg = '-ml') or (Arg = '--max-len') or
+  (Arg = '-ac') or (Arg = '--audio-ctx') or (Arg = '--prompt') or
   (Arg = '-ot') or (Arg = '--offset-t') or
   (Arg = '-on') or (Arg = '--offset-n') or
   (Arg = '-d') or (Arg = '--duration') or
   (Arg = '-l') or (Arg = '--language') Then Begin
    Inc(I); if I > ParamCount Then Fail('Valeur manquante: ' + Arg);
-   Value := ParamStr(I); if Value = '' Then Fail('Valeur vide: ' + Arg);
+   Value := ParamStr(I); if (Value = '') and (Arg <> '--prompt') Then Fail('Valeur vide: ' + Arg);
    if (Arg = '-t') or (Arg = '--threads') Then O.Threads := PositiveInteger(Value, Arg,
    64)
    else if (Arg = '-p') or (Arg = '--processors') Then O.Processors := PositiveInteger(
    Value, Arg, 8)
    else if (Arg = '-m') or (Arg = '--model') Then O.Model := Value
-   else if (Arg = '-l') or (Arg = '--language') Then O.Language := Value
+   else if (Arg = '-l') or (Arg = '--language') Then Begin
+    O.Language := Value; LanguageSet := True;
+   End
    else if (Arg = '-ot') or (Arg = '--offset-t') Then
     O.OffsetMS := NonNegativeInteger(Value, Arg)
    else if (Arg = '-d') or (Arg = '--duration') Then
@@ -1102,6 +1329,36 @@ Begin
    else if (Arg = '-on') or (Arg = '--offset-n') Then Begin
     O.OffsetIndex := NonNegativeInteger(Value, Arg); O.ShowIndex := True;
    End
+   else if (Arg = '-mc') or (Arg = '--max-context') Then
+    O.MaxContext := NonNegativeInteger(Value, Arg)
+   else if (Arg = '-ml') or (Arg = '--max-len') Then
+    O.MaxLength := NonNegativeInteger(Value, Arg)
+   else if (Arg = '-ac') or (Arg = '--audio-ctx') Then
+    O.AudioContext := NonNegativeInteger(Value, Arg)
+   else if Arg = '--prompt' Then Begin
+    PromptUTF8 := UTF8String(Value);
+    SetString(O.Prompt, PChar(PromptUTF8), Length(PromptUTF8));
+   End
+   else if (Arg = '-bo') or (Arg = '--best-of') Then
+    O.BestOf := PositiveInteger(Value, Arg, 16)
+   else if (Arg = '-bs') or (Arg = '--beam-size') Then
+    O.BeamSize := PositiveInteger(Value, Arg, 16)
+   else if (Arg = '-tp') or (Arg = '--temperature') Then
+    O.Temperature := UnitReal(Value, Arg)
+   else if (Arg = '-tpi') or (Arg = '--temperature-inc') Then
+    O.TemperatureInc := UnitReal(Value, Arg)
+   else if (Arg = '-wt') or (Arg = '--word-thold') Then
+    O.WordThreshold := UnitReal(Value, Arg)
+   else if (Arg = '-nth') or (Arg = '--no-speech-thold') Then
+    O.NoSpeechThreshold := UnitReal(Value, Arg)
+   else if (Arg = '-et') or (Arg = '--entropy-thold') Then
+    O.EntropyThreshold := BoundedReal(Value, Arg, 0, 1000000)
+   else if (Arg = '-lpt') or (Arg = '--logprob-thold') Then
+    O.LogProbThreshold := BoundedReal(Value, Arg, -1000000, 0)
+   else if (Arg = '-of') or (Arg = '--output-file') Then Begin
+    N := Length(O.OutputBases); SetLength(O.OutputBases, N + 1); O.OutputBases[N] := Value;
+   End
+   else if (Arg = '-fp') or (Arg = '--font-path') Then O.FontPath := Value
    else AddInput(O, Value);
   End
   else if (Arg <> '') and (Arg[1] = '-') Then Fail('Option non prise en charge: ' + Arg)
@@ -1115,27 +1372,356 @@ Begin
   if (O.Threads > 1) or (O.Processors > 1) Then  Fail(
   'Cette compilation sans gestionnaire POSIX exige -t 1 -p 1; parallelisme disponible sous Windows.');
  {$ENDIF}
+ if O.DetectLanguage or (O.Translate and not LanguageSet) Then O.Language := 'auto';
  L := LanguageIndex(O.Language);
  if not FileExists(O.Model) Then Fail('Modele introuvable: ' + O.Model +
  '; utiliser -m chemin_du_modele.bin');
  For I := 0 to High(O.Files) do if not FileExists(O.Files[I]) Then Fail(
  'Fichier audio introuvable: ' + O.Files[I]);
+ CheckExports(O);
 End;
+Procedure AppendToken(var Tokens: TTokens; Token: Integer);
+Var N: Integer;
+Begin
+ N := Length(Tokens); SetLength(Tokens, N + 1); Tokens[N] := Token;
+End;
+
+{ Matching glouton du vocabulaire GGML, comme le tokenizer de reference
+  whisper.cpp: les poids contiennent directement les octets des tokens. }
+Function PromptClass(C: Char): Integer;
+Begin
+ if C in [' ', #9, #10, #13] Then PromptClass := 0
+ else if C in ['0'..'9'] Then PromptClass := 2
+ else if (C in ['A'..'Z', 'a'..'z']) or (Ord(C) >= 128) Then PromptClass := 1
+ else PromptClass := 3;
+End;
+
+Procedure TokenizePrompt(const Text: string; const M: TWhisperModel;
+ var Tokens: TTokens);
+Var P, Stop, Start, Kind, I, Best, Size, BestSize: Integer;
+ Suffix: string;
+ Piece: string;
+Begin
+ Tokens := nil; P := 1;
+ While P <= Length(Text) do Begin
+  Start := P;
+  if (Text[P] = ' ') and (P < Length(Text)) Then
+   if PromptClass(Text[P + 1]) <> 0 Then Inc(P);
+  Kind := PromptClass(Text[P]);
+  Size := 0;
+  if Text[P] = #39 Then Begin
+   Suffix := Copy(Text, P + 1, 2);
+   if (Suffix = 're') or (Suffix = 've') or (Suffix = 'll') Then Size := 3
+   else if P < Length(Text) Then
+    if Text[P + 1] in ['s', 't', 'm', 'd'] Then Size := 2;
+  End;
+  if Size > 0 Then Inc(P, Size)
+  else Begin
+   Inc(P);
+   While P <= Length(Text) do Begin
+    if PromptClass(Text[P]) <> Kind Then Break;
+    Inc(P);
+   End;
+   { Laisser le dernier espace pour le mot suivant. }
+   if (Kind = 0) and (P <= Length(Text)) and (P - Start > 1) Then
+    Dec(P);
+  End;
+  Stop := P;
+  While Start < Stop do Begin
+   Best := -1; BestSize := 0;
+   For I := 0 to M.EOT - 1 do Begin
+    Size := Length(M.Vocab[I]);
+    if (Size > BestSize) and (Size <= Stop - Start) Then Begin
+     Piece := Copy(Text, Start, Size);
+     if Piece = M.Vocab[I] Then Begin Best := I; BestSize := Size; End;
+    End;
+   End;
+   if Best < 0 Then Fail('Prompt: octet absent du vocabulaire GGML.');
+   AppendToken(Tokens, Best); Inc(Start, BestSize);
+  End;
+ End;
+End;
+
+Procedure KeepTail(var Tokens: TTokens; Limit: Integer);
+Var I, Count: Integer;
+Begin
+ Count := Length(Tokens);
+ if Count <= Limit Then Exit;
+ for I := 0 to Limit - 1 do Tokens[I] := Tokens[Count - Limit + I];
+ SetLength(Tokens, Limit);
+End;
+
+Procedure BuildContext(const Initial, History: TTokens; Carry: Boolean;
+ Limit: Integer; var Context: TTokens);
+Var I, TakeInitial, TakeHistory: Integer;
+Begin
+ Context := nil; TakeInitial := 0;
+ if Carry Then TakeInitial := MinInt(Length(Initial), Limit);
+ TakeHistory := MinInt(Length(History), Limit - TakeInitial);
+ For I := Length(Initial) - TakeInitial to High(Initial) do AppendToken(Context, Initial[I]);
+ For I := Length(History) - TakeHistory to High(History) do AppendToken(Context, History[I]);
+End;
+
+Type
+ TLogProbabilities = array of Double;
+ TTokenScore = record Token: Integer; LogProbability, BestLogProbability: Double; End;
+ TTokenScores = array of TTokenScore;
+ TDecodeCandidate = record
+  Tokens: TTokens;
+  TimeHints: TTimeHints;
+  Scores: TTokenScores;
+  Cache: TDecoderCaches;
+  Logits: TMatrix;
+  Position: Integer;
+  Score: Double;
+  Finished, Stopped: Boolean;
+ End;
+ TCandidates = array of TDecodeCandidate;
+ TBeamChoice = record Parent, Token: Integer; Score: Double; End;
+ TBeamChoices = array[0..15] of TBeamChoice;
+
+Procedure CloneCache(const Source: TDecoderCaches; var Dest: TDecoderCaches);
+Var I: Integer;
+Begin
+ Dest := nil; SetLength(Dest, Length(Source));
+ For I := 0 to High(Source) do Begin
+  Dest[I] := Source[I];
+  { Les projections audio sont immuables et partagees. L'historique est prive. }
+  Dest[I].SelfK.Data := Copy(Source[I].SelfK.Data, 0, Length(Source[I].SelfK.Data));
+  Dest[I].SelfV.Data := Copy(Source[I].SelfV.Data, 0, Length(Source[I].SelfV.Data));
+ End;
+End;
+
+Procedure StartCandidate(const Cache: TDecoderCaches; const Logits: TMatrix;
+ Position: Integer; var Candidate: TDecodeCandidate);
+Begin
+ Candidate.Tokens := nil; Candidate.TimeHints := nil; Candidate.Scores := nil; CloneCache(Cache, Candidate.Cache);
+ Candidate.Logits := Logits;
+ Candidate.Logits.Data := Copy(Logits.Data, 0, Length(Logits.Data));
+ Candidate.Position := Position; Candidate.Score := 0;
+ Candidate.Finished := False; Candidate.Stopped := False;
+End;
+
+Procedure TokenProbabilities(const Logits: TMatrix; const M: TWhisperModel;
+ FirstToken: Boolean; var Probabilities: TLogProbabilities);
+Var I: Integer; Peak, Sum: Double; Allowed: Boolean;
+Begin
+ SetLength(Probabilities, M.EOT + 1); Peak := -1E30;
+ For I := 0 to M.EOT do Begin
+  Allowed := (I = M.EOT) or (M.Vocab[I] <> '');
+  if FirstToken and ((I = M.EOT) or (M.Vocab[I] = ' ')) Then Allowed := False;
+  Probabilities[I] := -1E30;
+  if Allowed Then Begin
+   Probabilities[I] := Logits.Data[I];
+   if Probabilities[I] > Peak Then Peak := Probabilities[I];
+  End;
+ End;
+ if Peak <= -1E30 Then Fail('Aucun token de texte disponible.');
+ Sum := 0;
+ For I := 0 to M.EOT do
+  if Probabilities[I] > -1E30 Then Sum := Sum + Exp(Probabilities[I] - Peak);
+ Sum := Ln(Sum);
+ For I := 0 to M.EOT do
+  if Probabilities[I] > -1E30 Then Probabilities[I] := Probabilities[I] - Peak - Sum;
+End;
+
+Function NextRandom(var Seed: LongInt): Double;
+Begin
+ { Park-Miller: etat local au processeur, reproductible et sans Random global. }
+ Seed := (Int64(Seed) * 48271) mod 2147483647;
+ NextRandom := Seed / 2147483647.0;
+End;
+
+Function SampleToken(const Probabilities: TLogProbabilities; Temperature: Double;
+ var Seed: LongInt): Integer;
+Var I, Best: Integer; Peak, Sum, Target, Scale: Double;
+Begin
+ Best := 0; Peak := -1E30;
+ For I := 0 to High(Probabilities) do
+  if Probabilities[I] > Peak Then Begin Peak := Probabilities[I]; Best := I; End;
+ SampleToken := Best; if Temperature <= 0 Then Exit;
+ Scale := Temperature; if Scale < 1E-6 Then Scale := 1E-6;
+ Sum := 0;
+ For I := 0 to High(Probabilities) do
+  if Probabilities[I] > -1E30 Then Sum := Sum + Exp((Probabilities[I] - Peak) / Scale);
+ Target := NextRandom(Seed) * Sum;
+ For I := 0 to High(Probabilities) do if Probabilities[I] > -1E30 Then Begin
+  Target := Target - Exp((Probabilities[I] - Peak) / Scale);
+  if Target <= 0 Then Begin SampleToken := I; Exit; End;
+ End;
+End;
+
+Function TimestampHint(const Logits: TMatrix; const M: TWhisperModel): TTimeHint;
+Var I, Best, Start: Integer; Peak, Sum: Double; Hint: TTimeHint;
+Begin
+ Hint.Sample := 0; Hint.Probability := 0;
+ Start := M.NoTimestamps + 1; Best := -1; Peak := -1E30;
+ For I := 0 to High(Logits.Data) do
+  if Logits.Data[I] > Peak Then Peak := Logits.Data[I];
+ For I := Start to High(Logits.Data) do
+  if Best < 0 Then Best := I
+  else if Logits.Data[I] > Logits.Data[Best] Then Best := I;
+ if Best >= 0 Then Begin
+  Sum := 0;
+  For I := 0 to High(Logits.Data) do Sum := Sum + Exp(Logits.Data[I] - Peak);
+  Hint.Sample := (Best - Start) * 320;
+  Hint.Probability := Exp(Logits.Data[Best] - Peak) / Sum;
+ End;
+ TimestampHint := Hint;
+End;
+
+Procedure AdvanceCandidate(var Candidate: TDecodeCandidate; Token: Integer;
+ LogProbability: Double; const M: TWhisperModel);
+Var I, N: Integer; Peak: Double;
+Begin
+ N := Length(Candidate.Scores); SetLength(Candidate.Scores, N + 1);
+ Peak := -1E30;
+ For I := 0 to M.EOT do Begin
+  if (I < M.EOT) and (M.Vocab[I] = '') Then Continue;
+  if (Length(Candidate.Tokens) = 0) and ((I = M.EOT) or (M.Vocab[I] = ' ')) Then Continue;
+  if Candidate.Logits.Data[I] > Peak Then Peak := Candidate.Logits.Data[I];
+ End;
+ Candidate.Scores[N].Token := Token;
+ Candidate.Scores[N].LogProbability := LogProbability;
+ Candidate.Scores[N].BestLogProbability := LogProbability + Peak - Candidate.Logits.Data[Token];
+ Candidate.Score := Candidate.Score + LogProbability;
+ if Token = M.EOT Then Begin Candidate.Finished := True; Candidate.Stopped := True; Exit; End;
+ SetLength(Candidate.TimeHints, Length(Candidate.Tokens) + 1);
+ Candidate.TimeHints[Length(Candidate.Tokens)] := TimestampHint(Candidate.Logits, M);
+ AppendToken(Candidate.Tokens, Token);
+ if Candidate.Position >= M.TextContext Then Begin Candidate.Stopped := True; Exit; End;
+ DecoderStep(Token, Candidate.Position, M, Candidate.Cache, Candidate.Logits);
+ Inc(Candidate.Position);
+End;
+
+Function CandidateScore(const Candidate: TDecodeCandidate): Double;
+Var Count: Integer;
+Begin
+ Count := Length(Candidate.Tokens); if Candidate.Finished Then Inc(Count);
+ if Count < 1 Then Count := 1;
+ CandidateScore := Candidate.Score / Count;
+End;
+
+Procedure InsertChoice(var Choices: TBeamChoices; var Count: Integer;
+ Width, Parent, Token: Integer; Score: Double);
+Var P, I: Integer;
+Begin
+ P := 0;
+ While P < Count do Begin if Score > Choices[P].Score Then Break; Inc(P); End;
+ if P >= Width Then Exit;
+ if Count < Width Then Inc(Count);
+ For I := Count - 1 downto P + 1 do Choices[I] := Choices[I - 1];
+ Choices[P].Parent := Parent; Choices[P].Token := Token; Choices[P].Score := Score;
+End;
+
+Procedure BeamDecode(const Cache: TDecoderCaches; const Logits: TMatrix;
+ Position, Width: Integer; const M: TWhisperModel; var Winner: TDecodeCandidate);
+Var
+ Beams, Next: TCandidates;
+ Choices: TBeamChoices;
+ Probabilities: TLogProbabilities;
+ I, J, Count, Parent, Token, Best: Integer;
+ Active: Boolean;
+Begin
+ SetLength(Beams, 1); StartCandidate(Cache, Logits, Position, Beams[0]);
+ Repeat
+  Count := 0; Active := False;
+  For I := 0 to High(Beams) do Begin
+   if Beams[I].Stopped Then
+    InsertChoice(Choices, Count, Width, I, -1, Beams[I].Score)
+   else Begin
+    Active := True;
+    TokenProbabilities(Beams[I].Logits, M, Length(Beams[I].Tokens) = 0, Probabilities);
+    For J := 0 to High(Probabilities) do if Probabilities[J] > -1E30 Then
+     InsertChoice(Choices, Count, Width, I, J, Beams[I].Score + Probabilities[J]);
+   End;
+  End;
+  if not Active Then Break;
+  Next := nil; SetLength(Next, Count);
+  For I := 0 to Count - 1 do Begin
+   Parent := Choices[I].Parent; Token := Choices[I].Token;
+   Next[I] := Beams[Parent];
+   if Token >= 0 Then Begin
+    Next[I].Tokens := Copy(Beams[Parent].Tokens, 0, Length(Beams[Parent].Tokens));
+    Next[I].Scores := Copy(Beams[Parent].Scores, 0, Length(Beams[Parent].Scores));
+    Next[I].TimeHints := Copy(Beams[Parent].TimeHints, 0, Length(Beams[Parent].TimeHints));
+    { Ne jamais modifier les caches d'un parent encore utilise par un autre fils. }
+    CloneCache(Beams[Parent].Cache, Next[I].Cache);
+    Next[I].Logits.Data := Copy(Beams[Parent].Logits.Data, 0, Length(Beams[Parent].Logits.Data));
+    AdvanceCandidate(Next[I], Token, Choices[I].Score - Beams[Parent].Score, M);
+   End;
+  End;
+  Beams := Next;
+ Until False;
+ Best := 0;
+ For I := 1 to High(Beams) do
+  if (Beams[I].Finished and not Beams[Best].Finished) or
+   ((Beams[I].Finished = Beams[Best].Finished) and
+    (CandidateScore(Beams[I]) > CandidateScore(Beams[Best]))) Then Best := I;
+ Winner := Beams[Best];
+End;
+
+Procedure SampleDecode(const Cache: TDecoderCaches; const Logits: TMatrix;
+ Position, Count: Integer; Temperature: Double; const M: TWhisperModel;
+ var Seed: LongInt; var Winner: TDecodeCandidate);
+Var Candidate: TDecodeCandidate; Probabilities: TLogProbabilities; I, Token: Integer;
+Begin
+ For I := 1 to Count do Begin
+  StartCandidate(Cache, Logits, Position, Candidate);
+  While not Candidate.Stopped do Begin
+   TokenProbabilities(Candidate.Logits, M, Length(Candidate.Tokens) = 0, Probabilities);
+   Token := SampleToken(Probabilities, Temperature, Seed);
+   AdvanceCandidate(Candidate, Token, Probabilities[Token], M);
+  End;
+  if I = 1 Then Winner := Candidate
+  else if (Candidate.Finished and not Winner.Finished) or
+   ((Candidate.Finished = Winner.Finished) and
+    (CandidateScore(Candidate) > CandidateScore(Winner))) Then Winner := Candidate;
+ End;
+End;
+
+Function TokenEntropy(const Tokens: TTokens): Double;
+Var I, J, Start, Count, N: Integer; P: Double; Seen: Boolean;
+Begin
+ TokenEntropy := 0; N := MinInt(Length(Tokens), 32);
+ if N = 0 Then Exit;
+ Start := Length(Tokens) - N;
+ For I := Start to High(Tokens) do Begin
+  Seen := False;
+  For J := Start to I - 1 do if Tokens[J] = Tokens[I] Then Seen := True;
+  if Seen Then Continue;
+  Count := 0;
+  For J := I to High(Tokens) do if Tokens[J] = Tokens[I] Then Inc(Count);
+  P := Count / N; TokenEntropy := TokenEntropy - P * Ln(P);
+ End;
+End;
+
+Function EntropyFailure(const Tokens: TTokens; Threshold: Double): Boolean;
+Begin
+ EntropyFailure := (Length(Tokens) > 32) and (TokenEntropy(Tokens) < Threshold);
+End;
+
 Function DecodeChunk(const Audio: TSamples; First, Last: Integer;
 
 const M: TWhisperModel; RequestedLanguage: Integer;
-var DetectedLanguage: Integer): string;
+const Context: TTokens; AudioContext: Integer; const O: TOptions;
+var Seed: LongInt;
+var Generated: TTokens; var TimeHints: TTimeHints; var DetectedLanguage: Integer;
+var LanguageProbability: Double; var Report: TDecodeReport): string;
 Var
  Mel, Encoded, Logits: TMatrix;
  Cache: TDecoderCaches;
- Position, InitialPosition, Token, I, Best, LanguageCount, WordCount: Integer;
- Peak, Sum, NoSpeechProbability, LogProbability, Energy: Double;
+ Position, I, LanguageCount, Attempt: Integer;
+ Peak, Sum, NoSpeechProbability, Energy, Temperature: Double;
+ Winner: TDecodeCandidate;
+ Retry: Boolean;
 Begin
- DecodeChunk := ''; DetectedLanguage := RequestedLanguage;
+ Report.Confidence := 0; Report.SpecialPrefix := ''; Report.SpecialSuffix := ''; Report.LogText := '';
+ LanguageProbability := 0; Generated := nil; TimeHints := nil; DecodeChunk := ''; DetectedLanguage := RequestedLanguage;
  Energy := 0;
  For I := First to Last - 1 do Energy := Energy + Sqr(Audio[I]);
  if (Last <= First) or (Energy / (Last - First) < 1E-12) Then Exit;
- WhisperMel(Audio, First, Last, M, Mel); EncodeWhisper(Mel, M, Encoded);
+ WhisperMel(Audio, First, Last, M, AudioContext, Mel); EncodeWhisper(Mel, M, Encoded);
  Mel.Data := nil; InitDecoderCache(Encoded, M, Cache); Encoded.Data := nil;
  DecoderStep(M.SOT, 0, M, Cache, Logits);
  Peak := -1E30;
@@ -1143,7 +1729,6 @@ Begin
  Sum := 0;
  For I := 0 to High(Logits.Data) do Sum := Sum + Exp(Logits.Data[I] - Peak);
  NoSpeechProbability := Exp(Logits.Data[M.NoSpeech] - Peak) / Sum;
- Position := 1;
  if M.VocabCount > 51864 Then Begin
   LanguageCount := 99 + M.VocabCount - 51865;
   if DetectedLanguage < 0 Then Begin
@@ -1152,53 +1737,204 @@ Begin
    Logits.Data[M.SOT + 1 + DetectedLanguage] Then DetectedLanguage := I;
   End;
   if DetectedLanguage >= LanguageCount Then Fail('Langue absente de ce modele Whisper.');
+  Peak := -1E30;
+  For I := 0 to LanguageCount - 1 do
+   if Logits.Data[M.SOT + 1 + I] > Peak Then Peak := Logits.Data[M.SOT + 1 + I];
+  Sum := 0;
+  For I := 0 to LanguageCount - 1 do Sum := Sum + Exp(Logits.Data[M.SOT + 1 + I] - Peak);
+  LanguageProbability := Exp(Logits.Data[M.SOT + 1 + DetectedLanguage] - Peak) / Sum;
+ End else DetectedLanguage := 0;
+ if O.DetectLanguage Then Exit;
+ Position := 0;
+ if Length(Context) > 0 Then Begin
+  DecoderStep(M.NoSpeech - 1, Position, M, Cache, Logits); Inc(Position);
+  For I := 0 to High(Context) do Begin
+   DecoderStep(Context[I], Position, M, Cache, Logits); Inc(Position);
+  End;
+ End;
+ DecoderStep(M.SOT, Position, M, Cache, Logits); Inc(Position);
+ if M.VocabCount > 51864 Then Begin
   DecoderStep(M.SOT + 1 + DetectedLanguage, Position, M, Cache, Logits); Inc(Position);
-  DecoderStep(M.Transcribe, Position, M, Cache, Logits); Inc(Position);
+  if O.Translate Then DecoderStep(M.Transcribe - 1, Position, M, Cache, Logits)
+  else DecoderStep(M.Transcribe, Position, M, Cache, Logits);
+  Inc(Position);
  End else DetectedLanguage := 0;
  DecoderStep(M.NoTimestamps, Position, M, Cache, Logits); Inc(Position);
- InitialPosition := Position; LogProbability := 0; WordCount := 0;
+ Temperature := O.Temperature; Attempt := 0;
  Repeat
- Best := M.EOT; Peak := -1E30;
- For I := 0 to M.EOT do Begin
-  if (I < M.EOT) and (M.Vocab[I] = '') Then Continue;
-  if (Position = InitialPosition) and ((I = M.EOT) or (M.Vocab[I] = ' ')) Then Continue;
-  if Logits.Data[I] > Peak Then Begin
-   Peak := Logits.Data[I]; Best := I;
+  Inc(Attempt);
+  if Temperature = 0 Then Begin
+   if O.BeamSize > 1 Then BeamDecode(Cache, Logits, Position, O.BeamSize, M, Winner)
+   else SampleDecode(Cache, Logits, Position, 1, 0, M, Seed, Winner);
+  End else SampleDecode(Cache, Logits, Position, O.BestOf, Temperature, M, Seed, Winner);
+  if O.LogScore and not O.NoPrints Then Begin
+   Report.LogText := Report.LogText + 'Score fenetre=' + IntToStr(First) +
+    ' tentative=' + IntToStr(Attempt) + ' temperature=' + RealText(Temperature) +
+    ' moyenne=' + RealText(CandidateScore(Winner)) + #10;
+   For I := 0 to High(Winner.Scores) do Report.LogText := Report.LogText +
+    ' token=' + IntToStr(Winner.Scores[I].Token) + ' logp=' +
+    RealText(Winner.Scores[I].LogProbability) + ' best_logp=' +
+    RealText(Winner.Scores[I].BestLogProbability) + #10;
   End;
- End;
- Token := Best; if Token = M.EOT Then Break;
- Sum := 0;
- For I := 0 to M.EOT do Sum := Sum + Exp(Logits.Data[I] - Peak);
- LogProbability := LogProbability - Ln(Sum); Inc(WordCount);
- DecodeChunk := DecodeChunk + M.Vocab[Token];
- if Position >= M.TextContext Then Begin
-  if (NoSpeechProbability > 0.6) and (LogProbability / WordCount < -1) Then Begin
-   DecodeChunk := ''; Exit;
-  End;
-  Fail('Limite du contexte Whisper atteinte sans fin de texte.');
- End;
- DecoderStep(Token, Position, M, Cache, Logits); Inc(Position);
+  if (NoSpeechProbability > O.NoSpeechThreshold) and (CandidateScore(Winner) < O.LogProbThreshold) Then Exit;
+  Retry := not Winner.Finished or (CandidateScore(Winner) < O.LogProbThreshold) or
+   EntropyFailure(Winner.Tokens, O.EntropyThreshold);
+  if not Retry or O.NoFallback or (O.TemperatureInc <= 0) or
+   (Temperature >= 1) or (Attempt >= 8) Then Break;
+  Temperature := Temperature + O.TemperatureInc;
+  if Temperature > 1 Then Temperature := 1;
+  if not O.NoPrints Then Diagnostic('Reprise du decodage: temperature=' + RealText(Temperature));
  Until False;
- if (NoSpeechProbability > 0.6) and (WordCount > 0) Then  if LogProbability / WordCount <
- -1 Then DecodeChunk := '';
- DecodeChunk := Trim(DecodeChunk);
+ if not Winner.Finished Then Fail('Limite du contexte Whisper atteinte sans fin de texte.');
+ Report.Confidence := Exp(CandidateScore(Winner));
+ if Length(Context) > 0 Then Report.SpecialPrefix := '<|startofprev|>';
+ Report.SpecialPrefix := Report.SpecialPrefix + '<|startoftranscript|>';
+ if M.VocabCount > 51864 Then Begin
+  Report.SpecialPrefix := Report.SpecialPrefix + '<|' + LanguageCodes[DetectedLanguage] + '|>';
+  if O.Translate Then Report.SpecialPrefix := Report.SpecialPrefix + '<|translate|>'
+  else Report.SpecialPrefix := Report.SpecialPrefix + '<|transcribe|>';
+ End;
+ Report.SpecialPrefix := Report.SpecialPrefix + '<|notimestamps|>';
+ Report.SpecialSuffix := '<|endoftext|>';
+ Generated := Winner.Tokens; TimeHints := Winner.TimeHints;
+ For I := 0 to High(Generated) do DecodeChunk := DecodeChunk + M.Vocab[Generated[I]];
+End;
+
+{ Les limites sont comptees en points de code UTF-8, jamais en octets.
+  Les temps des sous-segments sont interpoles, pas des alignements acoustiques. }
+Function UTF8Boundary(const Text: string; Position: Integer): Boolean;
+Begin
+ UTF8Boundary := True;
+ if Position <= Length(Text) Then
+  UTF8Boundary := (Ord(Text[Position]) and $C0) <> $80;
+End;
+
+Procedure AddSegments(var Job: TProcessorJob; const Text: string;
+ const Tokens: TTokens; const TimeHints: TTimeHints; First, Last, Detected: Integer);
+Var
+ Ends: array of Boolean;
+ Times: array of Integer;
+ AnchorByte, AnchorTime, HintTime, K: Integer;
+ P, Start, Stop, Limit, Count, I, N, Offset, Best, TotalChars, UsedChars: Integer;
+ Piece: string;
+Begin
+ if Trim(Text) = '' Then Exit;
+ SetLength(Ends, Length(Text) + 1); Offset := 0;
+ For I := 0 to High(Tokens) do Begin
+  Inc(Offset, Length(Job.Model^.Vocab[Tokens[I]]));
+  if Offset <= Length(Text) Then Ends[Offset] := True;
+ End;
+ { Reperes de debut de token, acceptes seulement s'ils sont probables,
+   dans la fenetre et monotones. Interpolation entre reperes fiables. }
+ SetLength(Times, Length(Text) + 1); AnchorByte := 0; AnchorTime := First;
+ Times[0] := First; Offset := 0;
+ For I := 0 to Length(Tokens) do Begin
+  HintTime := Last;
+  if I < Length(Tokens) Then Begin
+   if I >= Length(TimeHints) Then Break;
+   HintTime := First + TimeHints[I].Sample;
+  End;
+  if (I = Length(Tokens)) or ((TimeHints[I].Probability >= Job.Options^.WordThreshold) and
+   (HintTime > AnchorTime) and (HintTime < Last) and
+   UTF8Boundary(Text, Offset + 1)) Then Begin
+   if Offset > AnchorByte Then Begin
+    Count := 0;
+    For K := AnchorByte + 1 to Offset do if UTF8Boundary(Text, K) Then Inc(Count);
+    N := 0;
+    For K := AnchorByte + 1 to Offset do Begin
+     if UTF8Boundary(Text, K) Then Inc(N);
+     if Count > 0 Then Times[K] := AnchorTime + Int64(HintTime - AnchorTime) * N div Count;
+    End;
+    AnchorByte := Offset; AnchorTime := HintTime;
+   End;
+  End;
+  if I < Length(Tokens) Then Inc(Offset, Length(Job.Model^.Vocab[Tokens[I]]));
+ End;
+ { Absence de reperes: la fin de la fenetre reste toujours connue. }
+ Count := 0;
+ For K := AnchorByte + 1 to Length(Text) do if UTF8Boundary(Text, K) Then Inc(Count);
+ N := 0;
+ For K := AnchorByte + 1 to Length(Text) do Begin
+  if UTF8Boundary(Text, K) Then Inc(N);
+  if Count > 0 Then Times[K] := AnchorTime + Int64(Last - AnchorTime) * N div Count;
+ End;
+ TotalChars := 0;
+ For P := 1 to Length(Text) do if UTF8Boundary(Text, P) Then Inc(TotalChars);
+ Start := 1; UsedChars := 0;
+ While Start <= Length(Text) do Begin
+  P := Start; Count := 0; Best := 0;
+  Limit := Job.Options^.MaxLength;
+  While P <= Length(Text) do Begin
+   if UTF8Boundary(Text, P) Then Begin
+    if (Limit > 0) and (Count >= Limit) Then Break;
+    Inc(Count);
+   End;
+   if UTF8Boundary(Text, P + 1) Then Begin
+    if Job.Options^.SplitOnWord Then Begin
+     if Text[P] in [' ', #9, #10, #13] Then Best := P;
+     if P < Length(Text) Then
+      if Text[P + 1] in [' ', #9, #10, #13] Then Best := P;
+    End else if Ends[P] Then Best := P;
+   End;
+   Inc(P);
+  End;
+  Stop := P - 1;
+  if (P <= Length(Text)) and (Best >= Start) Then Stop := Best;
+  { Mot ou token plus long que la limite: couper entre caracteres. }
+  Count := 0;
+  For P := Start to Stop do if UTF8Boundary(Text, P) Then Inc(Count);
+  Piece := Trim(Copy(Text, Start, Stop - Start + 1));
+  if Piece <> '' Then Begin
+   N := Length(Job.Segments); SetLength(Job.Segments, N + 1);
+   Job.Segments[N].First := Times[Start - 1];
+   Job.Segments[N].Last := Times[Stop];
+   Job.Segments[N].Text := Piece;
+   if Detected >= 0 Then Job.Segments[N].Language := LanguageCodes[Detected];
+  End;
+  Inc(UsedChars, Count); Start := Stop + 1;
+ End;
 End;
 
 Function ProcessorWorker(Parameter: Pointer): PtrInt;
 Var
  Job: PProcessorJob;
- First, Last, N, Detected: Integer;
+ First, Last, I, Detected, Limit, AudioContext, SegmentStart: Integer;
  Text: string;
+ History, Context, Generated: TTokens;
+ TimeHints: TTimeHints;
+ Seed: LongInt;
+ LanguageProbability: Double;
+ Report: TDecodeReport;
 Begin
- Job := Parameter; First := Job^.First;
+ Job := Parameter; First := Job^.First; Seed := 1 + First;
+ if Job^.Options^.PrintProgress and not Job^.Options^.NoPrints Then
+  Diagnostic('Progression processeur ' + IntToStr(Job^.WorkerIndex) + ': 0%');
+ AudioContext := Job^.Options^.AudioContext;
+ if AudioContext = 0 Then AudioContext := Job^.Model^.AudioContext;
+ Limit := MinInt(Job^.Options^.MaxContext, Job^.Model^.TextContext div 2);
+ Limit := MinInt(Limit, Job^.Model^.TextContext - 6);
+ if not Job^.Options^.CarryPrompt Then Begin
+  History := Copy(Job^.InitialTokens, 0, Length(Job^.InitialTokens));
+  KeepTail(History, Limit);
+ End;
  While First < Job^.Last do Begin
-  Last := MinInt(First + 480000, Job^.Last);
-  Text := DecodeChunk(Job^.Audio^, First, Last, Job^.Model^, Job^.Language, Detected);
-  N := Length(Job^.Segments); SetLength(Job^.Segments, N + 1);
-  Job^.Segments[N].First := First; Job^.Segments[N].Last := Last;
-  Job^.Segments[N].Text := Text;
-  Job^.Segments[N].Language := '';
-  if Detected >= 0 Then Job^.Segments[N].Language := LanguageCodes[Detected];
+  Last := MinInt(First + AudioContext * 320, Job^.Last);
+  BuildContext(Job^.InitialTokens, History, Job^.Options^.CarryPrompt, Limit, Context);
+  Text := DecodeChunk(Job^.Audio^, First, Last, Job^.Model^, Job^.Language,
+   Context, AudioContext, Job^.Options^, Seed, Generated, TimeHints, Detected, LanguageProbability, Report);
+  Job^.LogText := Job^.LogText + Report.LogText;
+  SegmentStart := Length(Job^.Segments);
+  AddSegments(Job^, Text, Generated, TimeHints, First, Last, Detected);
+  For I := SegmentStart to High(Job^.Segments) do Job^.Segments[I].Confidence := Report.Confidence;
+  if Length(Job^.Segments) > SegmentStart Then Begin
+   Job^.Segments[SegmentStart].SpecialPrefix := Report.SpecialPrefix;
+   Job^.Segments[High(Job^.Segments)].SpecialSuffix := Report.SpecialSuffix;
+  End;
+  if Job^.Options^.PrintProgress and not Job^.Options^.NoPrints Then
+   Diagnostic('Progression processeur ' + IntToStr(Job^.WorkerIndex) + ': ' +
+    IntToStr(Int64(Last - Job^.First) * 100 div (Job^.Last - Job^.First)) + '%');
+  For I := 0 to High(Generated) do AppendToken(History, Generated[I]);
+  KeepTail(History, Limit);
   First := Last;
  End;
  ProcessorWorker := 0;
@@ -1219,7 +1955,230 @@ Begin
  PadNumber((MS div 1000) mod 60, 2) + '.' + PadNumber(MS mod 1000, 3);
 End;
 
-Procedure TranscribeFile(const Name: string; const O: TOptions; var M: TWhisperModel);
+Function UTF8Path(const Value: string): string;
+Var U: UTF8String;
+Begin U := UTF8String(Value); SetString(UTF8Path, PChar(U), Length(U)); End;
+
+Function JSONString(const Value: string): string;
+Const Hex: string[16] = '0123456789abcdef';
+Var I, C: Integer;
+Begin
+ JSONString := '"';
+ For I := 1 to Length(Value) do Begin
+  C := Ord(Value[I]);
+  if Value[I] in ['"', '\'] Then JSONString := JSONString + '\' + Value[I]
+  else if C < 32 Then JSONString := JSONString + '\u00' + Hex[C div 16 + 1] + Hex[C mod 16 + 1]
+  else JSONString := JSONString + Value[I];
+ End;
+ JSONString := JSONString + '"';
+End;
+
+Function CSVString(const Value: string): string;
+Var I: Integer;
+Begin
+ CSVString := '"';
+ For I := 1 to Length(Value) do Begin
+  if Value[I] = '"' Then CSVString := CSVString + '"';
+  CSVString := CSVString + Value[I];
+ End;
+ CSVString := CSVString + '"';
+End;
+
+Function FlatText(const Value: string): string;
+Var I: Integer;
+Begin
+ FlatText := Value;
+ For I := 1 to Length(FlatText) do if FlatText[I] < ' ' Then FlatText[I] := ' ';
+End;
+
+Function HTMLText(const Value: string): string;
+Var I: Integer;
+Begin
+ HTMLText := '';
+ For I := 1 to Length(Value) do Case Value[I] of
+  '&': HTMLText := HTMLText + '&amp;';
+  '<': HTMLText := HTMLText + '&lt;';
+  '>': HTMLText := HTMLText + '&gt;';
+  '"': HTMLText := HTMLText + '&quot;';
+  #39: HTMLText := HTMLText + '&#39;';
+  #0..#31: HTMLText := HTMLText + ' ';
+  else HTMLText := HTMLText + Value[I];
+ End;
+End;
+
+Function FileURL(const Name: string): string;
+Const Hex: string[16] = '0123456789ABCDEF';
+Var Path: string; I, C: Integer;
+Begin
+ Path := UTF8Path(FExpand(Name));
+ For I := 1 to Length(Path) do if Path[I] = '\' Then Path[I] := '/';
+ if Copy(Path, 1, 2) = '//' Then FileURL := 'file:'
+ else if Copy(Path, 1, 1) = '/' Then FileURL := 'file://'
+ else FileURL := 'file:///';
+ For I := 1 to Length(Path) do Begin
+  C := Ord(Path[I]);
+  if Path[I] in ['A'..'Z', 'a'..'z', '0'..'9', '-', '_', '.', '~', '/', ':'] Then
+   FileURL := FileURL + Path[I]
+  else FileURL := FileURL + '%' + Hex[C div 16 + 1] + Hex[C mod 16 + 1];
+ End;
+End;
+
+Function Milliseconds(Sample: Integer): Int64;
+Begin Milliseconds := Int64(Sample) * 1000 div TargetRate; End;
+
+Function SecondsText(Sample: Integer): string;
+Var MS: Int64;
+Begin
+ MS := Milliseconds(Sample);
+ SecondsText := IntToStr(MS div 1000) + '.' + PadNumber(MS mod 1000, 3);
+End;
+
+Function SRTTime(Sample: Integer): string;
+Begin SRTTime := TimeStamp(Sample); SRTTime[9] := ','; End;
+
+Procedure ExportWrite(var Stream: TBinary; const Value: string);
+Var Count, Code: Integer;
+Begin
+ if Value = '' Then Exit;
+ {$I-} BlockWrite(Stream.Handle, Value[1], Length(Value), Count); Code := IOResult; {$I+}
+ if (Code <> 0) or (Count <> Length(Value)) Then Fail('Ecriture incomplete: ' + Stream.Name);
+End;
+
+Procedure ExportLine(var Stream: TBinary; const Value: string);
+Begin ExportWrite(Stream, Value + #13#10); End;
+
+Procedure MakeWords(const Segments: TSegments; var Words: TSegments);
+Var I, P, Start, Before, Count, Total, J, N: Integer;
+Begin
+ Words := nil;
+ For I := 0 to High(Segments) do Begin
+  Total := 0;
+  For J := 1 to Length(Segments[I].Text) do
+   if UTF8Boundary(Segments[I].Text, J) Then Inc(Total);
+  P := 1; Count := 0;
+  While P <= Length(Segments[I].Text) do Begin
+   While P <= Length(Segments[I].Text) do Begin
+    if Segments[I].Text[P] > ' ' Then Break;
+    Inc(P); Inc(Count);
+   End;
+   Start := P; Before := Count;
+   While P <= Length(Segments[I].Text) do Begin
+    if Segments[I].Text[P] <= ' ' Then Break;
+    if UTF8Boundary(Segments[I].Text, P) Then Inc(Count);
+    Inc(P);
+   End;
+   if P > Start Then Begin
+    N := Length(Words); SetLength(Words, N + 1);
+    Words[N].Text := Copy(Segments[I].Text, Start, P - Start);
+    Words[N].Language := Segments[I].Language;
+    Words[N].First := Segments[I].First + Int64(Segments[I].Last - Segments[I].First) * Before div Total;
+    Words[N].Last := Segments[I].First + Int64(Segments[I].Last - Segments[I].First) * Count div Total;
+   End;
+  End;
+ End;
+End;
+
+Procedure WriteJSONSegments(var Stream: TBinary; const Segments: TSegments;
+ IndexOffset: Integer; IncludeLanguage: Boolean);
+Var I: Integer;
+Begin
+ ExportLine(Stream, '[');
+ For I := 0 to High(Segments) do Begin
+  if I > 0 Then ExportLine(Stream, ',');
+  ExportWrite(Stream, '{"id":' + IntToStr(Int64(IndexOffset) + I) +
+   ',"start":' + SecondsText(Segments[I].First) + ',"end":' + SecondsText(Segments[I].Last) +
+   ',"text":' + JSONString(Segments[I].Text));
+  if IncludeLanguage Then ExportWrite(Stream, ',"language":' + JSONString(Segments[I].Language));
+  ExportWrite(Stream, '}');
+ End;
+ ExportLine(Stream, ']');
+End;
+
+Procedure ExportResults(const InputName: string; const O: TOptions; FileIndex: Integer;
+ const Segments: TSegments);
+Var
+ Stream: TBinary; Format: TExportFormat; Words: TSegments;
+ I, N: Integer; MS: Int64; Name, Text, Task: string; Attributes: Word;
+Begin
+ if O.OutputFormats = [] Then Exit;
+ if (efWords in O.OutputFormats) or O.FullJSON Then MakeWords(Segments, Words);
+ Text := '';
+ For I := 0 to High(Segments) do Begin
+  if I > 0 Then Text := Text + #10;
+  Text := Text + Segments[I].Text;
+ End;
+ PendingExports := nil;
+ For Format := Low(TExportFormat) to High(TExportFormat) do if Format in O.OutputFormats Then Begin
+  Name := ExportBase(O, FileIndex) + ExportExtensions[Format];
+  if PathAttributes(Name, Attributes) Then Fail('Sortie deja existante: ' + Name);
+  OpenBinary(Stream, Name, True);
+  N := Length(PendingExports); SetLength(PendingExports, N + 1); PendingExports[N] := Name;
+  Case Format of
+   efTXT: For I := 0 to High(Segments) do ExportLine(Stream, Segments[I].Text);
+   efVTT, efSRT: Begin
+    if Format = efVTT Then Begin ExportLine(Stream, 'WEBVTT'); ExportLine(Stream, ''); End;
+    For I := 0 to High(Segments) do Begin
+     ExportLine(Stream, IntToStr(Int64(O.OffsetIndex) + I + 1));
+     if Format = efSRT Then ExportLine(Stream, SRTTime(Segments[I].First) + ' --> ' + SRTTime(Segments[I].Last))
+     else ExportLine(Stream, TimeStamp(Segments[I].First) + ' --> ' + TimeStamp(Segments[I].Last));
+     ExportLine(Stream, HTMLText(Segments[I].Text)); ExportLine(Stream, '');
+    End;
+   End;
+   efLRC: For I := 0 to High(Segments) do Begin
+    MS := Milliseconds(Segments[I].First);
+    ExportLine(Stream, '[' + PadNumber(MS div 60000, 2) + ':' +
+     PadNumber((MS div 1000) mod 60, 2) + '.' + PadNumber((MS mod 1000) div 10, 2) + ']' +
+     Trim(FlatText(Segments[I].Text)));
+   End;
+   efCSV: Begin
+    ExportLine(Stream, 'id,start,end,text');
+    For I := 0 to High(Segments) do ExportLine(Stream,
+     IntToStr(Int64(O.OffsetIndex) + I) + ',' + SecondsText(Segments[I].First) + ',' +
+     SecondsText(Segments[I].Last) + ',' + CSVString(Segments[I].Text));
+   End;
+   efJSON: Begin
+    ExportLine(Stream, '{"text":' + JSONString(Text) + ',"segments":');
+    WriteJSONSegments(Stream, Segments, O.OffsetIndex, O.FullJSON);
+    if O.FullJSON Then Begin
+     Task := 'transcribe'; if O.Translate Then Task := 'translate';
+     ExportLine(Stream, ',"source":' + JSONString(UTF8Path(InputName)) +
+      ',"model":' + JSONString(UTF8Path(O.Model)) + ',"task":' + JSONString(Task) +
+      ',"language":' + JSONString(O.Language) + ',"sample_rate":16000,' +
+      '"timestamps_estimated":true,"offset_ms":' + IntToStr(O.OffsetMS) +
+      ',"duration_ms":' + IntToStr(O.DurationMS) + ',"words":');
+     WriteJSONSegments(Stream, Words, 0, True);
+    End;
+    ExportLine(Stream, '}');
+   End;
+   efWords: Begin
+    ExportLine(Stream, '{"format":"pascal-words-1","timestamps_estimated":true,"words":');
+    WriteJSONSegments(Stream, Words, 0, True); ExportLine(Stream, '}');
+   End;
+   efHTML: Begin
+    ExportLine(Stream, '<!doctype html><html lang="fr"><meta charset="utf-8">');
+    ExportLine(Stream, '<title>Paroles synchronisees</title><style>');
+    if O.FontPath <> '' Then
+     ExportLine(Stream, '@font-face{font-family:paroles;src:url("' + FileURL(O.FontPath) + '")}');
+    ExportLine(Stream, 'body{font-family:paroles,monospace;max-width:60em;margin:2em auto;padding:1em}' +
+     '.active{background:#ffe68a}span{display:inline-block;padding:.2em}audio{width:100%}</style>');
+    ExportLine(Stream, '<h1>Paroles synchronisees</h1><p>Horodatages estimes.</p>');
+    ExportLine(Stream, '<audio id="audio" controls src="' + FileURL(InputName) + '"></audio><p>');
+    For I := 0 to High(Words) do ExportLine(Stream, '<span data-start="' + SecondsText(Words[I].First) +
+     '" data-end="' + SecondsText(Words[I].Last) + '">' + HTMLText(Words[I].Text) + '</span>');
+    ExportLine(Stream, '</p><script>const audio=document.getElementById("audio");' +
+     'const words=document.querySelectorAll("span[data-start]");' +
+     'audio.addEventListener("timeupdate",()=>{for(const w of words)' +
+     'w.classList.toggle("active",audio.currentTime>=Number(w.dataset.start)' +
+     '&&audio.currentTime<Number(w.dataset.end));});</script></html>');
+   End;
+  End;
+  CloseBinary(Stream); Diagnostic('Sortie: ' + Name);
+ End;
+ PendingExports := nil;
+End;
+
+Procedure TranscribeFile(const Name: string; const O: TOptions; var M: TWhisperModel;
+ FileIndex: Integer);
 Var
  Source, Audio: TSamples;
  Rate: LongWord;
@@ -1228,7 +2187,21 @@ Var
  Jobs: array[0..7] of TProcessorJob;
  Handles: array[0..7] of TThreadID;
  UTF8Text: UTF8String;
+ InitialTokens, DetectedTokens: TTokens;
+ Results: TSegments;
+ ResultCount: Integer;
+ Hints: TTimeHints;
+ DetectedText: string;
+ Probability: Double;
+ Seed: LongInt;
+ DetectContext: Integer;
+ Report: TDecodeReport;
 Begin
+ Results := nil;
+ if O.AudioContext > M.AudioContext Then Fail('--audio-ctx depasse le contexte du modele.');
+ if (O.DetectLanguage or O.Translate) and (M.VocabCount = 51864) Then
+  Fail('Detection de langue et traduction exigent un modele Whisper multilingue.');
+ if not O.DetectLanguage Then TokenizePrompt(O.Prompt, M, InitialTokens);
  ReadWave(Name, Source, Rate); Resample(Source, Rate, Audio); Source := nil;
  RemoveDC(Audio);
  Language := LanguageIndex(O.Language);
@@ -1239,7 +2212,8 @@ Begin
  { Calcul en 64 bits avant de borner aux echantillons disponibles. }
  Boundary := Int64(O.OffsetMS) * TargetRate div 1000;
  if Boundary >= Length(Audio) Then Begin
-  WriteLn(StdErr, 'Fichier: ', Name, ' | aucune portion audio apres le decalage.');
+  Diagnostic('Fichier: ' + Name + ' | aucune portion audio apres le decalage.');
+  if not O.DetectLanguage Then ExportResults(Name, O, FileIndex, Results);
   Exit;
  End;
  FirstSample := Boundary; LastSample := Length(Audio);
@@ -1249,10 +2223,26 @@ Begin
  End;
  Selected := LastSample - FirstSample;
  if Selected <= 0 Then Exit;
+ if O.DetectLanguage Then Begin
+  DetectContext := O.AudioContext;
+  if DetectContext = 0 Then DetectContext := M.AudioContext;
+  Seed := 1;
+  if O.PrintProgress and not O.NoPrints Then Diagnostic('Progression detection: 0%');
+  DetectedText := DecodeChunk(Audio, FirstSample,
+   MinInt(LastSample, FirstSample + DetectContext * 320), M, -1,
+   InitialTokens, DetectContext, O, Seed, DetectedTokens, Hints, Language, Probability, Report);
+  if O.PrintProgress and not O.NoPrints Then Diagnostic('Progression detection: 100%');
+  Diagnostic('Detection de langue: ' + Name);
+  if Language < 0 Then WriteLn('und (silence)')
+  else WriteLn(LanguageCodes[Language], ' (probabilite=', Probability:0:6, ')');
+  Exit;
+ End;
  Workers := MinInt(O.Processors, Selected);
- WriteLn(StdErr, 'Fichier: ', Name, ' | ', O.Threads, ' thread(s) x ', Workers,
+ if not O.NoPrints Then WriteLn(StdErr, 'Fichier: ', Name, ' | ', O.Threads, ' thread(s) x ', Workers,
  ' processeur(s), langue=', O.Language, ', debut=', TimeStamp(FirstSample), ', duree=', TimeStamp(Selected));
  For I := 0 to Workers - 1 do Begin
+  Jobs[I].WorkerIndex := I + 1;
+  Jobs[I].Options := @O; Jobs[I].InitialTokens := InitialTokens;
   Jobs[I].Model := @M; Jobs[I].Audio := @Audio; Jobs[I].Language := Language;
   Jobs[I].First := FirstSample + Int64(Selected) * I div Workers;
   Jobs[I].Last := FirstSample + Int64(Selected) * (I + 1) div Workers;
@@ -1266,17 +2256,32 @@ Begin
  End;
  ProcessorWorker(@Jobs[0]);
  For I := 1 to Workers - 1 do JoinThread(Handles[I]);
+ For I := 0 to Workers - 1 do if Jobs[I].LogText <> '' Then Diagnostic(Trim(Jobs[I].LogText));
  SegmentIndex := O.OffsetIndex;
  For I := 0 to Workers - 1 do
  For J := 0 to High(Jobs[I].Segments) do  if Jobs[I].Segments[J].Text <> '' Then Begin
    { Les tokens GGML contiennent des octets UTF-8, parfois des caracteres
      coupes entre tokens. Ne declarer l'encodage qu'apres leur assemblage. }
+  ResultCount := Length(Results); SetLength(Results, ResultCount + 1);
+  Results[ResultCount] := Jobs[I].Segments[J];
   SetString(UTF8Text, PChar(Jobs[I].Segments[J].Text), Length(Jobs[I].Segments[J].Text));
   if O.ShowIndex Then Write('[', SegmentIndex, '] ');
   Inc(SegmentIndex);
-  WriteLn('[', TimeStamp(Jobs[I].Segments[J].First), ' --> ',
-  TimeStamp(Jobs[I].Segments[J].Last), '] ', UTF8Text);
+  if not O.NoTimestamps Then Write('[', TimeStamp(Jobs[I].Segments[J].First), ' --> ',
+   TimeStamp(Jobs[I].Segments[J].Last), '] ');
+  if O.PrintConfidence Then Write('[confiance=', RealText(Jobs[I].Segments[J].Confidence), '] ');
+  if O.PrintColors Then Begin
+   if Jobs[I].Segments[J].Confidence >= 0.8 Then Write(#27'[32m')
+   else if Jobs[I].Segments[J].Confidence >= 0.5 Then Write(#27'[33m')
+   else Write(#27'[31m');
+  End;
+  if O.PrintSpecial Then Write(Jobs[I].Segments[J].SpecialPrefix);
+  Write(UTF8Text);
+  if O.PrintSpecial Then Write(Jobs[I].Segments[J].SpecialSuffix);
+  if O.PrintColors Then Write(#27'[0m');
+  WriteLn;
  End;
+ ExportResults(Name, O, FileIndex, Results);
 End;
 
 Var
@@ -1286,8 +2291,10 @@ Var
 
 BEGIN
  SetTextCodePage(Output, 65001);
- ParseOptions(Options); ThreadCount := Options.Threads;
+ ParseOptions(Options); ThreadCount := Options.Threads; SilentConsole := Options.NoPrints;
+ InitCriticalSection(ConsoleLock); ConsoleReady := True;
  LoadWhisper(Options.Model, Model);
  For FileIndex := 0 to High(Options.Files) do TranscribeFile(Options.Files[FileIndex],
- Options, Model);
+ Options, Model, FileIndex);
+ ConsoleReady := False; DoneCriticalSection(ConsoleLock);
 END.
