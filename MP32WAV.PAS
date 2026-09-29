@@ -6,6 +6,9 @@
  @description: Convertir des fichiers MP3 en fichiers WAV }
 
 Program MP32WAV;
+
+{$A-}
+
 {$IFDEF FPC}{$MODE TP}{$ENDIF}
 {$IFNDEF FPC}{$N+}{$E+}{$ENDIF}
 { Decodeur MP3 Layer III procedural, sans programme ni bibliotheque externe.
@@ -493,7 +496,8 @@ Procedure Help;Begin
  WriteLn('Frequence et nombre de canaux conserves. Aucun outil externe.');
  WriteLn('Sortie existante refusee. Limite: 2 Go par fichier.');
  WriteLn('Free-format, changements de format et preaccentuation refuses.');
- WriteLn('Blocs mixtes a 8 kHz non pris en charge. Entree complete requise.');
+ WriteLn('Blocs mixtes a 8 kHz non pris en charge.');
+ WriteLn('Derniere trame incomplete ignoree avec avertissement si audio deja decode.');
  WriteLn('Delai/remplissage encodeur conserves (pas de correction gapless).');
 End;
 
@@ -999,6 +1003,31 @@ Begin
  if InputPosition >= InputEnd Then Fail('Aucune trame audio MP3.');
 End;
 
+Function ReadNextFrame: Boolean;
+Var Remaining: LongInt;
+Begin
+ ReadNextFrame := False;
+ Remaining := InputEnd - InputPosition;
+ if Remaining < 4 Then Begin
+  ReadAt(InputPosition, Frame, Remaining);
+  if Frame[0] <> 255 Then Fail('Donnees inattendues apres la derniere trame MP3.');
+  if Remaining >= 2 Then
+   if (Frame[1] and $E0) <> $E0 Then Fail('Synchronisation MP3 incorrecte.');
+ End else Begin
+  ReadAt(InputPosition, Frame, 4); ParseHeader;
+  if Frames > 0 Then
+   if (Header.Rate <> FirstHeader.Rate) or (Header.Channels <> FirstHeader.Channels) or
+    (Header.Version <> FirstHeader.Version) Then Fail('Changement de format au milieu du MP3.');
+  if Header.FrameSize <= Remaining Then Begin
+   ReadAt(InputPosition, Frame, Header.FrameSize);
+   ReadNextFrame := True; Exit;
+  End;
+ End;
+ if Frames = 0 Then Fail('Derniere trame MP3 tronquee; aucune trame complete.');
+ WriteLn('MP32WAV: avertissement: derniere trame MP3 incomplete ignoree (',
+  Remaining, ' octets restants). Les ', Frames, ' trames completes sont conservees.');
+End;
+
 Procedure Convert;
 Var ErrorCode: Integer; OldMode: Byte;
 Begin
@@ -1017,19 +1046,16 @@ Begin
  New(D); New(Transform); FillChar(D^, SizeOf(D^), 0); InitializeTransforms;
  SkipTags; RemoveTrailingTags;
  While InputPosition < InputEnd do Begin
-  if InputEnd - InputPosition < 4 Then Fail('Derniere trame MP3 tronquee.');
-  ReadAt(InputPosition, Frame, 4); ParseHeader;
-  if Header.FrameSize > InputEnd - InputPosition Then Fail('Derniere trame MP3 tronquee.');
-  ReadAt(InputPosition, Frame, Header.FrameSize);
+  if ReadNextFrame Then Begin
   if Frames = 0 Then Begin
    FirstHeader := Header;
    Assign(OutputFile, OutputName);
    {$I-}Rewrite(OutputFile, 1); ErrorCode := IOResult;{$I+}
    if ErrorCode <> 0 Then Fail('Creation WAV impossible: ' + OutputName);
    OutputOpen := True; OutputCreated := True; WriteWaveHeader;
-  End else if (Header.Rate <> FirstHeader.Rate) or (Header.Channels <> FirstHeader.Channels) or
-   (Header.Version <> FirstHeader.Version) Then Fail('Changement de format au milieu du MP3.');
+  End;
   DecodeFrame; Inc(Frames); Inc(InputPosition, Header.FrameSize);
+  End else InputPosition := InputEnd;
  End;
  if Frames = 0 Then Fail('Aucune trame audio MP3.');
  WriteWaveHeader;
