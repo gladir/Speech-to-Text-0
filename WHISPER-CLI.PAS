@@ -44,16 +44,13 @@ Var
  SilentConsole, ConsoleReady: Boolean;
  ConsoleLock: TRTLCriticalSection;
 Procedure Fail(Const S: String);Forward;
-Function IntToStr(Value: Int64): String;
-Begin
+Function IntToStr(Value: Int64): String;Begin
  Str(Value, IntToStr);
 End;
-Function RealText(Value: Double): String;
-Begin
+Function RealText(Value: Double): String;Begin
  Str(Value:0:6, RealText);
 End;
-Procedure Diagnostic(Const Text: String);
-Begin
+Procedure Diagnostic(Const Text: String);Begin
  If SilentConsole Then Exit;
  If ConsoleReady Then EnterCriticalSection(ConsoleLock);
  WriteLn(StdErr, Text);
@@ -86,31 +83,25 @@ Begin
  FileExists := PathAttributes(Name, Attributes);
  If FileExists Then FileExists := (Attributes And Directory) = 0;
 End;
-Function MinInt(A, B: Integer): Integer;
-Begin
+Function MinInt(A, B: Integer): Integer;Begin
  If A < B Then MinInt := A Else MinInt := B;
 End;
-Function MinDouble(A, B: Double): Double;
-Begin
+Function MinDouble(A, B: Double): Double;Begin
  If A < B Then MinDouble := A Else MinDouble := B;
 End;
-Function Max(A, B: Integer): Integer;
-Begin
+Function Max(A, B: Integer): Integer;Begin
  If A > B Then Max := A Else Max := B;
 End;
-Function EnsureRange(Value, LowerBound, UpperBound: Double): Double;
-Begin
+Function EnsureRange(Value, LowerBound, UpperBound: Double): Double;Begin
  If Value < LowerBound Then EnsureRange := LowerBound Else
  If Value > UpperBound Then EnsureRange := UpperBound
                        Else EnsureRange := Value;
 End;
-Function Floor(Value: Double): Int64;
-Begin
+Function Floor(Value: Double): Int64;Begin
  Floor := Trunc(Value);
  If Value < Floor Then Dec(Floor);
 End;
-Function Ceil(Value: Double): Int64;
-Begin
+Function Ceil(Value: Double): Int64;Begin
  Ceil := Trunc(Value);
  If Value > Ceil Then Inc(Ceil);
 End;
@@ -131,8 +122,7 @@ Begin
  Move(Value, Bits, SizeOf(Bits));
  IsInfinite := (Bits And $7FFFFFFF) = $7F800000;
 End;
-Function Bounded(Value, LowBound, HighBound: LongInt; Const What: String): LongInt;
-Begin
+Function Bounded(Value, LowBound, HighBound: LongInt; Const What: String): LongInt;Begin
  If (Value < LowBound) Or (Value > HighBound) Then Fail('Valeur invalide: ' + What);
  Bounded := Value;
 End;
@@ -256,8 +246,7 @@ Begin
  U32 := LongWord(B[0]) Or (LongWord(B[1]) Shl 8) Or
  (LongWord(B[2]) Shl 16) Or (LongWord(B[3]) Shl 24);
 End;
-Function FourCC(Var S: TBinary): AnsiString;
-Begin
+Function FourCC(Var S: TBinary): AnsiString;Begin
  SetLength(FourCC, 4);
  ReadBytes(S, FourCC[1], 4);
 End;
@@ -537,8 +526,7 @@ Begin
  Fail('Tenseur manquant: ' + Name); TensorID := -1;
 End;
 Procedure BindAttention(Const T: TTensors; Const Prefix, Norm: String; Width: Integer;
-                        Var W: TAttentionWeights);
-Begin
+                        Var W: TAttentionWeights);Begin
  W.Q := TensorID(T, Prefix + '.query.weight', [Width,Width]);
  W.QB := TensorID(T, Prefix + '.query.bias', [Width]);
  W.K := TensorID(T, Prefix + '.key.weight', [Width,Width]);
@@ -550,8 +538,7 @@ Begin
  W.LNB := TensorID(T, Norm + '.bias', [Width]);
 End;
 Procedure BindWhisperLayer(Const T: TTensors; Const Prefix: String; Width: Integer;
-                           Decoder: Boolean; Var L: TWhisperLayer);
-Begin
+                           Decoder: Boolean; Var L: TWhisperLayer);Begin
  BindAttention(T, Prefix + '.attn', Prefix + '.attn_ln', Width, L.Attention);
  If Decoder Then BindAttention(T, Prefix + '.cross_attn', Prefix + '.cross_attn_ln',
  Width, L.Cross);
@@ -685,8 +672,7 @@ End;
   NeuralDot := Value;
  End;
 {$ENDIF}
-Procedure MatrixSize(Var M: TMatrix; Rows, Cols: Integer);
-Begin
+Procedure MatrixSize(Var M: TMatrix; Rows, Cols: Integer);Begin
  If (Rows < 0) Or (Cols <= 0) Or (Int64(Rows) * Cols > 100000000) Then Fail(
  'Matrice neuronale trop grande.');
  M.Rows := Rows; M.Cols := Cols; SetLength(M.Data, Rows * Cols);
@@ -757,8 +743,7 @@ Begin
  DenseWorker(@Jobs[0]);
  For I := 1 To Workers - 1 Do JoinThread(Handles[I]);
 End;
-Function StableTanh(Value: Double): Double;
-Begin
+Function StableTanh(Value: Double): Double;Begin
  If Value > 15 Then Begin
   StableTanh := 1; Exit;
  End; If Value < -15 Then Begin
@@ -766,8 +751,7 @@ Begin
  End;
  StableTanh := 2 / (1 + Exp(-2 * Value)) - 1;
 End;
-Function Sigmoid(Value: Double): Double;
-Begin
+Function Sigmoid(Value: Double): Double;Begin
  If Value >= 0 Then Sigmoid := 1 / (1 + Exp(-Value))
   Else
  Begin
@@ -1298,8 +1282,7 @@ Type
 Const
  ExportExtensions: Array[TExportFormat] Of String[5] =
  ('.txt', '.vtt', '.srt', '.lrc', '.csv', '.json', '.wts', '.html');
-Function ExportBase(Const O: TOptions; FileIndex: Integer): String;
-Begin
+Function ExportBase(Const O: TOptions; FileIndex: Integer): String;Begin
  If FileIndex < Length(O.OutputBases) Then ExportBase := O.OutputBases[FileIndex]
                                       Else ExportBase := O.Files[FileIndex];
 End;
@@ -1368,8 +1351,7 @@ Procedure CompileRegex(Const Pattern: String; Var Regex: TRegex);
 Var
  Nodes: TRegexNodes;
  P, Depth, Root, Terminal: Integer;
-Procedure Invalid(Const Message: String);
-Begin
+Procedure Invalid(Const Message: String);Begin
  Fail('--suppress-regex: ' + Message + ' (position ' + IntToStr(P) + ')');
 End;
 
@@ -1421,8 +1403,7 @@ Begin
 End;
 If C In ['D','W','S'] Then Escape := [#0..#255] - Escape;
 End;
-Function ClassItem: TRegexChars;
-Begin
+Function ClassItem: TRegexChars;Begin
  If P > Length(Pattern) Then Invalid('classe non fermee');
  If Pattern[P] = '\' Then Begin
   Inc(P); ClassItem := Escape;
@@ -1501,8 +1482,7 @@ Begin
  End;
  N := Node(rnChars, -1, -1); Nodes[N].Chars := Chars; Atom := N;
 End;
-Function Number: Integer;
-Begin
+Function Number: Integer;Begin
  Number := 0;
  If (P > Length(Pattern)) Or Not (Pattern[P] In ['0'..'9']) Then Invalid(
  'entier de repetition attendu');
@@ -1617,8 +1597,7 @@ Var
 Procedure Closure(Start, Position: Integer; Var Flags: TRegexFlags);
 Var
  Top, Current: Integer;
-Procedure Push(Index: Integer);
-Begin
+Procedure Push(Index: Integer);Begin
  If Not Seen[Index] Then Begin
   Seen[Index] := True; Stack[Top] := Index; Inc(Top);
  End;
@@ -1736,13 +1715,11 @@ Begin
  If Remaining = 0 Then Fail('Suppression: aucun token de texte disponible.');
  Diagnostic('Tokens supprimes: ' + IntToStr(Count));
 End;
-Procedure Version;
-Begin
+Procedure Version;Begin
  WriteLn('WHISPER-CLI.PAS ', NativeVersion, ' - moteur Whisper natif en Pascal');
  WriteLn('whisper.cpp: non lie; compatibilite partielle de la ligne de commande.');
 End;
-Procedure Help;
-Begin
+Procedure Help;Begin
  WriteLn('Usage: whisper-cli [options] fichier0.wav fichier1.wav ...');
  WriteLn('   ou: whisper-cli [options] -f fichier.wav');
  WriteLn;
@@ -1898,8 +1875,7 @@ Begin
  If (V < Lower) Or (V > Upper) Then Fail('Valeur hors limites: ' + Option);
  BoundedReal := V;
 End;
-Function UnitReal(Const Text, Option: String): Double;
-Begin
+Function UnitReal(Const Text, Option: String): Double;Begin
  UnitReal := BoundedReal(Text, Option, 0, 1);
 End;
 
@@ -2096,8 +2072,7 @@ Begin
 End;
 { Matching glouton du vocabulaire GGML, comme le tokenizer de reference
   whisper.cpp: les poids contiennent directement les octets des tokens. }
-Function PromptClass(C: Char): Integer;
-Begin
+Function PromptClass(C: Char): Integer;Begin
  If C In [' ', #9, #10, #13] Then PromptClass := 0 Else
  If C In ['0'..'9'] Then PromptClass := 2 Else
  If (C In ['A'..'Z', 'a'..'z']) Or (Ord(C) >= 128) Then PromptClass := 1
@@ -2212,8 +2187,7 @@ Begin
  End;
 End;
 Procedure StartCandidate(Const Cache: TDecoderCaches; Const Logits: TMatrix;
-                         Position: Integer; Var Candidate: TDecodeCandidate);
-Begin
+                         Position: Integer; Var Candidate: TDecodeCandidate);Begin
  Candidate.Tokens := Nil; Candidate.TimeHints := Nil; Candidate.Scores := Nil;
  CloneCache(Cache, Candidate.Cache);
  Candidate.Logits := Logits;
@@ -2221,13 +2195,11 @@ Begin
  Candidate.Position := Position; Candidate.Score := 0;
  Candidate.Finished := False; Candidate.Stopped := False;
 End;
-Function LastOutputToken(Const M: TWhisperModel): Integer;
-Begin
+Function LastOutputToken(Const M: TWhisperModel): Integer;Begin
  LastOutputToken := M.EOT;
  If M.TinyDiarize Then LastOutputToken := M.Transcribe + 1;
 End;
-Function AllowedOutputToken(Token: Integer; Const M: TWhisperModel): Boolean;
-Begin
+Function AllowedOutputToken(Token: Integer; Const M: TWhisperModel): Boolean;Begin
  AllowedOutputToken := (Token = M.EOT) Or
  ((Token < M.EOT) And (M.Vocab[Token] <> '')) Or
  (M.TinyDiarize And (Token = M.Transcribe + 1));
@@ -2261,8 +2233,7 @@ Begin
  For I := 0 To High(Probabilities) Do  If Probabilities[I] > -
  1E30 Then Probabilities[I] := Probabilities[I] - Peak - Sum;
 End;
-Function NextRandom(Var Seed: LongInt): Double;
-Begin
+Function NextRandom(Var Seed: LongInt): Double;Begin
  { Park-Miller: etat local au processeur, reproductible et sans Random global. }
  Seed := (Int64(Seed) * 48271) Mod 2147483647;
  NextRandom := Seed / 2147483647.0;
@@ -2457,8 +2428,7 @@ Begin
   P := Count / N; TokenEntropy := TokenEntropy - P * Ln(P);
  End;
 End;
-Function EntropyFailure(Const Tokens: TTokens; Threshold: Double): Boolean;
-Begin
+Function EntropyFailure(Const Tokens: TTokens; Threshold: Double): Boolean;Begin
  EntropyFailure := (Length(Tokens) > 32) And (TokenEntropy(Tokens) < Threshold);
 End;
 
@@ -2685,8 +2655,7 @@ Begin
 End;
 { Les limites sont comptees en points de code UTF-8, jamais en octets.
   Les temps des sous-segments sont interpoles, pas des alignements acoustiques. }
-Function UTF8Boundary(Const Text: String; Position: Integer): Boolean;
-Begin
+Function UTF8Boundary(Const Text: String; Position: Integer): Boolean;Begin
  UTF8Boundary := True;
  If Position <= Length(Text) Then  UTF8Boundary := (Ord(Text[Position]) And $C0) <> $80;
 End;
@@ -2859,8 +2828,7 @@ Begin
  End;
  ProcessorWorker := 0;
 End;
-Function PadNumber(Value, Digits: Integer): String;
-Begin
+Function PadNumber(Value, Digits: Integer): String;Begin
  PadNumber := IntToStr(Value);
  While Length(PadNumber) < Digits Do PadNumber := '0' + PadNumber;
 End;
@@ -2954,8 +2922,7 @@ Begin
        Else FileURL := FileURL + '%' + Hex[C Div 16 + 1] + Hex[C Mod 16 + 1];
  End;
 End;
-Function Milliseconds(Sample: Integer): Int64;
-Begin
+Function Milliseconds(Sample: Integer): Int64;Begin
  Milliseconds := Int64(Sample) * 1000 Div TargetRate;
 End;
 
@@ -2966,8 +2933,7 @@ Begin
  MS := Milliseconds(Sample);
  SecondsText := IntToStr(MS Div 1000) + '.' + PadNumber(MS Mod 1000, 3);
 End;
-Function SRTTime(Sample: Integer): String;
-Begin
+Function SRTTime(Sample: Integer): String;Begin
  SRTTime := TimeStamp(Sample); SRTTime[9] := ',';
 End;
 
@@ -2980,8 +2946,7 @@ Begin
  If (Code <> 0) Or (Count <> Length(Value)) Then Fail('Ecriture incomplete: ' +
  Stream.Name);
 End;
-Procedure ExportLine(Var Stream: TBinary; Const Value: String);
-Begin
+Procedure ExportLine(Var Stream: TBinary; Const Value: String);Begin
  ExportWrite(Stream, Value + #13#10);
 End;
 
@@ -3057,8 +3022,7 @@ Begin
  End;
  ExportLine(Stream, ']');
 End;
-Function DisplaySegment(Const Segment: TSegment): String;
-Begin
+Function DisplaySegment(Const Segment: TSegment): String;Begin
  DisplaySegment := Segment.Text;
  If Segment.Speaker <> '' Then DisplaySegment := '[speaker ' + Segment.Speaker + '] ' +
  DisplaySegment;
