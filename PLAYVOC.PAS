@@ -140,15 +140,17 @@ Begin
  Assign(F, Name); GetFAttr(F, Attributes); Exists := DosError = 0;
 End;
 
-Procedure Help;
-Begin 
- WriteLn('PLAYVOC - Cette commande permet de lancer le lecteur audio pour les fichiers VOC.');
+Procedure Help;Begin
+ WriteLn(
+ 'PLAYVOC - Cette commande permet de lancer le lecteur audio pour les fichiers VOC.');
  WriteLn;
  WriteLn('Syntaxe: PLAYVOC fichier.voc [/VOLUME:0..100] [/LOOP:1..32767]');
  WriteLn;
  WriteLn('Volume logiciel: 100 par defaut. LOOP: nombre total de lectures, defaut 1.');
- WriteLn('Creative VOC PCM 8/16 bits, mono/stereo; blocs 1..9, silences et boucles finies.');
- WriteLn('ADPCM, A-law, mu-law, boucles infinies et changements de frequence/canaux refuses.');
+ WriteLn(
+ 'Creative VOC PCM 8/16 bits, mono/stereo; blocs 1..9, silences et boucles finies.');
+ WriteLn(
+ 'ADPCM, A-law, mu-law, boucles infinies et changements de frequence/canaux refuses.');
  WriteLn('Windows: API waveOut directes. DOS: SB 2.0+, BLASTER requis; Echap arrete.');
  WriteLn('Preparation dans un fichier PCM temporaire du dossier courant avant lecture.');
  WriteLn('Aide: /? ou --help');
@@ -329,59 +331,65 @@ Begin
  LongInt(TSmallBytes(B)[Offset+2])*65536 + LongInt(TSmallBytes(B)[Offset+3])*16777216;
 End;
 
+Var
+ HaveFormat, HaveSound: Boolean;
 
-Var HaveFormat, HaveSound: Boolean;
-
-Procedure SetFormat(Rate: LongInt; Channels: Integer);
-Begin
- if (Rate < 4000) or (Rate > 192000) or not (Channels in [1,2]) Then
-  Fail('Format VOC attendu: 4000..192000 Hz, mono/stereo.');
- if HaveFormat Then Begin
-  if (Header.Rate <> Rate) or (Header.Channels <> Channels) Then
-   Fail('Changement de frequence ou de canaux non pris en charge.');
- End else Begin
+Procedure SetFormat(Rate: LongInt; Channels: Integer);Begin
+ If (Rate < 4000) Or (Rate > 192000) Or Not (Channels In [1,2]) Then  Fail(
+ 'Format VOC attendu: 4000..192000 Hz, mono/stereo.');
+ If HaveFormat Then Begin
+  If (Header.Rate <> Rate) Or (Header.Channels <> Channels) Then   Fail(
+  'Changement de frequence ou de canaux non pris en charge.');
+ End Else
+ Begin
   Header.Rate := Rate; Header.Channels := Channels; FirstHeader := Header;
   HaveFormat := True;
  End;
 End;
 
-Procedure SubmitPCM(Count: Word);
-Begin
- if Written > MaxWaveData - 16384 Then Fail('PCM temporaire depassant 2 Go.');
+Procedure SubmitPCM(Count: Word);Begin
+ If Written > MaxWaveData - 16384 Then Fail('PCM temporaire depassant 2 Go.');
  EmitPCM(Count);
 End;
 
 Procedure ConvertData(Position, Count: LongInt; Bits: Integer);
-Var Raw: array[0..2047] of Byte; N, J, OutCount, Align: Integer; Value: LongInt;
+Var
+ Raw: Array[0..2047] Of Byte;
+ N, J, OutCount, Align: Integer;
+ Value: LongInt;
 Begin
- Align := Header.Channels * (Bits div 8);
- if (Count mod Align) <> 0 Then Fail('Echantillon VOC incomplet.');
- if Count > 0 Then HaveSound := True;
- while Count > 0 do Begin
-  if Count > SizeOf(Raw) Then N := SizeOf(Raw) else N := Count;
+ Align := Header.Channels * (Bits Div 8);
+ If (Count Mod Align) <> 0 Then Fail('Echantillon VOC incomplet.');
+ If Count > 0 Then HaveSound := True;
+ While Count > 0 Do Begin
+  If Count > SizeOf(Raw) Then N := SizeOf(Raw) Else N := Count;
   ReadAt(Position, Raw, N); OutCount := 0;
-  if Bits = 8 Then Begin
-   for J := 0 to N-1 do Begin
+  If Bits = 8 Then Begin
+   For J := 0 To N-1 Do Begin
     Value := (LongInt(Raw[J])-128)*256;
-    if Value < 0 Then Inc(Value, 65536);
-    PCM[OutCount] := Value and 255; PCM[OutCount+1] := Value shr 8;
+    If Value < 0 Then Inc(Value, 65536);
+    PCM[OutCount] := Value And 255; PCM[OutCount+1] := Value Shr 8;
     Inc(OutCount, 2);
    End;
-  End else Begin Move(Raw, PCM, N); OutCount := N; End;
+  End Else
+  Begin
+   Move(Raw, PCM, N); OutCount := N;
+  End;
   SubmitPCM(OutCount); Inc(Position, N); Dec(Count, N);
  End;
 End;
 
 Procedure WriteSilence(Cycles: LongInt; TimeConstant: Byte);
-Var Frames, Count: LongInt;
+Var
+ Frames, Count: LongInt;
 Begin
- if not HaveFormat Then SetFormat(1000000 div (256-Word(TimeConstant)), 1);
+ If Not HaveFormat Then SetFormat(1000000 Div (256-Word(TimeConstant)), 1);
  { Convertir la duree en nombre d'echantillons du format courant. }
  Frames := Round(Cycles * (256.0-TimeConstant) * Header.Rate / 1000000.0);
  FillChar(PCM, SizeOf(PCM), 0);
- while Frames > 0 do Begin
+ While Frames > 0 Do Begin
   Count := Frames;
-  if Count > 1024 Then Count := 1024;
+  If Count > 1024 Then Count := 1024;
   { EmitPCM peut modifier PCM sous Windows, mais les zeros restent nuls. }
   SubmitPCM(Count * Header.Channels * 2); Dec(Frames, Count);
  End;
@@ -389,11 +397,17 @@ Begin
 End;
 
 Procedure Prepare;
-Const Signature = 'Creative Voice File';
-Type TRepeatState = record Position: LongInt; Left: Word; Bits: Integer; End;
+Const
+ Signature = 'Creative Voice File';
+Type
+ TRepeatState = Record
+  Position: LongInt;
+  Left: Word;
+  Bits: Integer;
+ End;
 Var
- B: array[0..63] of Byte;
- Stack: array[1..8] of TRepeatState;
+ B: Array[0..63] Of Byte;
+ Stack: Array[1..8] Of TRepeatState;
  Position, Size, Next, Rate, ExtendedRate, Steps: LongInt;
  Bits, Channels, ExtendedChannels, Depth, J, Code, Kind, Codec: Integer;
  Version, Check: Word;
@@ -406,105 +420,121 @@ Begin
  Assign(InputFile, InputName); OldMode := FileMode; FileMode := 0;
  {$I-}Reset(InputFile, 1); Code := IOResult;{$I+}
  FileMode := OldMode;
- if Code <> 0 Then Fail('Ouverture VOC impossible: ' + InputName);
+ If Code <> 0 Then Fail('Ouverture VOC impossible: ' + InputName);
  InputOpen := True;
  {$I-}InputSize := FileSize(InputFile); Code := IOResult;{$I+}
- if (Code <> 0) or (InputSize < 26) Then Fail('VOC vide, trop grand ou tronque.');
+ If (Code <> 0) Or (InputSize < 26) Then Fail('VOC vide, trop grand ou tronque.');
  ReadAt(0, B, 26);
- for J := 1 to 19 do
-  if B[J-1] <> Ord(Signature[J]) Then Fail('Signature Creative Voice File manquante.');
- if B[19] <> $1A Then Fail('Signature VOC incorrecte.');
+ For J := 1 To 19 Do  If B[J-1] <> Ord(Signature[J]) Then Fail(
+ 'Signature Creative Voice File manquante.');
+ If B[19] <> $1A Then Fail('Signature VOC incorrecte.');
  Version := LE16(B,22); Check := LE16(B,24);
- if Check <> Word((LongInt(Version xor $FFFF)+$1234) and $FFFF) Then Fail('Controle de version VOC incorrect.');
- if (Version < $0100) or (Version > $0114) Then Fail('Version VOC non prise en charge (1.00..1.20).');
+ If Check <> Word((LongInt(Version Xor $FFFF)+$1234) And $FFFF) Then Fail(
+ 'Controle de version VOC incorrect.');
+ If (Version < $0100) Or (Version > $0114) Then Fail(
+ 'Version VOC non prise en charge (1.00..1.20).');
  Position := LE16(B,20);
- if (Position < 26) or (Position >= InputSize) Then Fail('Position initiale VOC incorrecte.');
+ If (Position < 26) Or (Position >= InputSize) Then Fail(
+ 'Position initiale VOC incorrecte.');
  MakeTemporary;
  WriteLn('Preparation VOC avant lecture...');
- while Position < InputSize do Begin
+ While Position < InputSize Do Begin
   Inc(Steps);
-  if Steps > 1000000 Then Fail('Trop de blocs VOC developpes (limite 1000000).');
+  If Steps > 1000000 Then Fail('Trop de blocs VOC developpes (limite 1000000).');
   ReadAt(Position, B, 1); Kind := B[0]; Inc(Position);
-  if Extended and (Kind <> 1) Then Fail('Le bloc VOC 8 doit preceder immediatement le bloc 1.');
-  if Kind = 0 Then Begin Terminated := True; Break; End;
+  If Extended And (Kind <> 1) Then Fail(
+  'Le bloc VOC 8 doit preceder immediatement le bloc 1.');
+  If Kind = 0 Then Begin
+   Terminated := True; Break;
+  End;
   ReadAt(Position, B, 3); Inc(Position, 3);
   Size := LongInt(B[0])+LongInt(B[1])*256+LongInt(B[2])*65536;
-  if Size > InputSize-Position Then Fail('Bloc VOC tronque.');
+  If Size > InputSize-Position Then Fail('Bloc VOC tronque.');
   Next := Position + Size;
-  case Kind of
-   1: Begin
-    if Size < 2 Then Fail('Bloc VOC 1 trop court.');
-    ReadAt(Position, B, 2);
-    if Extended Then Begin
-     Rate := ExtendedRate; Channels := ExtendedChannels; Extended := False;
-    End else Begin
-     if B[1] <> 0 Then Fail('Compression VOC non prise en charge: PCM requis.');
-     Rate := 1000000 div (256-Word(B[0])); Channels := 1;
-    End;
-    SetFormat(Rate, Channels); Bits := 8;
-    ConvertData(Position+2, Size-2, Bits);
+  Case Kind Of
+  1:
+  Begin
+   If Size < 2 Then Fail('Bloc VOC 1 trop court.');
+   ReadAt(Position, B, 2);
+   If Extended Then Begin
+    Rate := ExtendedRate; Channels := ExtendedChannels; Extended := False;
+   End Else
+   Begin
+    If B[1] <> 0 Then Fail('Compression VOC non prise en charge: PCM requis.');
+    Rate := 1000000 Div (256-Word(B[0])); Channels := 1;
    End;
-   2: Begin
-    if not HaveFormat or (Bits = 0) Then Fail('Continuation VOC sans bloc audio initial.');
-    ConvertData(Position, Size, Bits);
-   End;
-   3: Begin
-    if Size <> 3 Then Fail('Taille de silence VOC incorrecte.');
-    ReadAt(Position, B, 3);
-    WriteSilence(LongInt(LE16(B,0))+1, B[2]);
-   End;
-   4: if Size <> 2 Then Fail('Taille de marqueur VOC incorrecte.');
-   5: Begin { Texte descriptif ignore. } End;
-   6: Begin
-    if Size <> 2 Then Fail('Taille de boucle VOC incorrecte.');
-    if Depth = 8 Then Fail('Plus de 8 boucles VOC imbriquees.');
-    ReadAt(Position, B, 2); Check := LE16(B,0);
-    if Check = $FFFF Then Fail('Boucle VOC infinie non prise en charge.');
-    Inc(Depth); Stack[Depth].Position := Next; Stack[Depth].Left := Check;
-    Stack[Depth].Bits := Bits;
-   End;
-   7: Begin
-    if (Size <> 0) or (Depth = 0) Then Fail('Fin de boucle VOC incorrecte.');
-    if Stack[Depth].Left > 0 Then Begin
-     Dec(Stack[Depth].Left); Next := Stack[Depth].Position;
-     Bits := Stack[Depth].Bits;
-    End else Dec(Depth);
-   End;
-   8: Begin
-    if Size <> 4 Then Fail('Taille du bloc VOC 8 incorrecte.');
-    ReadAt(Position, B, 4);
-    if (B[2] <> 0) or (B[3] > 1) Then Fail('Bloc VOC 8: PCM mono/stereo requis.');
-    ExtendedChannels := B[3]+1;
-    ExtendedRate := 256000000 div ((65536-LongInt(LE16(B,0)))*ExtendedChannels);
-    Extended := True;
-   End;
-   9: Begin
-    if Size < 12 Then Fail('Bloc VOC 9 trop court.');
-    ReadAt(Position, B, 12);
-    Rate := LE32(B,0); Bits := B[4]; Channels := B[5]; Codec := LE16(B,6);
-    if not (((Bits = 8) and (Codec = 0)) or ((Bits = 16) and (Codec = 4))) Then
-     Fail('Bloc VOC 9: PCM 8 bits (codec 0) ou 16 bits (codec 4) requis.');
-    SetFormat(Rate, Channels); ConvertData(Position+12, Size-12, Bits);
-   End;
-   else Fail('Type de bloc VOC inconnu.');
+   SetFormat(Rate, Channels); Bits := 8;
+   ConvertData(Position+2, Size-2, Bits);
   End;
-  Position := Next;
+  2:
+  Begin
+   If Not HaveFormat Or (Bits = 0) Then Fail('Continuation VOC sans bloc audio initial.');
+   ConvertData(Position, Size, Bits);
+  End;
+  3:
+  Begin
+   If Size <> 3 Then Fail('Taille de silence VOC incorrecte.');
+   ReadAt(Position, B, 3);
+   WriteSilence(LongInt(LE16(B,0))+1, B[2]);
+  End;
+  4: If Size <> 2 Then Fail('Taille de marqueur VOC incorrecte.');
+  5:
+  Begin
+ { Texte descriptif ignore. } 
+  End;
+  6:
+  Begin
+   If Size <> 2 Then Fail('Taille de boucle VOC incorrecte.');
+   If Depth = 8 Then Fail('Plus de 8 boucles VOC imbriquees.');
+   ReadAt(Position, B, 2); Check := LE16(B,0);
+   If Check = $FFFF Then Fail('Boucle VOC infinie non prise en charge.');
+   Inc(Depth); Stack[Depth].Position := Next; Stack[Depth].Left := Check;
+   Stack[Depth].Bits := Bits;
+  End;
+  7:
+  Begin
+   If (Size <> 0) Or (Depth = 0) Then Fail('Fin de boucle VOC incorrecte.');
+   If Stack[Depth].Left > 0 Then Begin
+    Dec(Stack[Depth].Left); Next := Stack[Depth].Position;
+    Bits := Stack[Depth].Bits;
+   End Else Dec(Depth);
+  End;
+  8:
+  Begin
+   If Size <> 4 Then Fail('Taille du bloc VOC 8 incorrecte.');
+   ReadAt(Position, B, 4);
+   If (B[2] <> 0) Or (B[3] > 1) Then Fail('Bloc VOC 8: PCM mono/stereo requis.');
+   ExtendedChannels := B[3]+1;
+   ExtendedRate := 256000000 Div ((65536-LongInt(LE16(B,0)))*ExtendedChannels);
+   Extended := True;
+  End;
+  9:
+  Begin
+   If Size < 12 Then Fail('Bloc VOC 9 trop court.');
+   ReadAt(Position, B, 12);
+   Rate := LE32(B,0); Bits := B[4]; Channels := B[5]; Codec := LE16(B,6);
+   If Not (((Bits = 8) And (Codec = 0)) Or ((Bits = 16) And (Codec = 4))) Then     Fail(
+   'Bloc VOC 9: PCM 8 bits (codec 0) ou 16 bits (codec 4) requis.');
+   SetFormat(Rate, Channels); ConvertData(Position+12, Size-12, Bits);
+  End;
+  Else Fail('Type de bloc VOC inconnu.');
  End;
- if not Terminated Then Fail('Terminateur VOC manquant.');
- if Depth <> 0 Then Fail('Boucle VOC non fermee.');
- if not HaveSound or (Written = 0) Then Fail('Aucun son VOC.');
- WriteLn(Header.Rate, ' Hz, ', Header.Channels, ' canal/canaux, sortie PCM.');
- {$I-}Close(InputFile); Code := IOResult;{$I+}
- InputOpen := False;
- if Code <> 0 Then Fail('Fermeture VOC impossible.');
- {$I-}Close(OutputFile); Code := IOResult;{$I+}
- OutputOpen := False;
- if Code <> 0 Then Fail('Fermeture temporaire impossible.');
- {$I-}Reset(OutputFile, 1); Code := IOResult;{$I+}
- if Code <> 0 Then Fail('Relecture temporaire impossible.');
- OutputOpen := True;
+ Position := Next;
 End;
-
+If Not Terminated Then Fail('Terminateur VOC manquant.');
+If Depth <> 0 Then Fail('Boucle VOC non fermee.');
+If Not HaveSound Or (Written = 0) Then Fail('Aucun son VOC.');
+WriteLn(Header.Rate, ' Hz, ', Header.Channels, ' canal/canaux, sortie PCM.');
+ {$I-}Close(InputFile); Code := IOResult;{$I+}
+InputOpen := False;
+If Code <> 0 Then Fail('Fermeture VOC impossible.');
+ {$I-}Close(OutputFile); Code := IOResult;{$I+}
+OutputOpen := False;
+If Code <> 0 Then Fail('Fermeture temporaire impossible.');
+ {$I-}Reset(OutputFile, 1); Code := IOResult;{$I+}
+If Code <> 0 Then Fail('Relecture temporaire impossible.');
+OutputOpen := True;
+End;
 
 Procedure ReadPCM(Var Buffer; Count: Word; Var Actual: Word);
 Var
