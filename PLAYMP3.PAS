@@ -1,9 +1,11 @@
 Program PLAYMP3;
-
 {$A-}
-
-{$IFDEF FPC}{$MODE TP}{$ENDIF}
-{$IFNDEF FPC}{$N+}{$E+}{$ENDIF}
+{$IFDEF FPC}
+ {$MODE TP}
+{$ENDIF}
+{$IFNDEF FPC}
+ {$N+}{$E+}
+{$ENDIF}
 { Decodeur MP3 Layer III procedural, sans programme ni bibliotheque externe.
   ParamCount/ParamStr et fichiers standard Pascal. Compilation Windows: fpc -O2 PLAYMP3.PAS
   Tables Huffman et fenetre de synthese: PDMP3, domaine public, Krister
@@ -12,63 +14,81 @@ Program PLAYMP3;
   MPEG-1/2/2.5, mono/stereo, debit fixe/variable hors free-format.
   Sortie PCM16 a la frequence d'origine, sans suppression du delai encodeur.
   Les grands tableaux sont alloues sur le tas, chacun inferieur a 64 Kio. }
-
 {$IFDEF FPC}
  {$IFNDEF MSWINDOWS}
-  {$IFNDEF CPU8086}{$FATAL DOS real-mode 8086 or Windows required}{$ENDIF}
+  {$IFNDEF CPU8086}
+   {$FATAL DOS real-mode 8086 or Windows required}
+  {$ENDIF}
  {$ENDIF}
 {$ENDIF}
-Uses DOS {$IFNDEF MSWINDOWS}, Crt {$ENDIF};
+
+Uses DOS
+{$IFNDEF MSWINDOWS}
+ , Crt
+{$ENDIF}
+;
 
 {$IFDEF MSWINDOWS}
 { Declarations Win32/Win64 locales. Les DLL sont celles du systeme Windows.
   DWORD reste sur 32 bits; handles et DWORD_PTR suivent la taille du pointeur.
   Ces deux structures ont la disposition binaire des en-tetes multimedia. }
-Type
- DWORD = LongWord;
- HWAVEOUT = PtrUInt;
- PHWAVEOUT = ^HWAVEOUT;
- TWaveFormatEx = packed record
-  wFormatTag, nChannels: Word;
-  nSamplesPerSec, nAvgBytesPerSec: DWORD;
-  nBlockAlign, wBitsPerSample, cbSize: Word;
- End;
- PWaveFormatEx = ^TWaveFormatEx;
- PWaveHdr = ^TWaveHdr;
- TWaveHdr = packed record
-  lpData: PChar;
-  dwBufferLength, dwBytesRecorded: DWORD;
-  dwUser: PtrUInt;
-  dwFlags, dwLoops: DWORD;
-  lpNext: PWaveHdr;
-  reserved: PtrUInt;
- End;
-Const
- WAVE_FORMAT_PCM = 1;
- WAVE_MAPPER = DWORD($FFFFFFFF);
- CALLBACK_NULL = 0;
- MMSYSERR_NOERROR = 0;
- WHDR_DONE = 1;
- WHDR_PREPARED = 2;
- WHDR_INQUEUE = 16;
+ Type
+  DWORD = LongWord;
+  HWAVEOUT = PtrUInt;
+  PHWAVEOUT = ^HWAVEOUT;
+  TWaveFormatEx = Packed Record
+   wFormatTag, nChannels: Word;
+   nSamplesPerSec, nAvgBytesPerSec: DWORD;
+   nBlockAlign, wBitsPerSample, cbSize: Word;
+  End;
+  PWaveFormatEx = ^TWaveFormatEx;
+  PWaveHdr = ^TWaveHdr;
+  TWaveHdr = Packed Record
+   lpData: PChar;
+   dwBufferLength, dwBytesRecorded: DWORD;
+   dwUser: PtrUInt;
+   dwFlags, dwLoops: DWORD;
+   lpNext: PWaveHdr;
+   reserved: PtrUInt;
+  End;
 
-Function waveOutOpen(Handle: PHWAVEOUT; Device: DWORD; Format: PWaveFormatEx;
- Callback, Instance: PtrUInt; Flags: DWORD): DWORD; stdcall;
+ Const
+  WAVE_FORMAT_PCM = 1;
+  WAVE_MAPPER = DWORD($FFFFFFFF);
+  CALLBACK_NULL = 0;
+  MMSYSERR_NOERROR = 0;
+  WHDR_DONE = 1;
+  WHDR_PREPARED = 2;
+  WHDR_INQUEUE = 16;
+
+ Function waveOutOpen(Handle: PHWAVEOUT; Device: DWORD; Format: PWaveFormatEx;
+                      Callback, Instance: PtrUInt; Flags: DWORD): DWORD;
+ stdcall;
  external 'winmm.dll' name 'waveOutOpen';
-Function waveOutPrepareHeader(Handle: HWAVEOUT; Header: PWaveHdr;
- Size: DWORD): DWORD; stdcall; external 'winmm.dll' name 'waveOutPrepareHeader';
-Function waveOutUnprepareHeader(Handle: HWAVEOUT; Header: PWaveHdr;
- Size: DWORD): DWORD; stdcall; external 'winmm.dll' name 'waveOutUnprepareHeader';
-Function waveOutWrite(Handle: HWAVEOUT; Header: PWaveHdr;
- Size: DWORD): DWORD; stdcall; external 'winmm.dll' name 'waveOutWrite';
-Function waveOutReset(Handle: HWAVEOUT): DWORD; stdcall;
- external 'winmm.dll' name 'waveOutReset';
-Function waveOutClose(Handle: HWAVEOUT): DWORD; stdcall;
- external 'winmm.dll' name 'waveOutClose';
-Function GetTickCount: DWORD; stdcall; external 'kernel32.dll' name 'GetTickCount';
-Procedure Sleep(Milliseconds: DWORD); stdcall; external 'kernel32.dll' name 'Sleep';
-{$ENDIF}
 
+ Function waveOutPrepareHeader(Handle: HWAVEOUT; Header: PWaveHdr; Size: DWORD): DWORD;
+ stdcall; external 'winmm.dll' name 'waveOutPrepareHeader';
+
+ Function waveOutUnprepareHeader(Handle: HWAVEOUT; Header: PWaveHdr; Size: DWORD): DWORD;
+ stdcall; external 'winmm.dll' name 'waveOutUnprepareHeader';
+
+ Function waveOutWrite(Handle: HWAVEOUT; Header: PWaveHdr; Size: DWORD): DWORD;
+ stdcall; external 'winmm.dll' name 'waveOutWrite';
+
+ Function waveOutReset(Handle: HWAVEOUT): DWORD;
+ stdcall;
+ external 'winmm.dll' name 'waveOutReset';
+
+ Function waveOutClose(Handle: HWAVEOUT): DWORD;
+ stdcall;
+ external 'winmm.dll' name 'waveOutClose';
+
+ Function GetTickCount: DWORD;
+ stdcall; external 'kernel32.dll' name 'GetTickCount';
+
+ Procedure Sleep(Milliseconds: DWORD);
+ stdcall; external 'kernel32.dll' name 'Sleep';
+{$ENDIF}
 
 Const
  MaxFrame = 2048;
@@ -76,52 +96,52 @@ Const
  MP3Pi = 3.14159265358979323846;
 
 Type
- TBytes = array[0..4095] of Byte;
+ TBytes = Array[0..4095] Of Byte;
  PBytes = ^TBytes;
- TBits = record
+ TBits = Record
   Data: PBytes;
   Position, Limit: Integer;
   Failed: Boolean;
  End;
- TBands = array[0..39] of Byte;
- TGranule = record
+ TBands = Array[0..39] Of Byte;
+ TGranule = Record
   PartLength, BigValues, Gain, Compress, BlockType, Mixed: Integer;
   Region0, Region1, Scale, PreFlag, CountTable: Integer;
-  Tables, SubGain: array[0..2] of Integer;
+  Tables, SubGain: Array[0..2] Of Integer;
   LongBands, ShortBands: Integer;
   Bands: TBands;
-  Factors, Intensity: array[0..39] of Integer;
+  Factors, Intensity: Array[0..39] Of Integer;
  End;
- THeader = record
+ THeader = Record
   Version, Channels, Mode, Extension, FrequencyIndex, BandIndex: Integer;
   FrameSize, SideSize, SideOffset, Granules: Integer;
   Rate, BitRate: LongInt;
   Protected: Boolean;
  End;
- TDecoder = record
-  X: array[0..1,0..575] of Double;
-  Overlap: array[0..1,0..31,0..17] of Double;
-  V: array[0..1,0..1023] of Double;
-  Scratch: array[0..575] of Double;
-  PCM: array[0..4607] of Byte;
+ TDecoder = Record
+  X: Array[0..1,0..575] Of Double;
+  Overlap: Array[0..1,0..31,0..17] Of Double;
+  V: Array[0..1,0..1023] Of Double;
+  Scratch: Array[0..575] Of Double;
+  PCM: Array[0..4607] Of Byte;
   Main: TBytes;
-  Reservoir: array[0..510] of Byte;
+  Reservoir: Array[0..510] Of Byte;
   ReservoirSize: Integer;
-  G: array[0..1,0..1] of TGranule;
-  SCFSI: array[0..1,0..3] of Integer;
+  G: Array[0..1,0..1] Of TGranule;
+  SCFSI: Array[0..1,0..3] Of Integer;
  End;
  PDecoder = ^TDecoder;
- TTransforms = record
-  Synthesis: array[0..63,0..31] of Double;
-  LongCos: array[0..35,0..17] of Double;
-  ShortCos: array[0..11,0..5] of Double;
-  Window: array[0..3,0..35] of Double;
-  CS, CA: array[0..7] of Double;
+ TTransforms = Record
+  Synthesis: Array[0..63,0..31] Of Double;
+  LongCos: Array[0..35,0..17] Of Double;
+  ShortCos: Array[0..11,0..5] Of Double;
+  Window: Array[0..3,0..35] Of Double;
+  CS, CA: Array[0..7] Of Double;
  End;
  PTransforms = ^TTransforms;
 
 Const
-HuffTree: array[0..2803] of Word = (
+ HuffTree: Array[0..2803] Of Word = (
  $0201,$0000,$0201,$0010,$0201,$0001,$0011,$0201,$0000,$0401,$0201,$0010,
  $0001,$0201,$0011,$0401,$0201,$0020,$0021,$0201,$0012,$0201,$0002,$0022,
  $0401,$0201,$0000,$0001,$0201,$0011,$0201,$0010,$0401,$0201,$0020,$0021,
@@ -356,7 +376,7 @@ HuffTree: array[0..2803] of Word = (
  $000b,$1001,$0801,$0401,$0201,$0000,$0001,$0201,$0002,$0003,$0401,$0201,
  $0004,$0005,$0201,$0006,$0007,$0801,$0401,$0201,$0008,$0009,$0201,$000a,
  $000b,$0401,$0201,$000c,$000d,$0201,$000e,$000f);
-SynthWindow: array[0..511] of Double = (
+ SynthWindow: Array[0..511] Of Double = (
  0.000000000,-0.000015259,-0.000015259,-0.000015259,-0.000015259,-0.000015259,
  -0.000015259,-0.000030518,-0.000030518,-0.000030518,-0.000030518,-0.000045776,
  -0.000045776,-0.000061035,-0.000061035,-0.000076294,-0.000076294,-0.000091553,
@@ -443,404 +463,497 @@ SynthWindow: array[0..511] of Double = (
  0.000061035,0.000061035,0.000045776,0.000045776,0.000030518,0.000030518,
  0.000030518,0.000030518,0.000015259,0.000015259,0.000015259,0.000015259,
  0.000015259,0.000015259);
-HuffOffset: array[0..33] of Integer = (
+ HuffOffset: Array[0..33] Of Integer = (
  0,0,7,24,0,41,72,103,174,245,316,443,
  570,697,0,1208,1719,1719,1719,1719,1719,1719,1719,1719,
  2230,2230,2230,2230,2230,2230,2230,2230,2742,2773);
-HuffLength: array[0..33] of Integer = (
+ HuffLength: Array[0..33] Of Integer = (
  0,7,17,17,0,31,31,71,71,71,127,127,
  127,511,0,511,511,511,511,511,511,511,511,511,
  512,512,512,512,512,512,512,512,31,31);
-HuffLinBits: array[0..33] of Integer = (
+ HuffLinBits: Array[0..33] Of Integer = (
  0,0,0,0,0,0,0,0,0,0,0,0,
  0,0,0,0,1,2,3,4,6,8,10,13,
  4,5,6,7,8,9,11,13,0,0);
-LongWidths: array[0..7] of TBands = (
- (6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
- (12,12,12,12,12,12,16,20,24,28,32,40,48,56,64,76,90,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
- (6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
- (6,6,6,6,6,6,8,10,12,14,16,18,22,26,32,38,46,54,62,70,76,36,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
- (6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
- (4,4,4,4,4,4,6,6,8,8,10,12,16,20,24,28,34,42,50,54,76,158,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
- (4,4,4,4,4,4,6,6,6,8,10,12,16,18,22,28,34,40,46,54,54,192,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
- (4,4,4,4,4,4,6,6,8,10,12,16,20,24,30,38,46,56,68,84,102,26,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0));
-ShortWidths: array[0..7] of TBands = (
- (4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,30,30,30,40,40,40,18,18,18,0),
- (8,8,8,8,8,8,8,8,8,12,12,12,16,16,16,20,20,20,24,24,24,28,28,28,36,36,36,2,2,2,2,2,2,2,2,2,26,26,26,0),
- (4,4,4,4,4,4,4,4,4,6,6,6,6,6,6,8,8,8,10,10,10,14,14,14,18,18,18,26,26,26,32,32,32,42,42,42,18,18,18,0),
- (4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,32,32,32,44,44,44,12,12,12,0),
- (4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,30,30,30,40,40,40,18,18,18,0),
- (4,4,4,4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,22,22,22,30,30,30,56,56,56,0),
- (4,4,4,4,4,4,4,4,4,4,4,4,6,6,6,6,6,6,10,10,10,12,12,12,14,14,14,16,16,16,20,20,20,26,26,26,66,66,66,0),
- (4,4,4,4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,12,12,12,16,16,16,20,20,20,26,26,26,34,34,34,42,42,42,12,12,12,0));
-MixedWidths: array[0..7] of TBands = (
- (6,6,6,6,6,6,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,30,30,30,40,40,40,18,18,18,0,0,0,0),
- (12,12,12,4,4,4,8,8,8,12,12,12,16,16,16,20,20,20,24,24,24,28,28,28,36,36,36,2,2,2,2,2,2,2,2,2,26,26,26,0),
- (6,6,6,6,6,6,6,6,6,6,6,6,8,8,8,10,10,10,14,14,14,18,18,18,26,26,26,32,32,32,42,42,42,18,18,18,0,0,0,0),
- (6,6,6,6,6,6,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,32,32,32,44,44,44,12,12,12,0,0,0,0),
- (6,6,6,6,6,6,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,30,30,30,40,40,40,18,18,18,0,0,0,0),
- (4,4,4,4,4,4,6,6,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,22,22,22,30,30,30,56,56,56,0,0),
- (4,4,4,4,4,4,6,6,4,4,4,6,6,6,6,6,6,10,10,10,12,12,12,14,14,14,16,16,16,20,20,20,26,26,26,66,66,66,0,0),
- (4,4,4,4,4,4,6,6,4,4,4,6,6,6,8,8,8,12,12,12,16,16,16,20,20,20,26,26,26,34,34,34,42,42,42,12,12,12,0,0));
-FactorPartitions: array[0..2,0..27] of Byte = (
+ LongWidths: Array[0..7] Of TBands = (
+ (6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0,0),
+ (12,12,12,12,12,12,16,20,24,28,32,40,48,56,64,76,90,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0,0,0),
+ (6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0,0),
+ (6,6,6,6,6,6,8,10,12,14,16,18,22,26,32,38,46,54,62,70,76,36,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0,0),
+ (6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0,0),
+ (4,4,4,4,4,4,6,6,8,8,10,12,16,20,24,28,34,42,50,54,76,158,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0),
+ (4,4,4,4,4,4,6,6,6,8,10,12,16,18,22,28,34,40,46,54,54,192,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0),
+ (4,4,4,4,4,4,6,6,8,10,12,16,20,24,30,38,46,56,68,84,102,26,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0));
+ ShortWidths: Array[0..7] Of TBands = (
+ (4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,30,30,30,40,
+ 40,40,18,18,18,0),
+ (8,8,8,8,8,8,8,8,8,12,12,12,16,16,16,20,20,20,24,24,24,28,28,28,36,36,36,2,2,2,2,2,2,2,2,
+ 2,26,26,26,0),
+ (4,4,4,4,4,4,4,4,4,6,6,6,6,6,6,8,8,8,10,10,10,14,14,14,18,18,18,26,26,26,32,32,32,42,42,
+ 42,18,18,18,0),
+ (4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,32,32,32,44,
+ 44,44,12,12,12,0),
+ (4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,30,30,30,40,
+ 40,40,18,18,18,0),
+ (4,4,4,4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,22,22,22,30,30,
+ 30,56,56,56,0),
+ (4,4,4,4,4,4,4,4,4,4,4,4,6,6,6,6,6,6,10,10,10,12,12,12,14,14,14,16,16,16,20,20,20,26,26,
+ 26,66,66,66,0),
+ (4,4,4,4,4,4,4,4,4,4,4,4,6,6,6,8,8,8,12,12,12,16,16,16,20,20,20,26,26,26,34,34,34,42,42,
+ 42,12,12,12,0));
+ MixedWidths: Array[0..7] Of TBands = (
+ (6,6,6,6,6,6,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,30,30,30,40,40,40,
+ 18,18,18,0,0,0,0),
+ (12,12,12,4,4,4,8,8,8,12,12,12,16,16,16,20,20,20,24,24,24,28,28,28,36,36,36,2,2,2,2,2,2,
+ 2,2,2,26,26,26,0),
+ (6,6,6,6,6,6,6,6,6,6,6,6,8,8,8,10,10,10,14,14,14,18,18,18,26,26,26,32,32,32,42,42,42,18,
+ 18,18,0,0,0,0),
+ (6,6,6,6,6,6,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,32,32,32,44,44,44,
+ 12,12,12,0,0,0,0),
+ (6,6,6,6,6,6,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,24,24,24,30,30,30,40,40,40,
+ 18,18,18,0,0,0,0),
+ (4,4,4,4,4,4,6,6,4,4,4,6,6,6,8,8,8,10,10,10,12,12,12,14,14,14,18,18,18,22,22,22,30,30,30,
+ 56,56,56,0,0),
+ (4,4,4,4,4,4,6,6,4,4,4,6,6,6,6,6,6,10,10,10,12,12,12,14,14,14,16,16,16,20,20,20,26,26,26,
+ 66,66,66,0,0),
+ (4,4,4,4,4,4,6,6,4,4,4,6,6,6,8,8,8,12,12,12,16,16,16,20,20,20,26,26,26,34,34,34,42,42,42,
+ 12,12,12,0,0));
+ FactorPartitions: Array[0..2,0..27] Of Byte = (
  (6,5,5,5,6,5,5,5,6,5,7,3,11,10,0,0,7,7,7,0,6,6,6,3,8,8,5,0),
  (8,9,6,12,6,9,9,9,6,9,12,6,15,18,0,0,6,15,12,0,6,12,9,6,6,18,9,0),
  (9,9,6,12,9,9,9,9,9,9,12,6,18,18,0,0,12,12,12,0,12,9,9,6,15,12,9,0));
 
-
 Var
  InputFile, OutputFile: File;
- InputName, OutputName: string;
+ InputName, OutputName: String;
  InputOpen, OutputOpen, OutputCreated: Boolean;
  InputSize, InputEnd, InputPosition, Written, Frames: LongInt;
- Frame: array[0..MaxFrame-1] of Byte;
+ Frame: Array[0..MaxFrame-1] Of Byte;
  D: PDecoder;
  Transform: PTransforms;
  Header, FirstHeader: THeader;
  SavedExit: Pointer;
+Procedure StopAudio;Forward;
 
-Procedure StopAudio; Forward;
-Procedure Fail(MessageText: string);
-Var ErrorCode: Integer;
+Procedure Fail(MessageText: String);
+Var
+ ErrorCode: Integer;
 Begin
  StopAudio;
  WriteLn('PLAYMP3: ', MessageText);
- if InputOpen Then Begin
+ If InputOpen Then Begin
   {$I-}Close(InputFile); ErrorCode := IOResult;{$I+}
   InputOpen := False;
  End;
- if OutputOpen Then Begin
+ If OutputOpen Then Begin
   {$I-}Close(OutputFile); ErrorCode := IOResult;{$I+}
   OutputOpen := False;
  End;
- if OutputCreated Then Begin
+ If OutputCreated Then Begin
   {$I-}Erase(OutputFile); ErrorCode := IOResult;{$I+}
-  if ErrorCode <> 0 Then WriteLn('Fichier temporaire a supprimer: ', OutputName);
+  If ErrorCode <> 0 Then WriteLn('Fichier temporaire a supprimer: ', OutputName);
   OutputCreated := False;
  End;
  Halt(1);
 End;
 
-Function Exists(Name: string): Boolean;
-Var F: File; Attributes: Word;
+Function Exists(Name: String): Boolean;
+Var
+ F: File;
+ Attributes: Word;
 Begin
  Assign(F, Name); GetFAttr(F, Attributes); Exists := DosError = 0;
 End;
 
-Procedure Help;
-Begin
+Procedure Help;Begin
  WriteLn('PLAYMP3 fichier.mp3 [/VOLUME:0..100] [/LOOP:1..32767] [/INFO]');
  WriteLn('/INFO : informations seulement, sans lecture ni fichier temporaire.');
  WriteLn('/LOOP:n : nombre total de lectures (1 par defaut). Volume par defaut: 100.');
  WriteLn('Windows: API waveOut, PCM16. DOS: SB 2.0+, DMA8 mono 22222 Hz environ.');
  WriteLn('DOS: SET BLASTER=A220 I5 D1 T3 ; touche Echap pour arreter.');
- WriteLn('Decodage integre avant lecture, fichier PCM temporaire dans le dossier courant.');
+ WriteLn(
+ 'Decodage integre avant lecture, fichier PCM temporaire dans le dossier courant.');
  WriteLn('MPEG-1/2/2.5 Layer III CBR/VBR; ni free-format ni changement de format.');
 End;
 
-Procedure ReadAt(Position: LongInt; var Buffer; Count: Word);
-Var Actual: Word; ErrorCode: Integer;
+Procedure ReadAt(Position: LongInt; Var Buffer; Count: Word);
+Var
+ Actual: Word;
+ ErrorCode: Integer;
 Begin
- if (Position < 0) or (Position > InputSize) Then Fail('Position MP3 incorrecte.');
- if Count > InputSize - Position Then Fail('Fichier MP3 tronque.');
+ If (Position < 0) Or (Position > InputSize) Then Fail('Position MP3 incorrecte.');
+ If Count > InputSize - Position Then Fail('Fichier MP3 tronque.');
  {$I-}Seek(InputFile, Position); ErrorCode := IOResult;{$I+}
- if ErrorCode <> 0 Then Fail('Positionnement MP3 impossible.');
+ If ErrorCode <> 0 Then Fail('Positionnement MP3 impossible.');
  {$I-}BlockRead(InputFile, Buffer, Count, Actual); ErrorCode := IOResult;{$I+}
- if (ErrorCode <> 0) or (Actual <> Count) Then Fail('Lecture MP3 incomplete.');
+ If (ErrorCode <> 0) Or (Actual <> Count) Then Fail('Lecture MP3 incomplete.');
 End;
 
-Procedure WriteBytes(var Buffer; Count: Word);
-Var Actual: Word; ErrorCode: Integer;
+Procedure WriteBytes(Var Buffer; Count: Word);
+Var
+ Actual: Word;
+ ErrorCode: Integer;
 Begin
  {$I-}BlockWrite(OutputFile, Buffer, Count, Actual); ErrorCode := IOResult;{$I+}
- if (ErrorCode <> 0) or (Actual <> Count) Then Fail('Ecriture PCM temporaire incomplete.');
+ If (ErrorCode <> 0) Or (Actual <> Count) Then Fail('Ecriture PCM temporaire incomplete.')
+ ;
 End;
 
-Function ReadBits(var B: TBits; Count: Integer): Integer;
-Var I, Value: Integer;
+Function ReadBits(Var B: TBits; Count: Integer): Integer;
+Var
+ I, Value: Integer;
 Begin
  Value := 0;
- if (Count < 0) or (Count > 15) or (Count > B.Limit - B.Position) Then Begin
+ If (Count < 0) Or (Count > 15) Or (Count > B.Limit - B.Position) Then Begin
   B.Failed := True; ReadBits := 0; Exit;
  End;
- For I := 1 to Count do Begin
-  Value := (Value shl 1) or ((B.Data^[B.Position div 8] shr (7 - B.Position mod 8)) and 1);
+ For I := 1 To Count Do Begin
+  Value := (Value Shl 1) Or ((B.Data^[B.Position Div 8] Shr (7 - B.Position Mod 8)) And 1)
+  ;
   Inc(B.Position);
  End;
  ReadBits := Value;
 End;
 
-Procedure StartBits(var B: TBits; Buffer: PBytes; FirstBit, LastBit: Integer);
-Begin B.Data := Buffer; B.Position := FirstBit; B.Limit := LastBit; B.Failed := False; End;
+Procedure StartBits(Var B: TBits; Buffer: PBytes; FirstBit, LastBit: Integer);Begin
+ B.Data := Buffer; B.Position := FirstBit; B.Limit := LastBit; B.Failed := False;
+End;
 
 Procedure ParseHeader;
-Const Rates: array[0..2] of LongInt = (44100,48000,32000);
- BR1: array[0..14] of Integer = (0,32,40,48,56,64,80,96,112,128,160,192,224,256,320);
- BR2: array[0..14] of Integer = (0,8,16,24,32,40,48,56,64,80,96,112,128,144,160);
-Var Index, Layer: Integer;
+Const
+ Rates: Array[0..2] Of LongInt = (44100,48000,32000);
+ BR1: Array[0..14] Of Integer = (0,32,40,48,56,64,80,96,112,128,160,192,224,256,320);
+ BR2: Array[0..14] Of Integer = (0,8,16,24,32,40,48,56,64,80,96,112,128,144,160);
+Var
+ Index, Layer: Integer;
 Begin
- if (Frame[0] <> 255) or ((Frame[1] and $E0) <> $E0) Then Fail('Synchronisation MP3 incorrecte.');
- Header.Version := (Frame[1] shr 3) and 3;
- if Header.Version = 1 Then Fail('Version MPEG reservee.');
- Layer := (Frame[1] shr 1) and 3;
- if Layer <> 1 Then Fail('Seul MPEG Layer III (MP3) est accepte.');
- Index := Frame[2] shr 4;
- if Index = 0 Then Fail('MP3 free-format non pris en charge.');
- if Index = 15 Then Fail('Debit MP3 invalide.');
- Header.FrequencyIndex := (Frame[2] shr 2) and 3;
- if Header.FrequencyIndex = 3 Then Fail('Frequence MP3 invalide.');
+ If (Frame[0] <> 255) Or ((Frame[1] And $E0) <> $E0) Then Fail(
+ 'Synchronisation MP3 incorrecte.');
+ Header.Version := (Frame[1] Shr 3) And 3;
+ If Header.Version = 1 Then Fail('Version MPEG reservee.');
+ Layer := (Frame[1] Shr 1) And 3;
+ If Layer <> 1 Then Fail('Seul MPEG Layer III (MP3) est accepte.');
+ Index := Frame[2] Shr 4;
+ If Index = 0 Then Fail('MP3 free-format non pris en charge.');
+ If Index = 15 Then Fail('Debit MP3 invalide.');
+ Header.FrequencyIndex := (Frame[2] Shr 2) And 3;
+ If Header.FrequencyIndex = 3 Then Fail('Frequence MP3 invalide.');
  Header.Rate := Rates[Header.FrequencyIndex];
  Header.BandIndex := Header.FrequencyIndex;
- if Header.Version = 3 Then Begin
+ If Header.Version = 3 Then Begin
   Header.BitRate := LongInt(BR1[Index]) * 1000; Header.Granules := 2;
   Inc(Header.BandIndex, 6);
- End else Begin
+ End Else
+ Begin
   Header.BitRate := LongInt(BR2[Index]) * 1000; Header.Granules := 1;
-  if Header.Version = 2 Then Begin Header.Rate := Header.Rate div 2; Inc(Header.BandIndex, 3); End
-  else Header.Rate := Header.Rate div 4;
+  If Header.Version = 2 Then Begin
+   Header.Rate := Header.Rate Div 2; Inc(Header.BandIndex, 3);
+  End
+  Else Header.Rate := Header.Rate Div 4;
  End;
- if Header.BandIndex > 0 Then Dec(Header.BandIndex);
- Header.Mode := Frame[3] shr 6; Header.Extension := (Frame[3] shr 4) and 3;
- Header.Channels := 2; if Header.Mode = 3 Then Header.Channels := 1;
- if (Frame[3] and 3) <> 0 Then Fail('MP3 avec preaccentuation non pris en charge.');
- Header.Protected := (Frame[1] and 1) = 0;
- Header.SideOffset := 4; if Header.Protected Then Inc(Header.SideOffset, 2);
- if Header.Version = 3 Then Header.SideSize := 15 * Header.Channels + 2
- else Header.SideSize := 8 * Header.Channels + 1;
- Header.FrameSize := (72 * Header.Granules * Header.BitRate) div Header.Rate + ((Frame[2] shr 1) and 1);
- if (Header.FrameSize > MaxFrame) or (Header.FrameSize <= Header.SideOffset + Header.SideSize) Then
-  Fail('Taille de trame MP3 incorrecte.');
+ If Header.BandIndex > 0 Then Dec(Header.BandIndex);
+ Header.Mode := Frame[3] Shr 6; Header.Extension := (Frame[3] Shr 4) And 3;
+ Header.Channels := 2; If Header.Mode = 3 Then Header.Channels := 1;
+ If (Frame[3] And 3) <> 0 Then Fail('MP3 avec preaccentuation non pris en charge.');
+ Header.Protected := (Frame[1] And 1) = 0;
+ Header.SideOffset := 4; If Header.Protected Then Inc(Header.SideOffset, 2);
+ If Header.Version = 3 Then Header.SideSize := 15 * Header.Channels + 2
+                       Else Header.SideSize := 8 * Header.Channels + 1;
+ Header.FrameSize := (72 * Header.Granules * Header.BitRate) Div Header.Rate + ((
+ Frame[2] Shr 1) And 1);
+ If (Header.FrameSize > MaxFrame) Or (Header.FrameSize <= Header.SideOffset +
+ Header.SideSize) Then  Fail('Taille de trame MP3 incorrecte.');
 End;
 
 Procedure CheckCRC;
-Var CRC, Expected: Word; I, J, Feedback: Integer;
+Var
+ CRC, Expected: Word;
+ I, J, Feedback: Integer;
 Begin
- if not Header.Protected Then Exit;
- CRC := $FFFF; Expected := Word(Frame[4]) shl 8 or Frame[5];
- For I := 2 to Header.SideOffset + Header.SideSize - 1 do if (I < 4) or (I >= 6) Then
-  For J := 7 downto 0 do Begin
-   Feedback := ((CRC shr 15) xor (Frame[I] shr J)) and 1;
-   CRC := (LongInt(CRC) shl 1) and $FFFF;
-   if Feedback <> 0 Then CRC := CRC xor $8005;
-  End;
- if CRC <> Expected Then Fail('CRC MP3 incorrect.');
+ If Not Header.Protected Then Exit;
+ CRC := $FFFF; Expected := Word(Frame[4]) Shl 8 Or Frame[5];
+ For I := 2 To Header.SideOffset + Header.SideSize - 1 Do If (I < 4) Or (I >= 6) Then
+ For J := 7 Downto 0 Do Begin
+  Feedback := ((CRC Shr 15) Xor (Frame[I] Shr J)) And 1;
+  CRC := (LongInt(CRC) Shl 1) And $FFFF;
+  If Feedback <> 0 Then CRC := CRC Xor $8005;
+ End;
+ If CRC <> Expected Then Fail('CRC MP3 incorrect.');
 End;
 
-Procedure ReadSideInfo(var Back: Integer);
-Var B: TBits; G, C, I, Dummy: Integer;
+Procedure ReadSideInfo(Var Back: Integer);
+Var
+ B: TBits;
+ G, C, I, Dummy: Integer;
 Begin
  FillChar(D^.G, SizeOf(D^.G), 0); FillChar(D^.SCFSI, SizeOf(D^.SCFSI), 0);
  StartBits(B, @Frame, Header.SideOffset * 8, (Header.SideOffset + Header.SideSize) * 8);
- if Header.Version = 3 Then Begin
+ If Header.Version = 3 Then Begin
   Back := ReadBits(B, 9);
-  if Header.Channels = 1 Then Dummy := ReadBits(B, 5) else Dummy := ReadBits(B, 3);
-  For C := 0 to Header.Channels - 1 do For I := 0 to 3 do D^.SCFSI[C,I] := ReadBits(B, 1);
- End else Begin Back := ReadBits(B, 8); Dummy := ReadBits(B, Header.Channels); End;
- For G := 0 to Header.Granules - 1 do For C := 0 to Header.Channels - 1 do With D^.G[G,C] do Begin
+  If Header.Channels = 1 Then Dummy := ReadBits(B, 5) Else Dummy := ReadBits(B, 3);
+  For C := 0 To Header.Channels - 1 Do
+  For I := 0 To 3 Do D^.SCFSI[C,I] := ReadBits(B, 1);
+ End Else
+ Begin
+  Back := ReadBits(B, 8); Dummy := ReadBits(B, Header.Channels);
+ End;
+ For G := 0 To Header.Granules - 1 Do
+ For C := 0 To Header.Channels - 1 Do With D^.G[G,C] Do Begin
   PartLength := ReadBits(B, 12); BigValues := ReadBits(B, 9); Gain := ReadBits(B, 8);
-  if BigValues > 288 Then Fail('Nombre de valeurs Huffman invalide.');
-  if Header.Version = 3 Then Compress := ReadBits(B, 4) else Compress := ReadBits(B, 9);
+  If BigValues > 288 Then Fail('Nombre de valeurs Huffman invalide.');
+  If Header.Version = 3 Then Compress := ReadBits(B, 4) Else Compress := ReadBits(B, 9);
   LongBands := 22; Bands := LongWidths[Header.BandIndex];
-  if ReadBits(B, 1) <> 0 Then Begin
+  If ReadBits(B, 1) <> 0 Then Begin
    BlockType := ReadBits(B, 2); Mixed := ReadBits(B, 1);
-   if BlockType = 0 Then Fail('Type de bloc MP3 invalide.');
+   If BlockType = 0 Then Fail('Type de bloc MP3 invalide.');
    Region0 := 7; Region1 := 255;
-   For I := 0 to 1 do Tables[I] := ReadBits(B, 5);
-   For I := 0 to 2 do SubGain[I] := ReadBits(B, 3);
-   if BlockType = 2 Then Begin
-    if Mixed = 0 Then Begin
-     Region0 := 8; LongBands := 0; ShortBands := 39; Bands := ShortWidths[Header.BandIndex];
-    End else Begin
-     LongBands := 6; if Header.Version = 3 Then LongBands := 8;
+   For I := 0 To 1 Do Tables[I] := ReadBits(B, 5);
+   For I := 0 To 2 Do SubGain[I] := ReadBits(B, 3);
+   If BlockType = 2 Then Begin
+    If Mixed = 0 Then Begin
+     Region0 := 8; LongBands := 0; ShortBands := 39;
+     Bands := ShortWidths[Header.BandIndex];
+    End Else
+    Begin
+     LongBands := 6; If Header.Version = 3 Then LongBands := 8;
      ShortBands := 30; Bands := MixedWidths[Header.BandIndex];
-     if Header.Rate = 8000 Then Fail('Blocs mixtes MPEG-2.5 a 8 kHz non pris en charge.');
+     If Header.Rate = 8000 Then Fail('Blocs mixtes MPEG-2.5 a 8 kHz non pris en charge.');
     End;
    End;
-  End else Begin
-   For I := 0 to 2 do Tables[I] := ReadBits(B, 5);
+  End Else
+  Begin
+   For I := 0 To 2 Do Tables[I] := ReadBits(B, 5);
    Region0 := ReadBits(B, 4); Region1 := ReadBits(B, 3);
-   if Region0 + Region1 > 20 Then Fail('Regions Huffman invalides.');
+   If Region0 + Region1 > 20 Then Fail('Regions Huffman invalides.');
   End;
-  if Header.Version = 3 Then PreFlag := ReadBits(B, 1)
-  else if Compress >= 500 Then PreFlag := 1;
+  If Header.Version = 3 Then PreFlag := ReadBits(B, 1) Else
+  If Compress >= 500 Then PreFlag := 1;
   Scale := ReadBits(B, 1); CountTable := ReadBits(B, 1);
-  For I := 0 to 2 do if (Tables[I] = 4) or (Tables[I] = 14) Then Fail('Table Huffman reservee.');
+  For I := 0 To 2 Do If (Tables[I] = 4) Or (Tables[I] = 14) Then Fail(
+  'Table Huffman reservee.');
  End;
- if B.Failed Then Fail('Informations laterales tronquees.');
+ If B.Failed Then Fail('Informations laterales tronquees.');
 End;
 
-Procedure ReadFactors(var B: TBits; G, C: Integer);
-Const Decode: array[0..15] of Byte = (0,1,2,3,12,5,6,7,9,10,11,13,14,15,18,19);
- Mods: array[0..23] of Byte = (5,5,4,4,5,5,4,1,4,3,1,1,5,6,6,1,4,4,4,1,4,3,1,1);
-Var Widths: array[0..3] of Integer;
+Procedure ReadFactors(Var B: TBits; G, C: Integer);
+Const
+ Decode: Array[0..15] Of Byte = (0,1,2,3,12,5,6,7,9,10,11,13,14,15,18,19);
+ Mods: Array[0..23] Of Byte = (5,5,4,4,5,5,4,1,4,3,1,1,5,6,6,1,4,4,4,1,4,3,1,1);
+Var
+ Widths: Array[0..3] Of Integer;
  I, J, K, Kind, Product, Value, Index, Partition, N, IntensityChannel: Integer;
 Begin
- With D^.G[G,C] do Begin
-  Kind := 0; if ShortBands > 0 Then Begin Kind := 1; if LongBands = 0 Then Kind := 2; End;
+ With D^.G[G,C] Do Begin
+  Kind := 0; If ShortBands > 0 Then Begin
+   Kind := 1; If LongBands = 0 Then Kind := 2;
+  End;
   Partition := 0;
-  if Header.Version = 3 Then Begin
-   Value := Decode[Compress]; Widths[0] := Value shr 2; Widths[1] := Widths[0];
-   Widths[2] := Value and 3; Widths[3] := Widths[2];
-  End else Begin
+  If Header.Version = 3 Then Begin
+   Value := Decode[Compress]; Widths[0] := Value Shr 2; Widths[1] := Widths[0];
+   Widths[2] := Value And 3; Widths[3] := Widths[2];
+  End Else
+  Begin
    IntensityChannel := 0;
-   if (Header.Mode = 1) and Odd(Header.Extension) and (C = 1) Then IntensityChannel := 1;
-   Value := Compress shr IntensityChannel; K := IntensityChannel * 12;
+   If (Header.Mode = 1) And Odd(Header.Extension) And (C = 1) Then IntensityChannel := 1;
+   Value := Compress Shr IntensityChannel; K := IntensityChannel * 12;
    Repeat
-    if K > 20 Then Fail('Facteurs MPEG-2 invalides.');
-    Product := 1;
-    For I := 3 downto 0 do Begin Widths[I] := (Value div Product) mod Mods[K + I]; Product := Product * Mods[K + I]; End;
-    Dec(Value, Product); Inc(K, 4);
+   If K > 20 Then Fail('Facteurs MPEG-2 invalides.');
+   Product := 1;
+   For I := 3 Downto 0 Do Begin
+    Widths[I] := (Value Div Product) Mod Mods[K + I]; Product := Product * Mods[K + I];
+   End;
+   Dec(Value, Product); Inc(K, 4);
    Until Value < 0;
    Partition := K;
   End;
   Index := 0;
-  For I := 0 to 3 do Begin
+  For I := 0 To 3 Do Begin
    N := FactorPartitions[Kind, Partition + I];
-   For J := 1 to N do Begin
-    if (Header.Version = 3) and (G = 1) and (ShortBands = 0) and (D^.SCFSI[C,I] <> 0) Then
-     Value := D^.G[0,C].Factors[Index]
-    else Value := ReadBits(B, Widths[I]);
+   For J := 1 To N Do Begin
+    If (Header.Version = 3) And (G = 1) And (ShortBands = 0) And (D^.SCFSI[C,I] <> 0)
+    Then     Value := D^.G[0,C].Factors[Index]
+    Else Value := ReadBits(B, Widths[I]);
     Factors[Index] := Value; Intensity[Index] := Value;
-    if (Header.Version <> 3) and (Widths[I] > 0) and (Value = (1 shl Widths[I]) - 1) Then Intensity[Index] := 255;
+    If (Header.Version <> 3) And (Widths[I] > 0) And (Value = (1 Shl Widths[I]) - 1)
+    Then Intensity[Index] := 255;
     Inc(Index);
    End;
   End;
  End;
- if B.Failed Then Fail('Facteurs d''echelle tronques.');
+ If B.Failed Then Fail('Facteurs d''echelle tronques.');
 End;
 
-Function HuffLeaf(var B: TBits; Table: Integer): Integer;
-Var Point, Offset, Direction, Steps: Integer; Value: Word;
+Function HuffLeaf(Var B: TBits; Table: Integer): Integer;
+Var
+ Point, Offset, Direction, Steps: Integer;
+ Value: Word;
 Begin
- HuffLeaf := 0; if Table = 0 Then Exit;
+ HuffLeaf := 0; If Table = 0 Then Exit;
  Point := 0; Steps := 0;
- While not B.Failed do Begin
-  if (Point < 0) or (Point >= HuffLength[Table]) or (Steps > 32) Then Begin B.Failed := True; Exit; End;
+ While Not B.Failed Do Begin
+  If (Point < 0) Or (Point >= HuffLength[Table]) Or (Steps > 32) Then Begin
+   B.Failed := True; Exit;
+  End;
   Value := HuffTree[HuffOffset[Table] + Point];
-  if Value < 256 Then Begin HuffLeaf := Value; Exit; End;
+  If Value < 256 Then Begin
+   HuffLeaf := Value; Exit;
+  End;
   Direction := ReadBits(B, 1);
   Repeat
-   Value := HuffTree[HuffOffset[Table] + Point];
-   if Direction = 0 Then Offset := Value shr 8 else Offset := Value and 255;
-   Inc(Point, Offset);
-   if Point >= HuffLength[Table] Then Begin B.Failed := True; Exit; End;
+  Value := HuffTree[HuffOffset[Table] + Point];
+  If Direction = 0 Then Offset := Value Shr 8 Else Offset := Value And 255;
+  Inc(Point, Offset);
+  If Point >= HuffLength[Table] Then Begin
+   B.Failed := True; Exit;
+  End;
   Until Offset < 250;
   Inc(Steps);
  End;
 End;
 
-Function SignedValue(var B: TBits; Value, Extra: Integer): Integer;
-Begin
- if (Value = 15) and (Extra > 0) Then Inc(Value, ReadBits(B, Extra));
- if Value <> 0 Then if ReadBits(B, 1) <> 0 Then Value := -Value;
+Function SignedValue(Var B: TBits; Value, Extra: Integer): Integer;Begin
+ If (Value = 15) And (Extra > 0) Then Inc(Value, ReadBits(B, Extra));
+ If Value <> 0 Then If ReadBits(B, 1) <> 0 Then Value := -Value;
  SignedValue := Value;
 End;
 
-Procedure ReadHuffman(var B: TBits; G, C: Integer);
-Var I, J, P, R1, R2, Table, Leaf, X, Y, Start: Integer;
- Quad: array[0..3] of Integer;
+Procedure ReadHuffman(Var B: TBits; G, C: Integer);
+Var
+ I, J, P, R1, R2, Table, Leaf, X, Y, Start: Integer;
+ Quad: Array[0..3] Of Integer;
 Begin
- With D^.G[G,C] do Begin
+ With D^.G[G,C] Do Begin
   R1 := 0; R2 := 0;
-  For I := 0 to LongBands + ShortBands - 1 do Begin
-   if I <= Region0 Then Inc(R1, Bands[I]);
-   if I <= Region0 + Region1 + 1 Then Inc(R2, Bands[I]);
+  For I := 0 To LongBands + ShortBands - 1 Do Begin
+   If I <= Region0 Then Inc(R1, Bands[I]);
+   If I <= Region0 + Region1 + 1 Then Inc(R2, Bands[I]);
   End;
   P := 0;
-  For I := 1 to BigValues do Begin
-   if P < R1 Then Table := Tables[0] else if P < R2 Then Table := Tables[1] else Table := Tables[2];
+  For I := 1 To BigValues Do Begin
+   If P < R1 Then Table := Tables[0] Else If P < R2 Then Table := Tables[1] Else Table :=
+   Tables[2];
    Leaf := HuffLeaf(B, Table);
-   X := SignedValue(B, Leaf shr 4, HuffLinBits[Table]);
-   Y := SignedValue(B, Leaf and 15, HuffLinBits[Table]);
-   if B.Failed Then Fail('Donnees Huffman tronquees ou invalides.');
+   X := SignedValue(B, Leaf Shr 4, HuffLinBits[Table]);
+   Y := SignedValue(B, Leaf And 15, HuffLinBits[Table]);
+   If B.Failed Then Fail('Donnees Huffman tronquees ou invalides.');
    D^.X[C,P] := X; D^.X[C,P + 1] := Y; Inc(P, 2);
   End;
-  While (P <= 572) and (B.Position < B.Limit) do Begin
+  While (P <= 572) And (B.Position < B.Limit) Do Begin
    Start := B.Position; Leaf := HuffLeaf(B, 32 + CountTable);
-   For J := 0 to 3 do Quad[J] := SignedValue(B, (Leaf shr (3 - J)) and 1, 0);
-   if B.Failed Then Begin B.Failed := False; B.Position := B.Limit; End
-   else Begin
-    For J := 0 to 3 do D^.X[C,P + J] := Quad[J]; Inc(P, 4);
-    if B.Position <= Start Then Fail('Huffman sans progression.');
+   For J := 0 To 3 Do Quad[J] := SignedValue(B, (Leaf Shr (3 - J)) And 1, 0);
+   If B.Failed Then Begin
+    B.Failed := False; B.Position := B.Limit;
+   End
+    Else
+   Begin
+    For J := 0 To 3 Do D^.X[C,P + J] := Quad[J]; Inc(P, 4);
+    If B.Position <= Start Then Fail('Huffman sans progression.');
    End;
   End;
-  For I := P to 575 do D^.X[C,I] := 0;
+  For I := P To 575 Do D^.X[C,I] := 0;
  End;
  B.Position := B.Limit;
 End;
 
 Procedure Requantize(G, C: Integer);
-Const Pre: array[0..21] of Byte = (0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,2,2,3,3,3,2,0);
-Var I, J, P, Factor, Exponent: Integer; V, GainValue: Double;
+Const
+ Pre: Array[0..21] Of Byte = (0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,2,2,3,3,3,2,0);
+Var
+ I, J, P, Factor, Exponent: Integer;
+ V, GainValue: Double;
 Begin
  P := 0;
- With D^.G[G,C] do For I := 0 to LongBands + ShortBands - 1 do Begin
+ With D^.G[G,C] Do
+ For I := 0 To LongBands + ShortBands - 1 Do Begin
   Factor := Factors[I];
-  if ShortBands = 0 Then Inc(Factor, PreFlag * Pre[I]);
-  Exponent := Gain - 210 - (Factor shl (Scale + 1));
-  if I >= LongBands Then Dec(Exponent, 8 * SubGain[(I - LongBands) mod 3]);
+  If ShortBands = 0 Then Inc(Factor, PreFlag * Pre[I]);
+  Exponent := Gain - 210 - (Factor Shl (Scale + 1));
+  If I >= LongBands Then Dec(Exponent, 8 * SubGain[(I - LongBands) Mod 3]);
   GainValue := Exp(Exponent * (Ln(2) / 4));
-  For J := 1 to Bands[I] do Begin
+  For J := 1 To Bands[I] Do Begin
    V := D^.X[C,P];
-   if V <> 0 Then Begin
-    if V > 0 Then V := Exp(Ln(V) * (4 / 3)) * GainValue
-    else V := -Exp(Ln(-V) * (4 / 3)) * GainValue;
+   If V <> 0 Then Begin
+    If V > 0 Then V := Exp(Ln(V) * (4 / 3)) * GainValue
+             Else V := -Exp(Ln(-V) * (4 / 3)) * GainValue;
     D^.X[C,P] := V;
    End;
    Inc(P);
   End;
  End;
- if P <> 576 Then Fail('Bandes frequentielles incoherentes.');
+ If P <> 576 Then Fail('Bandes frequentielles incoherentes.');
 End;
 
 Procedure Stereo(G: Integer);
-Const Pan: array[0..6] of Double = (0,0.211324865405187,0.366025403784439,0.5,0.633974596215561,0.788675134594813,1);
-Var Top: array[0..2] of Integer;
+Const
+ Pan: Array[0..6] Of Double = (0,0.211324865405187,0.366025403784439,0.5,
+ 0.633974596215561,0.788675134594813,1);
+Var
+ Top: Array[0..2] Of Integer;
  I, J, P, N, Blocks, Position, Previous, Maximum: Integer;
- IStereo, MStereo, UseIntensity: Boolean; Left, Right, KL, KR: Double;
+ IStereo, MStereo, UseIntensity: Boolean;
+ Left, Right, KL, KR: Double;
 Begin
- if (Header.Channels <> 2) or (Header.Mode <> 1) Then Exit;
- IStereo := Odd(Header.Extension); MStereo := (Header.Extension and 2) <> 0;
- if not IStereo and not MStereo Then Exit;
- if IStereo Then Begin
-  if (D^.G[G,0].LongBands <> D^.G[G,1].LongBands) or
-   (D^.G[G,0].ShortBands <> D^.G[G,1].ShortBands) Then Fail('Blocs stereo intensite incompatibles.');
-  With D^.G[G,1] do Begin
-   For I := 0 to 2 do Top[I] := -1;
+ If (Header.Channels <> 2) Or (Header.Mode <> 1) Then Exit;
+ IStereo := Odd(Header.Extension); MStereo := (Header.Extension And 2) <> 0;
+ If Not IStereo And Not MStereo Then Exit;
+ If IStereo Then Begin
+  If (D^.G[G,0].LongBands <> D^.G[G,1].LongBands) Or
+  (D^.G[G,0].ShortBands <> D^.G[G,1].ShortBands) Then Fail(
+  'Blocs stereo intensite incompatibles.');
+  With D^.G[G,1] Do Begin
+   For I := 0 To 2 Do Top[I] := -1;
    P := 0; N := LongBands + ShortBands;
-   For I := 0 to N - 1 do Begin
-    For J := 0 to Bands[I] - 1 do if D^.X[1,P + J] <> 0 Then Top[I mod 3] := I;
+   For I := 0 To N - 1 Do Begin
+    For J := 0 To Bands[I] - 1 Do If D^.X[1,P + J] <> 0 Then Top[I Mod 3] := I;
     Inc(P, Bands[I]);
    End;
-   if LongBands <> 0 Then Begin
-    Maximum := Top[0]; For I := 1 to 2 do if Top[I] > Maximum Then Maximum := Top[I];
-    For I := 0 to 2 do Top[I] := Maximum;
+   If LongBands <> 0 Then Begin
+    Maximum := Top[0];
+    For I := 1 To 2 Do If Top[I] > Maximum Then Maximum := Top[I];
+    For I := 0 To 2 Do Top[I] := Maximum;
    End;
-   Blocks := 1; if ShortBands <> 0 Then Blocks := 3;
-   For I := 0 to Blocks - 1 do Begin
+   Blocks := 1; If ShortBands <> 0 Then Blocks := 3;
+   For I := 0 To Blocks - 1 Do Begin
     Position := N - Blocks + I; Previous := Position - Blocks;
-    if Top[I] >= Previous Then Begin
-     Intensity[Position] := 0; if Header.Version = 3 Then Intensity[Position] := 3;
-    End else Intensity[Position] := Intensity[Previous];
+    If Top[I] >= Previous Then Begin
+     Intensity[Position] := 0; If Header.Version = 3 Then Intensity[Position] := 3;
+    End Else Intensity[Position] := Intensity[Previous];
    End;
   End;
  End;
  P := 0;
- With D^.G[G,1] do For I := 0 to LongBands + ShortBands - 1 do Begin
+ With D^.G[G,1] Do
+ For I := 0 To LongBands + ShortBands - 1 Do Begin
   Position := Intensity[I]; UseIntensity := False;
-  if IStereo Then Begin
-   UseIntensity := (I > Top[I mod 3]);
-   if Header.Version = 3 Then UseIntensity := UseIntensity and (Position < 7)
-   else UseIntensity := UseIntensity and (Position < 64);
+  If IStereo Then Begin
+   UseIntensity := (I > Top[I Mod 3]);
+   If Header.Version = 3 Then UseIntensity := UseIntensity And (Position < 7)
+                         Else UseIntensity := UseIntensity And (Position < 64);
   End;
-  if UseIntensity Then Begin
-   if Header.Version = 3 Then Begin KL := Pan[Position]; KR := 1 - KL; End
-   else Begin
-    KL := 1; KR := Exp(-Ln(2) * (((Position + 1) div 2) shl (Compress and 1)) / 4);
-    if Odd(Position) Then Begin KL := KR; KR := 1; End;
+  If UseIntensity Then Begin
+   If Header.Version = 3 Then Begin
+    KL := Pan[Position]; KR := 1 - KL;
+   End
+    Else
+   Begin
+    KL := 1; KR := Exp(-Ln(2) * (((Position + 1) Div 2) Shl (Compress And 1)) / 4);
+    If Odd(Position) Then Begin
+     KL := KR; KR := 1;
+    End;
    End;
-   For J := 0 to Bands[I] - 1 do Begin Left := D^.X[0,P + J]; D^.X[0,P + J] := Left * KL; D^.X[1,P + J] := Left * KR; End;
-  End else if MStereo Then For J := 0 to Bands[I] - 1 do Begin
+   For J := 0 To Bands[I] - 1 Do Begin
+    Left := D^.X[0,P + J]; D^.X[0,P + J] := Left * KL; D^.X[1,P + J] := Left * KR;
+   End;
+  End Else If MStereo Then
+  For J := 0 To Bands[I] - 1 Do Begin
    Left := D^.X[0,P + J]; Right := D^.X[1,P + J];
    D^.X[0,P + J] := (Left + Right) / Sqrt(2); D^.X[1,P + J] := (Left - Right) / Sqrt(2);
   End;
@@ -849,322 +962,383 @@ Begin
 End;
 
 Procedure Reorder(G, C: Integer);
-Var I, J, W, P, Width: Integer;
+Var
+ I, J, W, P, Width: Integer;
 Begin
- With D^.G[G,C] do Begin
-  if ShortBands = 0 Then Exit;
-  P := 0; For I := 0 to LongBands - 1 do Inc(P, Bands[I]);
+ With D^.G[G,C] Do Begin
+  If ShortBands = 0 Then Exit;
+  P := 0;
+  For I := 0 To LongBands - 1 Do Inc(P, Bands[I]);
   Move(D^.X[C], D^.Scratch, SizeOf(D^.Scratch));
   I := LongBands;
-  While I < LongBands + ShortBands do Begin
+  While I < LongBands + ShortBands Do Begin
    Width := Bands[I];
-   For W := 0 to 2 do For J := 0 to Width - 1 do D^.X[C,P + 3 * J + W] := D^.Scratch[P + W * Width + J];
+   For W := 0 To 2 Do
+   For J := 0 To Width - 1 Do D^.X[C,P + 3 * J + W] := D^.Scratch[P + W * Width + J];
    Inc(P, 3 * Width); Inc(I, 3);
   End;
  End;
 End;
 
 Procedure Hybrid(G, C: Integer);
-Var SB, I, J, W, Block, Boundaries: Integer;
- A, B, Sum: Double; OutSamples: array[0..35] of Double;
+Var
+ SB, I, J, W, Block, Boundaries: Integer;
+ A, B, Sum: Double;
+ OutSamples: Array[0..35] Of Double;
 Begin
  Boundaries := 31;
- With D^.G[G,C] do if BlockType = 2 Then Begin
-  Boundaries := 0; if Mixed <> 0 Then Boundaries := 1;
+ With D^.G[G,C] Do If BlockType = 2 Then Begin
+  Boundaries := 0; If Mixed <> 0 Then Boundaries := 1;
  End;
- For SB := 1 to Boundaries do For I := 0 to 7 do Begin
+ For SB := 1 To Boundaries Do
+ For I := 0 To 7 Do Begin
   A := D^.X[C,SB * 18 - 1 - I]; B := D^.X[C,SB * 18 + I];
   D^.X[C,SB * 18 - 1 - I] := A * Transform^.CS[I] - B * Transform^.CA[I];
   D^.X[C,SB * 18 + I] := B * Transform^.CS[I] + A * Transform^.CA[I];
  End;
- For SB := 0 to 31 do Begin
+ For SB := 0 To 31 Do Begin
   Block := D^.G[G,C].BlockType;
-  if (D^.G[G,C].Mixed <> 0) and (SB < 2) Then Block := 0;
+  If (D^.G[G,C].Mixed <> 0) And (SB < 2) Then Block := 0;
   FillChar(OutSamples, SizeOf(OutSamples), 0);
-  if Block = 2 Then Begin
-   For W := 0 to 2 do For I := 0 to 11 do Begin
+  If Block = 2 Then Begin
+   For W := 0 To 2 Do
+   For I := 0 To 11 Do Begin
     Sum := 0;
-    For J := 0 to 5 do Sum := Sum + D^.X[C,SB * 18 + W + 3 * J] * Transform^.ShortCos[I,J];
+    For J := 0 To 5 Do Sum := Sum + D^.X[C,SB * 18 + W + 3 * J] * Transform^.ShortCos[I,
+    J];
     OutSamples[6 * W + I + 6] := OutSamples[6 * W + I + 6] + Sum * Transform^.Window[2,I];
    End;
-  End else For I := 0 to 35 do Begin
+  End Else
+  For I := 0 To 35 Do Begin
    Sum := 0;
-   For J := 0 to 17 do Sum := Sum + D^.X[C,SB * 18 + J] * Transform^.LongCos[I,J];
+   For J := 0 To 17 Do Sum := Sum + D^.X[C,SB * 18 + J] * Transform^.LongCos[I,J];
    OutSamples[I] := Sum * Transform^.Window[Block,I];
   End;
-  For I := 0 to 17 do Begin
+  For I := 0 To 17 Do Begin
    Sum := OutSamples[I] + D^.Overlap[C,SB,I];
-   if Odd(SB) and Odd(I) Then Sum := -Sum;
+   If Odd(SB) And Odd(I) Then Sum := -Sum;
    D^.X[C,SB * 18 + I] := Sum; D^.Overlap[C,SB,I] := OutSamples[I + 18];
   End;
  End;
 End;
 
 Procedure Synthesize(G, C: Integer);
-Var T, I, J, P, Offset: Integer; Sum: Double; Sample: LongInt;
+Var
+ T, I, J, P, Offset: Integer;
+ Sum: Double;
+ Sample: LongInt;
 Begin
- For T := 0 to 17 do Begin
-  For I := 1023 downto 64 do D^.V[C,I] := D^.V[C,I - 64];
-  For I := 0 to 63 do Begin
+ For T := 0 To 17 Do Begin
+  For I := 1023 Downto 64 Do D^.V[C,I] := D^.V[C,I - 64];
+  For I := 0 To 63 Do Begin
    Sum := 0;
-   For J := 0 to 31 do Sum := Sum + D^.X[C,J * 18 + T] * Transform^.Synthesis[I,J];
+   For J := 0 To 31 Do Sum := Sum + D^.X[C,J * 18 + T] * Transform^.Synthesis[I,J];
    D^.V[C,I] := Sum;
   End;
-  For I := 0 to 31 do Begin
+  For I := 0 To 31 Do Begin
    Sum := 0;
-   For J := 0 to 15 do Begin
-    Offset := (J div 2) * 128 + I; if Odd(J) Then Inc(Offset, 96);
+   For J := 0 To 15 Do Begin
+    Offset := (J Div 2) * 128 + I; If Odd(J) Then Inc(Offset, 96);
     Sum := Sum + D^.V[C,Offset] * SynthWindow[J * 32 + I];
    End;
    Sum := Sum * 32768;
-   if Sum > 32767 Then Sample := 32767 else if Sum < -32768 Then Sample := -32768 else Sample := Round(Sum);
+   If Sum > 32767 Then Sample := 32767 Else If Sum < -32768 Then Sample := -
+   32768 Else Sample := Round(Sum);
    P := ((G * 576 + T * 32 + I) * Header.Channels + C) * 2;
-   D^.PCM[P] := Sample and 255; D^.PCM[P + 1] := (Sample shr 8) and 255;
+   D^.PCM[P] := Sample And 255; D^.PCM[P + 1] := (Sample Shr 8) And 255;
   End;
  End;
 End;
 
 Procedure InitializeTransforms;
-Const CI: array[0..7] of Double = (-0.6,-0.535,-0.33,-0.185,-0.095,-0.041,-0.0142,-0.0037);
-Var I, J: Integer;
+Const
+ CI: Array[0..7] Of Double = (-0.6,-0.535,-0.33,-0.185,-0.095,-0.041,-0.0142,-0.0037);
+Var
+ I, J: Integer;
 Begin
  FillChar(Transform^, SizeOf(Transform^), 0);
- For I := 0 to 7 do Begin Transform^.CS[I] := 1 / Sqrt(1 + Sqr(CI[I])); Transform^.CA[I] := CI[I] * Transform^.CS[I]; End;
- For I := 0 to 63 do For J := 0 to 31 do Transform^.Synthesis[I,J] := Cos((16 + I) * (2 * J + 1) * (MP3Pi / 64));
- For I := 0 to 35 do For J := 0 to 17 do Transform^.LongCos[I,J] := Cos((2 * I + 19) * (2 * J + 1) * (MP3Pi / 72));
- For I := 0 to 11 do For J := 0 to 5 do Transform^.ShortCos[I,J] := Cos((2 * I + 7) * (2 * J + 1) * (MP3Pi / 24));
- For I := 0 to 35 do Transform^.Window[0,I] := Sin(MP3Pi / 36 * (I + 0.5));
- For I := 0 to 17 do Transform^.Window[1,I] := Transform^.Window[0,I];
- For I := 18 to 23 do Transform^.Window[1,I] := 1;
- For I := 24 to 29 do Transform^.Window[1,I] := Sin(MP3Pi / 12 * (I - 17.5));
- For I := 0 to 11 do Transform^.Window[2,I] := Sin(MP3Pi / 12 * (I + 0.5));
- For I := 6 to 11 do Transform^.Window[3,I] := Sin(MP3Pi / 12 * (I - 5.5));
- For I := 12 to 17 do Transform^.Window[3,I] := 1;
- For I := 18 to 35 do Transform^.Window[3,I] := Transform^.Window[0,I];
+ For I := 0 To 7 Do Begin
+  Transform^.CS[I] := 1 / Sqrt(1 + Sqr(CI[I]));
+  Transform^.CA[I] := CI[I] * Transform^.CS[I];
+ End;
+ For I := 0 To 63 Do
+ For J := 0 To 31 Do Transform^.Synthesis[I,J] := Cos((16 + I) * (2 * J + 1) * (MP3Pi /
+ 64));
+ For I := 0 To 35 Do
+ For J := 0 To 17 Do Transform^.LongCos[I,J] := Cos((2 * I + 19) * (2 * J + 1) * (MP3Pi /
+ 72));
+ For I := 0 To 11 Do
+ For J := 0 To 5 Do Transform^.ShortCos[I,J] := Cos((2 * I + 7) * (2 * J + 1) * (MP3Pi /
+ 24));
+ For I := 0 To 35 Do Transform^.Window[0,I] := Sin(MP3Pi / 36 * (I + 0.5));
+ For I := 0 To 17 Do Transform^.Window[1,I] := Transform^.Window[0,I];
+ For I := 18 To 23 Do Transform^.Window[1,I] := 1;
+ For I := 24 To 29 Do Transform^.Window[1,I] := Sin(MP3Pi / 12 * (I - 17.5));
+ For I := 0 To 11 Do Transform^.Window[2,I] := Sin(MP3Pi / 12 * (I + 0.5));
+ For I := 6 To 11 Do Transform^.Window[3,I] := Sin(MP3Pi / 12 * (I - 5.5));
+ For I := 12 To 17 Do Transform^.Window[3,I] := 1;
+ For I := 18 To 35 Do Transform^.Window[3,I] := Transform^.Window[0,I];
 End;
-
-Procedure EmitPCM(Count: Word); Forward;
+Procedure EmitPCM(Count: Word);Forward;
 
 Procedure DecodeFrame;
-Var Back, Offset, Count, Keep, OldSize, G, C, Limit, WholeLimit: Integer; B: TBits;
+Var
+ Back, Offset, Count, Keep, OldSize, G, C, Limit, WholeLimit: Integer;
+ B: TBits;
 Begin
  CheckCRC; ReadSideInfo(Back);
- if Back > D^.ReservoirSize Then Fail('Reservoir MP3 incomplet; debut de flux manquant.');
+ If Back > D^.ReservoirSize Then Fail('Reservoir MP3 incomplet; debut de flux manquant.');
  Offset := Header.SideOffset + Header.SideSize; Count := Header.FrameSize - Offset;
  OldSize := D^.ReservoirSize;
- if OldSize > 0 Then Move(D^.Reservoir[0], D^.Main[0], OldSize);
+ If OldSize > 0 Then Move(D^.Reservoir[0], D^.Main[0], OldSize);
  Move(Frame[Offset], D^.Main[OldSize], Count);
- Keep := OldSize + Count; if Keep > 511 Then Keep := 511;
+ Keep := OldSize + Count; If Keep > 511 Then Keep := 511;
  Move(D^.Main[OldSize + Count - Keep], D^.Reservoir[0], Keep); D^.ReservoirSize := Keep;
- WholeLimit := (OldSize + Count) * 8; StartBits(B, @D^.Main, (OldSize - Back) * 8, WholeLimit);
- For G := 0 to Header.Granules - 1 do Begin
-  For C := 0 to Header.Channels - 1 do Begin
+ WholeLimit := (OldSize + Count) * 8;
+ StartBits(B, @D^.Main, (OldSize - Back) * 8, WholeLimit);
+ For G := 0 To Header.Granules - 1 Do Begin
+  For C := 0 To Header.Channels - 1 Do Begin
    Limit := B.Position + D^.G[G,C].PartLength;
-   if Limit > WholeLimit Then Fail('Donnees principales MP3 tronquees.');
+   If Limit > WholeLimit Then Fail('Donnees principales MP3 tronquees.');
    B.Limit := Limit; ReadFactors(B, G, C); ReadHuffman(B, G, C); Requantize(G, C);
   End;
   Stereo(G);
-  For C := 0 to Header.Channels - 1 do Begin Reorder(G, C); Hybrid(G, C); Synthesize(G, C); End;
+  For C := 0 To Header.Channels - 1 Do Begin
+   Reorder(G, C); Hybrid(G, C); Synthesize(G, C);
+  End;
  End;
  Count := Header.Granules * 576 * Header.Channels * 2;
- if Written > MaxWaveData - Count Then Fail('PCM temporaire depassant la limite de 2 Go.');
+ If Written > MaxWaveData - Count Then Fail('PCM temporaire depassant la limite de 2 Go.')
+ ;
  EmitPCM(Count);
 End;
 
 Procedure SkipTags;
-Var I: Integer; TagSize: LongInt;
+Var
+ I: Integer;
+ TagSize: LongInt;
 Begin
  InputPosition := 0; InputEnd := InputSize;
- While InputEnd - InputPosition >= 10 do Begin
+ While InputEnd - InputPosition >= 10 Do Begin
   ReadAt(InputPosition, Frame, 10);
-  if (Frame[0] <> Ord('I')) or (Frame[1] <> Ord('D')) or (Frame[2] <> Ord('3')) Then Exit;
-  if (Frame[3] < 2) or (Frame[3] > 4) or (Frame[4] = 255) Then Fail('Version ID3v2 invalide.');
+  If (Frame[0] <> Ord('I')) Or (Frame[1] <> Ord('D')) Or (Frame[2] <> Ord('3')) Then Exit;
+  If (Frame[3] < 2) Or (Frame[3] > 4) Or (Frame[4] = 255) Then Fail(
+  'Version ID3v2 invalide.');
   TagSize := 0;
-  For I := 6 to 9 do Begin
-   if Frame[I] > 127 Then Fail('Taille ID3v2 invalide.');
+  For I := 6 To 9 Do Begin
+   If Frame[I] > 127 Then Fail('Taille ID3v2 invalide.');
    TagSize := TagSize * 128 + Frame[I];
   End;
   Inc(TagSize, 10);
-  if (Frame[3] = 4) and ((Frame[5] and $10) <> 0) Then Inc(TagSize, 10);
-  if TagSize > InputEnd - InputPosition Then Fail('Etiquette ID3v2 tronquee.');
+  If (Frame[3] = 4) And ((Frame[5] And $10) <> 0) Then Inc(TagSize, 10);
+  If TagSize > InputEnd - InputPosition Then Fail('Etiquette ID3v2 tronquee.');
   Inc(InputPosition, TagSize);
  End;
 End;
 
 Procedure RemoveTrailingTags;
-Var Size: LongInt; I: Integer;
+Var
+ Size: LongInt;
+ I: Integer;
 Begin
- if InputEnd >= 128 Then Begin
+ If InputEnd >= 128 Then Begin
   ReadAt(InputEnd - 128, Frame, 3);
-  if (Frame[0] = Ord('T')) and (Frame[1] = Ord('A')) and (Frame[2] = Ord('G')) Then Dec(InputEnd, 128);
+  If (Frame[0] = Ord('T')) And (Frame[1] = Ord('A')) And (Frame[2] = Ord('G')) Then Dec(
+  InputEnd, 128);
  End;
- if InputEnd >= 32 Then Begin
+ If InputEnd >= 32 Then Begin
   ReadAt(InputEnd - 32, Frame, 32);
-  if (Frame[0] = Ord('A')) and (Frame[1] = Ord('P')) and (Frame[2] = Ord('E')) and
-   (Frame[3] = Ord('T')) and (Frame[4] = Ord('A')) and (Frame[5] = Ord('G')) and (Frame[6] = Ord('E')) and (Frame[7] = Ord('X')) Then Begin
-   if Frame[15] >= 128 Then Fail('Taille APE invalide.');
-   Size := 0; For I := 15 downto 12 do Size := Size * 256 + Frame[I];
-   if (Size < 32) or (Size > InputEnd) Then Fail('Etiquette APE tronquee.');
+  If (Frame[0] = Ord('A')) And (Frame[1] = Ord('P')) And (Frame[2] = Ord('E')) And
+  (Frame[3] = Ord('T')) And (Frame[4] = Ord('A')) And (Frame[5] = Ord('G')) And (
+  Frame[6] = Ord('E')) And (Frame[7] = Ord('X')) Then Begin
+   If Frame[15] >= 128 Then Fail('Taille APE invalide.');
+   Size := 0;
+   For I := 15 Downto 12 Do Size := Size * 256 + Frame[I];
+   If (Size < 32) Or (Size > InputEnd) Then Fail('Etiquette APE tronquee.');
    Dec(InputEnd, Size);
-   if (Frame[23] and $80) <> 0 Then Begin
-    if InputEnd < 32 Then Fail('Entete APE tronquee.');
+   If (Frame[23] And $80) <> 0 Then Begin
+    If InputEnd < 32 Then Fail('Entete APE tronquee.');
     Dec(InputEnd, 32);
    End;
   End;
  End;
- if InputPosition >= InputEnd Then Fail('Aucune trame audio MP3.');
+ If InputPosition >= InputEnd Then Fail('Aucune trame audio MP3.');
 End;
 
 Function ReadNextFrame: Boolean;
-Var Remaining: LongInt;
+Var
+ Remaining: LongInt;
 Begin
  ReadNextFrame := False;
  Remaining := InputEnd - InputPosition;
- if Remaining < 4 Then Begin
+ If Remaining < 4 Then Begin
   ReadAt(InputPosition, Frame, Remaining);
-  if Frame[0] <> 255 Then Fail('Donnees inattendues apres la derniere trame MP3.');
-  if Remaining >= 2 Then
-   if (Frame[1] and $E0) <> $E0 Then Fail('Synchronisation MP3 incorrecte.');
- End else Begin
+  If Frame[0] <> 255 Then Fail('Donnees inattendues apres la derniere trame MP3.');
+  If Remaining >= 2 Then   If (Frame[1] And $E0) <> $E0 Then Fail(
+  'Synchronisation MP3 incorrecte.');
+ End Else
+ Begin
   ReadAt(InputPosition, Frame, 4); ParseHeader;
-  if Frames > 0 Then
-   if (Header.Rate <> FirstHeader.Rate) or (Header.Channels <> FirstHeader.Channels) or
-    (Header.Version <> FirstHeader.Version) Then Fail('Changement de format au milieu du MP3.');
-  if Header.FrameSize <= Remaining Then Begin
+  If Frames > 0 Then   If (Header.Rate <> FirstHeader.Rate) Or (Header.Channels <>
+  FirstHeader.Channels) Or
+  (Header.Version <> FirstHeader.Version) Then Fail(
+  'Changement de format au milieu du MP3.');
+  If Header.FrameSize <= Remaining Then Begin
    ReadAt(InputPosition, Frame, Header.FrameSize);
    ReadNextFrame := True; Exit;
   End;
  End;
- if Frames = 0 Then Fail('Derniere trame MP3 tronquee; aucune trame complete.');
+ If Frames = 0 Then Fail('Derniere trame MP3 tronquee; aucune trame complete.');
  WriteLn('PLAYMP3: avertissement: derniere trame MP3 incomplete ignoree (',
-  Remaining, ' octets restants). Les ', Frames, ' trames completes sont conservees.');
+ Remaining, ' octets restants). Les ', Frames, ' trames completes sont conservees.');
 End;
-
 
 Const
  AudioBlock = 4096;
+
 Type
- TAudioBytes = array[0..AudioBlock-1] of Byte;
+ TAudioBytes = Array[0..AudioBlock-1] Of Byte;
  {$IFDEF MSWINDOWS}
- TOutputSlot = record Data: TAudioBytes; Head: TWaveHdr; Prepared: Boolean; End;
+  TOutputSlot = Record
+   Data: TAudioBytes;
+   Head: TWaveHdr;
+   Prepared: Boolean;
+  End;
  {$ELSE}
- TDMAArea = array[0..16383] of Byte;
- PDMAArea = ^TDMAArea;
- TDMABytes = array[0..8191] of Byte;
- PDMABytes = ^TDMABytes;
+  TDMAArea = Array[0..16383] Of Byte;
+  PDMAArea = ^TDMAArea;
+  TDMABytes = Array[0..8191] Of Byte;
+  PDMABytes = ^TDMABytes;
  {$ENDIF}
+
 Var
  Volume, Loops: Integer;
  InfoOnly, AudioActive: Boolean;
  Phase: LongInt;
  {$IFDEF MSWINDOWS}
- WaveHandle: HWAVEOUT;
- Slots: array[0..3] of TOutputSlot;
+  WaveHandle: HWAVEOUT;
+  Slots: Array[0..3] Of TOutputSlot;
  {$ELSE}
- SBBase, SBIRQ, SBDMA: Word;
- OldMask: Byte;
- OldVector: Pointer;
- IRQInstalled: Boolean;
- DMAArea: PDMAArea;
- DMABuffer: PDMABytes;
- Completed: Word;
+  SBBase, SBIRQ, SBDMA: Word;
+  OldMask: Byte;
+  OldVector: Pointer;
+  IRQInstalled: Boolean;
+  DMAArea: PDMAArea;
+  DMABuffer: PDMABytes;
+  Completed: Word;
  {$ENDIF}
-
 Procedure StopAudio;
 {$IFDEF MSWINDOWS}
-Var J: Integer;
-Begin
- if AudioActive Then Begin
-  waveOutReset(WaveHandle);
-  For J := 0 to 3 do
-   if Slots[J].Prepared Then Begin
+
+ Var
+  J: Integer;
+ Begin
+  If AudioActive Then Begin
+   waveOutReset(WaveHandle);
+   For J := 0 To 3 Do   If Slots[J].Prepared Then Begin
     waveOutUnprepareHeader(WaveHandle, @Slots[J].Head, SizeOf(TWaveHdr));
     Slots[J].Prepared := False;
    End;
-  waveOutClose(WaveHandle); AudioActive := False;
+   waveOutClose(WaveHandle); AudioActive := False;
+  End;
  End;
-End;
 {$ELSE}
-Var Dummy: Byte;
-Begin
- if AudioActive Then Begin
+
+ Var
+  Dummy: Byte;
+ Begin
+  If AudioActive Then Begin
   { Reset stops the DSP and releases its DMA request before restoring IRQ. }
-  Port[SBBase + 6] := 1; Delay(1); Port[SBBase + 6] := 0;
-  Port[$0A] := 4 or SBDMA;
-  AudioActive := False;
+   Port[SBBase + 6] := 1; Delay(1); Port[SBBase + 6] := 0;
+   Port[$0A] := 4 Or SBDMA;
+   AudioActive := False;
+  End;
+  If IRQInstalled Then Begin
+   Port[$21] := Port[$21] Or (1 Shl SBIRQ);
+   Dummy := Port[SBBase + $0E];
+   SetIntVec(8 + SBIRQ, OldVector);
+   Port[$21] := OldMask;
+   IRQInstalled := False;
+  End;
+  If DMAArea <> Nil Then Begin
+   Dispose(DMAArea); DMAArea := Nil;
+  End;
  End;
- if IRQInstalled Then Begin
-  Port[$21] := Port[$21] or (1 shl SBIRQ);
-  Dummy := Port[SBBase + $0E];
-  SetIntVec(8 + SBIRQ, OldVector);
-  Port[$21] := OldMask;
-  IRQInstalled := False;
- End;
- if DMAArea <> nil Then Begin Dispose(DMAArea); DMAArea := nil; End;
-End;
 {$ENDIF}
 
 Procedure EmitPCM(Count: Word);
-Var J, C, OutCount: Integer; Sample, Value: LongInt; Bytes: TAudioBytes;
+Var
+ J, C, OutCount: Integer;
+ Sample, Value: LongInt;
+ Bytes: TAudioBytes;
 Begin
  {$IFDEF MSWINDOWS}
- J := 0;
- While J < Count do Begin
-  Sample := LongInt(D^.PCM[J]) + LongInt(D^.PCM[J+1]) * 256;
-  if Sample >= 32768 Then Dec(Sample, 65536);
-  Sample := Sample * Volume div 100;
-  if Sample < 0 Then Inc(Sample, 65536);
-  D^.PCM[J] := Sample and 255; D^.PCM[J+1] := Sample shr 8;
-  Inc(J, 2);
- End;
- WriteBytes(D^.PCM, Count); Inc(Written, Count);
+  J := 0;
+  While J < Count Do Begin
+   Sample := LongInt(D^.PCM[J]) + LongInt(D^.PCM[J+1]) * 256;
+   If Sample >= 32768 Then Dec(Sample, 65536);
+   Sample := Sample * Volume Div 100;
+   If Sample < 0 Then Inc(Sample, 65536);
+   D^.PCM[J] := Sample And 255; D^.PCM[J+1] := Sample Shr 8;
+   Inc(J, 2);
+  End;
+  WriteBytes(D^.PCM, Count); Inc(Written, Count);
  {$ELSE}
  { Rate 1000000/45 matches DSP time constant 211. Nearest-sample
    conversion; fractional phase persists across frames. }
- OutCount := 0; J := 0;
- While J < Count do Begin
-  Value := 0;
-  For C := 0 to Header.Channels-1 do Begin
-   Sample := LongInt(D^.PCM[J]) + LongInt(D^.PCM[J+1]) * 256;
-   if Sample >= 32768 Then Dec(Sample, 65536);
-   Inc(Value, Sample); Inc(J, 2);
+  OutCount := 0; J := 0;
+  While J < Count Do Begin
+   Value := 0;
+   For C := 0 To Header.Channels-1 Do Begin
+    Sample := LongInt(D^.PCM[J]) + LongInt(D^.PCM[J+1]) * 256;
+    If Sample >= 32768 Then Dec(Sample, 65536);
+    Inc(Value, Sample); Inc(J, 2);
+   End;
+   Value := (Value Div Header.Channels) * Volume Div 100;
+   Inc(Phase, 1000000);
+   While Phase >= Header.Rate * 45 Do Begin
+    Dec(Phase, Header.Rate * 45);
+    Bytes[OutCount] := (Value + 32768) Div 256;
+    Inc(OutCount);
+    If OutCount = AudioBlock Then Begin
+     WriteBytes(Bytes, OutCount); Inc(Written, OutCount); OutCount := 0;
+    End;
+   End;
   End;
-  Value := (Value div Header.Channels) * Volume div 100;
-  Inc(Phase, 1000000);
-  While Phase >= Header.Rate * 45 do Begin
-   Dec(Phase, Header.Rate * 45);
-   Bytes[OutCount] := (Value + 32768) div 256;
-   Inc(OutCount);
-   if OutCount = AudioBlock Then Begin WriteBytes(Bytes, OutCount); Inc(Written, OutCount); OutCount := 0; End;
+  If OutCount > 0 Then Begin
+   WriteBytes(Bytes, OutCount); Inc(Written, OutCount);
   End;
- End;
- if OutCount > 0 Then Begin WriteBytes(Bytes, OutCount); Inc(Written, OutCount); End;
  {$ENDIF}
 End;
 
 Procedure OpenMP3;
-Var ErrorCode: Integer; OldMode: Byte;
+Var
+ ErrorCode: Integer;
+ OldMode: Byte;
 Begin
  Assign(InputFile, InputName); OldMode := FileMode; FileMode := 0;
  {$I-}Reset(InputFile, 1); ErrorCode := IOResult;{$I+}
  FileMode := OldMode;
- if ErrorCode <> 0 Then Fail('Ouverture MP3 impossible: ' + InputName);
+ If ErrorCode <> 0 Then Fail('Ouverture MP3 impossible: ' + InputName);
  InputOpen := True;
  {$I-}InputSize := FileSize(InputFile); ErrorCode := IOResult;{$I+}
- if (ErrorCode <> 0) or (InputSize < 4) Then Fail('Fichier MP3 vide, trop grand ou illisible.');
+ If (ErrorCode <> 0) Or (InputSize < 4) Then Fail(
+ 'Fichier MP3 vide, trop grand ou illisible.');
  SkipTags; RemoveTrailingTags;
 End;
 
 Procedure MakeTemporary;
-Var Attempt, ErrorCode: Integer; Digits: string;
+Var
+ Attempt, ErrorCode: Integer;
+ Digits: String;
 Begin
  Randomize;
- For Attempt := 1 to 100 do Begin
+ For Attempt := 1 To 100 Do Begin
   Str(Random(30000), Digits); OutputName := 'PM' + Digits + '.TMP';
-  if not Exists(OutputName) Then Begin
+  If Not Exists(OutputName) Then Begin
    Assign(OutputFile, OutputName);
    {$I-}Rewrite(OutputFile, 1); ErrorCode := IOResult;{$I+}
-   if ErrorCode <> 0 Then Fail('Creation temporaire impossible: ' + OutputName);
+   If ErrorCode <> 0 Then Fail('Creation temporaire impossible: ' + OutputName);
    OutputOpen := True; OutputCreated := True; Exit;
   End;
  End;
@@ -1172,306 +1346,360 @@ Begin
 End;
 
 Procedure Prepare;
-Var ErrorCode: Integer; TotalSamples: Double; LowRate, HighRate: LongInt;
+Var
+ ErrorCode: Integer;
+ TotalSamples: Double;
+ LowRate, HighRate: LongInt;
 Begin
  OpenMP3;
  TotalSamples := 0; LowRate := 1000000; HighRate := 0;
- if not InfoOnly Then Begin
+ If Not InfoOnly Then Begin
   New(D); New(Transform); FillChar(D^, SizeOf(D^), 0); InitializeTransforms;
   MakeTemporary;
   WriteLn('Decodage MP3 avant lecture...');
  End;
- While InputPosition < InputEnd do Begin
-  if ReadNextFrame Then Begin
-   if Frames = 0 Then FirstHeader := Header;
-   if Header.BitRate < LowRate Then LowRate := Header.BitRate;
-   if Header.BitRate > HighRate Then HighRate := Header.BitRate;
+ While InputPosition < InputEnd Do Begin
+  If ReadNextFrame Then Begin
+   If Frames = 0 Then FirstHeader := Header;
+   If Header.BitRate < LowRate Then LowRate := Header.BitRate;
+   If Header.BitRate > HighRate Then HighRate := Header.BitRate;
    TotalSamples := TotalSamples + Header.Granules * 576.0;
-   if not InfoOnly Then DecodeFrame;
+   If Not InfoOnly Then DecodeFrame;
    Inc(Frames); Inc(InputPosition, Header.FrameSize);
-  End else InputPosition := InputEnd;
+  End Else InputPosition := InputEnd;
  End;
- if Frames = 0 Then Fail('Aucune trame MP3 complete.');
+ If Frames = 0 Then Fail('Aucune trame MP3 complete.');
  Write('MPEG-');
- case FirstHeader.Version of 3: Write('1'); 2: Write('2'); 0: Write('2.5'); End;
- WriteLn(' Layer III, ', FirstHeader.Rate, ' Hz, ', FirstHeader.Channels, ' canal/canaux');
- WriteLn('Debit: ', LowRate div 1000, '..', HighRate div 1000, ' kbit/s ; ', Frames, ' trames');
- WriteLn('Duree decodee: ', TotalSamples / FirstHeader.Rate:0:3, ' secondes (delai encodeur inclus).');
+ Case FirstHeader.Version Of 3: Write('1'); 2: Write('2'); 0: Write('2.5');
+End;
+WriteLn(' Layer III, ', FirstHeader.Rate, ' Hz, ', FirstHeader.Channels, ' canal/canaux');
+WriteLn('Debit: ', LowRate Div 1000, '..', HighRate Div 1000, ' kbit/s ; ', Frames,
+' trames');
+WriteLn('Duree decodee: ', TotalSamples / FirstHeader.Rate:0:3,
+' secondes (delai encodeur inclus).');
  {$I-}Close(InputFile); ErrorCode := IOResult;{$I+}
- InputOpen := False;
- if ErrorCode <> 0 Then Fail('Fermeture MP3 impossible.');
- if not InfoOnly Then Begin
-  Dispose(Transform); Dispose(D);
+InputOpen := False;
+If ErrorCode <> 0 Then Fail('Fermeture MP3 impossible.');
+If Not InfoOnly Then Begin
+ Dispose(Transform); Dispose(D);
   {$I-}Close(OutputFile); ErrorCode := IOResult;{$I+}
-  OutputOpen := False;
-  if ErrorCode <> 0 Then Fail('Fermeture temporaire impossible.');
+ OutputOpen := False;
+ If ErrorCode <> 0 Then Fail('Fermeture temporaire impossible.');
   {$I-}Reset(OutputFile, 1); ErrorCode := IOResult;{$I+}
-  if ErrorCode <> 0 Then Fail('Relecture temporaire impossible.');
-  OutputOpen := True;
- End;
+ If ErrorCode <> 0 Then Fail('Relecture temporaire impossible.');
+ OutputOpen := True;
+End;
 End;
 
-Procedure ReadPCM(var Buffer; Count: Word; var Actual: Word);
-Var ErrorCode: Integer;
+Procedure ReadPCM(Var Buffer; Count: Word; Var Actual: Word);
+Var
+ ErrorCode: Integer;
 Begin
  {$I-}BlockRead(OutputFile, Buffer, Count, Actual); ErrorCode := IOResult;{$I+}
- if ErrorCode <> 0 Then Fail('Lecture PCM temporaire impossible.');
+ If ErrorCode <> 0 Then Fail('Lecture PCM temporaire impossible.');
 End;
 
 Procedure RewindPCM;
-Var ErrorCode: Integer;
+Var
+ ErrorCode: Integer;
 Begin
  {$I-}Seek(OutputFile, 0); ErrorCode := IOResult;{$I+}
- if ErrorCode <> 0 Then Fail('Positionnement PCM impossible.');
+ If ErrorCode <> 0 Then Fail('Positionnement PCM impossible.');
 End;
-
 {$IFDEF MSWINDOWS}
-Procedure Play;
-Var Format: TWaveFormatEx; J, Pass: Integer; Actual: Word; Started: DWORD;
-Begin
- FillChar(Format, SizeOf(Format), 0);
- Format.wFormatTag := WAVE_FORMAT_PCM;
- Format.nChannels := FirstHeader.Channels;
- Format.nSamplesPerSec := FirstHeader.Rate;
- Format.wBitsPerSample := 16;
- Format.nBlockAlign := Format.nChannels * 2;
- Format.nAvgBytesPerSec := Format.nSamplesPerSec * Format.nBlockAlign;
- if waveOutOpen(@WaveHandle, WAVE_MAPPER, @Format, 0, 0, CALLBACK_NULL) <> MMSYSERR_NOERROR Then
-  Fail('Ouverture waveOut impossible (carte absente ou format refuse).');
- AudioActive := True;
- For J := 0 to 3 do Begin
-  FillChar(Slots[J].Head, SizeOf(TWaveHdr), 0);
-  Slots[J].Head.lpData := @Slots[J].Data;
-  Slots[J].Head.dwBufferLength := AudioBlock;
-  if waveOutPrepareHeader(WaveHandle, @Slots[J].Head, SizeOf(TWaveHdr)) <> MMSYSERR_NOERROR Then Fail('waveOutPrepareHeader a echoue.');
-  Slots[J].Prepared := True;
- End;
- J := 0;
- For Pass := 1 to Loops do Begin
-  RewindPCM;
-  repeat
+
+ Procedure Play;
+ Var
+  Format: TWaveFormatEx;
+  J, Pass: Integer;
+  Actual: Word;
+  Started: DWORD;
+ Begin
+  FillChar(Format, SizeOf(Format), 0);
+  Format.wFormatTag := WAVE_FORMAT_PCM;
+  Format.nChannels := FirstHeader.Channels;
+  Format.nSamplesPerSec := FirstHeader.Rate;
+  Format.wBitsPerSample := 16;
+  Format.nBlockAlign := Format.nChannels * 2;
+  Format.nAvgBytesPerSec := Format.nSamplesPerSec * Format.nBlockAlign;
+  If waveOutOpen(@WaveHandle, WAVE_MAPPER, @Format, 0, 0, CALLBACK_NULL) <>
+  MMSYSERR_NOERROR Then  Fail(
+  'Ouverture waveOut impossible (carte absente ou format refuse).');
+  AudioActive := True;
+  For J := 0 To 3 Do Begin
+   FillChar(Slots[J].Head, SizeOf(TWaveHdr), 0);
+   Slots[J].Head.lpData := @Slots[J].Data;
+   Slots[J].Head.dwBufferLength := AudioBlock;
+   If waveOutPrepareHeader(WaveHandle, @Slots[J].Head, SizeOf(TWaveHdr)) <>
+   MMSYSERR_NOERROR Then Fail('waveOutPrepareHeader a echoue.');
+   Slots[J].Prepared := True;
+  End;
+  J := 0;
+  For Pass := 1 To Loops Do Begin
+   RewindPCM;
+   Repeat
    Started := GetTickCount;
-   While ((Slots[J].Head.dwFlags and WHDR_INQUEUE) <> 0) do Begin
-    if DWORD(GetTickCount - Started) > 10000 Then Fail('Delai waveOut depasse.');
+   While ((Slots[J].Head.dwFlags And WHDR_INQUEUE) <> 0) Do Begin
+    If DWORD(GetTickCount - Started) > 10000 Then Fail('Delai waveOut depasse.');
     Sleep(1);
    End;
    ReadPCM(Slots[J].Data, AudioBlock, Actual);
-   if Actual > 0 Then Begin
+   If Actual > 0 Then Begin
     Slots[J].Head.dwBufferLength := Actual;
-    if waveOutWrite(WaveHandle, @Slots[J].Head, SizeOf(TWaveHdr)) <> MMSYSERR_NOERROR Then Fail('waveOutWrite a echoue.');
-    J := (J + 1) mod 4;
+    If waveOutWrite(WaveHandle, @Slots[J].Head, SizeOf(TWaveHdr)) <>
+    MMSYSERR_NOERROR Then Fail('waveOutWrite a echoue.');
+    J := (J + 1) Mod 4;
    End;
-  until Actual = 0;
- End;
- For J := 0 to 3 do Begin
-  Started := GetTickCount;
-  While (Slots[J].Head.dwFlags and WHDR_INQUEUE) <> 0 do Begin
-   if DWORD(GetTickCount - Started) > 10000 Then Fail('Fin waveOut bloquee.');
-   Sleep(1);
+   Until Actual = 0;
   End;
+  For J := 0 To 3 Do Begin
+   Started := GetTickCount;
+   While (Slots[J].Head.dwFlags And WHDR_INQUEUE) <> 0 Do Begin
+    If DWORD(GetTickCount - Started) > 10000 Then Fail('Fin waveOut bloquee.');
+    Sleep(1);
+   End;
+  End;
+  StopAudio;
  End;
- StopAudio;
-End;
 {$ELSE}
 
-Function ClockMS: LongInt;
-Var H, M, S, HS: Word;
-Begin
- GetTime(H, M, S, HS);
- ClockMS := ((LongInt(H) * 60 + M) * 60 + S) * 1000 + HS * 10;
-End;
+ Function ClockMS: LongInt;
+ Var
+  H, M, S, HS: Word;
+ Begin
+  GetTime(H, M, S, HS);
+  ClockMS := ((LongInt(H) * 60 + M) * 60 + S) * 1000 + HS * 10;
+ End;
 
-Function TimedOut(Start: LongInt): Boolean;
-Var Delta: LongInt;
-Begin
- Delta := ClockMS - Start;
- if Delta < 0 Then Inc(Delta, 86400000);
- TimedOut := Delta > 3000;
-End;
+ Function TimedOut(Start: LongInt): Boolean;
+ Var
+  Delta: LongInt;
+ Begin
+  Delta := ClockMS - Start;
+  If Delta < 0 Then Inc(Delta, 86400000);
+  TimedOut := Delta > 3000;
+ End;
 
-Procedure DSPWrite(Value: Byte);
-Var Start: LongInt;
-Begin
- Start := ClockMS;
- While (Port[SBBase + $0C] and $80) <> 0 do
-  if TimedOut(Start) Then Fail('DSP Sound Blaster bloque.');
- Port[SBBase + $0C] := Value;
-End;
+ Procedure DSPWrite(Value: Byte);
+ Var
+  Start: LongInt;
+ Begin
+  Start := ClockMS;
+  While (Port[SBBase + $0C] And $80) <> 0 Do  If TimedOut(Start) Then Fail(
+  'DSP Sound Blaster bloque.');
+  Port[SBBase + $0C] := Value;
+ End;
 
-Function DSPRead: Byte;
-Var Start: LongInt;
-Begin
- Start := ClockMS;
- While (Port[SBBase + $0E] and $80) = 0 do
-  if TimedOut(Start) Then Fail('Sound Blaster absente ou BLASTER incorrect.');
- DSPRead := Port[SBBase + $0A];
-End;
+ Function DSPRead: Byte;
+ Var
+  Start: LongInt;
+ Begin
+  Start := ClockMS;
+  While (Port[SBBase + $0E] And $80) = 0 Do  If TimedOut(Start) Then Fail(
+  'Sound Blaster absente ou BLASTER incorrect.');
+  DSPRead := Port[SBBase + $0A];
+ End;
 
-Procedure SoundIRQ; Interrupt;
-Var Dummy: Byte;
-Begin
- Dummy := Port[SBBase + $0E];
- Inc(Completed);
- Port[$20] := $20;
-End;
+ Procedure SoundIRQ;
+ Interrupt;
 
-Procedure ConfigureSB;
-Var Env, Token: string; I, J, Code, Number: Integer; Major, Minor: Byte;
- Physical: LongInt; Offset: Word;
-Begin
- Env := GetEnv('BLASTER'); I := 1;
- While I <= Length(Env) do Begin
-  While (I <= Length(Env)) and (Env[I] = ' ') do Inc(I);
-  J := I;
-  While (I <= Length(Env)) and (Env[I] <> ' ') do Inc(I);
-  Token := Copy(Env, J, I-J);
-  if Length(Token) > 1 Then Begin
-   if UpCase(Token[1]) in ['A','I','D'] Then Begin
-    if UpCase(Token[1]) = 'A' Then Val('$'+Copy(Token,2,255),Number,Code)
-    else Val(Copy(Token,2,255),Number,Code);
-    if Code <> 0 Then Fail('Variable BLASTER invalide.');
-    case UpCase(Token[1]) of 'A': SBBase := Number; 'I': SBIRQ := Number; 'D': SBDMA := Number; End;
+ Var
+  Dummy: Byte;
+ Begin
+  Dummy := Port[SBBase + $0E];
+  Inc(Completed);
+  Port[$20] := $20;
+ End;
+
+ Procedure ConfigureSB;
+ Var
+  Env, Token: String;
+  I, J, Code, Number: Integer;
+  Major, Minor: Byte;
+  Physical: LongInt;
+  Offset: Word;
+ Begin
+  Env := GetEnv('BLASTER'); I := 1;
+  While I <= Length(Env) Do Begin
+   While (I <= Length(Env)) And (Env[I] = ' ') Do Inc(I);
+   J := I;
+   While (I <= Length(Env)) And (Env[I] <> ' ') Do Inc(I);
+   Token := Copy(Env, J, I-J);
+   If Length(Token) > 1 Then Begin
+    If UpCase(Token[1]) In ['A','I','D'] Then Begin
+     If UpCase(Token[1]) = 'A' Then Val('$'+Copy(Token,2,255),Number,Code)
+                               Else Val(Copy(Token,2,255),Number,Code);
+     If Code <> 0 Then Fail('Variable BLASTER invalide.');
+     Case UpCase(Token[1]) Of 'A': SBBase := Number; 'I': SBIRQ := Number;
+     'D': SBDMA := Number;
+    End;
    End;
   End;
  End;
- if (SBBase < $210) or (SBBase > $280) or ((SBBase and 15) <> 0) or
-  not (SBIRQ in [3,5,7]) or not (SBDMA in [1,3]) Then
-  Fail('BLASTER requis: base A210..A280, IRQ I3/I5/I7, DMA D1/D3.');
+ If (SBBase < $210) Or (SBBase > $280) Or ((SBBase And 15) <> 0) Or
+ Not (SBIRQ In [3,5,7]) Or Not (SBDMA In [1,3]) Then  Fail(
+ 'BLASTER requis: base A210..A280, IRQ I3/I5/I7, DMA D1/D3.');
  Port[SBBase + 6] := 1; Delay(1); Port[SBBase + 6] := 0;
- if DSPRead <> $AA Then Fail('Reinitialisation DSP incorrecte.');
+ If DSPRead <> $AA Then Fail('Reinitialisation DSP incorrecte.');
  DSPWrite($E1); Major := DSPRead; Minor := DSPRead;
- if Major < 2 Then Fail('Sound Blaster 2.0 ou superieure requise (DMA auto-init).');
+ If Major < 2 Then Fail('Sound Blaster 2.0 ou superieure requise (DMA auto-init).');
  WriteLn('Sound Blaster DSP ', Major, '.', Minor, ' ; mono 8 bits, 22222 Hz.');
  New(DMAArea);
  Physical := LongInt(Seg(DMAArea^)) * 16 + Ofs(DMAArea^);
  Offset := 0;
- if (Physical and $FFFF) > $E000 Then Offset := $10000 - (Physical and $FFFF);
+ If (Physical And $FFFF) > $E000 Then Offset := $10000 - (Physical And $FFFF);
  Inc(Physical, Offset);
- DMABuffer := Ptr(Physical div 16, Physical and 15);
+ DMABuffer := Ptr(Physical Div 16, Physical And 15);
  GetIntVec(8 + SBIRQ, OldVector); OldMask := Port[$21];
- Port[$21] := OldMask or (1 shl SBIRQ);
+ Port[$21] := OldMask Or (1 Shl SBIRQ);
  SetIntVec(8 + SBIRQ, @SoundIRQ); IRQInstalled := True;
-End;
-
-Procedure FillHalf(Half: Integer);
-Var Actual: Word;
-Begin
- FillChar(DMABuffer^[Half * AudioBlock], AudioBlock, 128);
- ReadPCM(DMABuffer^[Half * AudioBlock], AudioBlock, Actual);
-End;
-
-Procedure Play;
-Const Pages: array[0..3] of Byte = ($87,$83,$81,$82);
-Var Physical, Start, Blocks, Done: LongInt; Seen, Current: Word;
- Pass: Integer; Dummy: Byte;
-Begin
- CheckBreak := False;
- ConfigureSB;
- Physical := LongInt(Seg(DMABuffer^)) * 16 + Ofs(DMABuffer^);
- For Pass := 1 to Loops do Begin
-  RewindPCM; FillHalf(0); FillHalf(1);
-  Completed := 0; Seen := 0; Done := 0; Blocks := (Written + AudioBlock-1) div AudioBlock;
-  Port[$0A] := 4 or SBDMA;
-  Port[$0C] := 0;
-  Port[$0B] := $58 or SBDMA; { single transfer, auto-init, memory -> device }
-  Port[SBDMA * 2] := Physical and 255;
-  Port[SBDMA * 2] := (Physical shr 8) and 255;
-  Port[Pages[SBDMA]] := Physical shr 16;
-  Port[$0C] := 0;
-  Port[SBDMA * 2 + 1] := $FF;
-  Port[SBDMA * 2 + 1] := $1F; { 8192-byte ring }
-  AudioActive := True;
-  Port[$0A] := SBDMA;
-  Port[$21] := OldMask and not (1 shl SBIRQ);
-  DSPWrite($D1); DSPWrite($40); DSPWrite(211);
-  DSPWrite($48); DSPWrite($FF); DSPWrite($0F); { interrupt every 4096 bytes }
-  DSPWrite($1C);
-  Start := ClockMS;
-  While Done < Blocks do Begin
-   if KeyPressed Then if ReadKey = #27 Then Begin StopAudio; Exit; End;
-   Current := Completed;
-   if Current <> Seen Then Begin
-    if Word(Current-Seen) <> 1 Then Fail('Sous-alimentation du tampon Sound Blaster.');
-    Inc(Done); Seen := Current;
-    if Done < Blocks Then FillHalf((Done-1) mod 2);
-    Start := ClockMS;
-   End
-   else if TimedOut(Start) Then Fail('Aucune interruption Sound Blaster: verifier BLASTER.');
-  End;
-  DSPWrite($D0); DSPWrite($DA); DSPWrite($D3);
-  Port[$0A] := 4 or SBDMA;
-  Port[$21] := Port[$21] or (1 shl SBIRQ);
-  Dummy := Port[SBBase + $0E];
  End;
- StopAudio;
-End;
+
+ Procedure FillHalf(Half: Integer);
+ Var
+  Actual: Word;
+ Begin
+  FillChar(DMABuffer^[Half * AudioBlock], AudioBlock, 128);
+  ReadPCM(DMABuffer^[Half * AudioBlock], AudioBlock, Actual);
+ End;
+
+ Procedure Play;
+ Const
+  Pages: Array[0..3] Of Byte = ($87,$83,$81,$82);
+ Var
+  Physical, Start, Blocks, Done: LongInt;
+  Seen, Current: Word;
+  Pass: Integer;
+  Dummy: Byte;
+ Begin
+  CheckBreak := False;
+  ConfigureSB;
+  Physical := LongInt(Seg(DMABuffer^)) * 16 + Ofs(DMABuffer^);
+  For Pass := 1 To Loops Do Begin
+   RewindPCM; FillHalf(0); FillHalf(1);
+   Completed := 0; Seen := 0; Done := 0;
+   Blocks := (Written + AudioBlock-1) Div AudioBlock;
+   Port[$0A] := 4 Or SBDMA;
+   Port[$0C] := 0;
+   Port[$0B] := $58 Or SBDMA; { single transfer, auto-init, memory -> device }
+   Port[SBDMA * 2] := Physical And 255;
+   Port[SBDMA * 2] := (Physical Shr 8) And 255;
+   Port[Pages[SBDMA]] := Physical Shr 16;
+   Port[$0C] := 0;
+   Port[SBDMA * 2 + 1] := $FF;
+   Port[SBDMA * 2 + 1] := $1F; { 8192-byte ring }
+   AudioActive := True;
+   Port[$0A] := SBDMA;
+   Port[$21] := OldMask And Not (1 Shl SBIRQ);
+   DSPWrite($D1); DSPWrite($40); DSPWrite(211);
+   DSPWrite($48); DSPWrite($FF); DSPWrite($0F); { interrupt every 4096 bytes }
+   DSPWrite($1C);
+   Start := ClockMS;
+   While Done < Blocks Do Begin
+    If KeyPressed Then If ReadKey = #27 Then Begin
+     StopAudio; Exit;
+    End;
+    Current := Completed;
+    If Current <> Seen Then Begin
+     If Word(Current-Seen) <> 1 Then Fail('Sous-alimentation du tampon Sound Blaster.');
+     Inc(Done); Seen := Current;
+     If Done < Blocks Then FillHalf((Done-1) Mod 2);
+     Start := ClockMS;
+    End
+    Else If TimedOut(Start) Then Fail(
+    'Aucune interruption Sound Blaster: verifier BLASTER.');
+   End;
+   DSPWrite($D0); DSPWrite($DA); DSPWrite($D3);
+   Port[$0A] := 4 Or SBDMA;
+   Port[$21] := Port[$21] Or (1 Shl SBIRQ);
+   Dummy := Port[SBBase + $0E];
+  End;
+  StopAudio;
+ End;
 {$ENDIF}
 
-Function Upper(Text: string): string;
-Var J: Integer;
+Function Upper(Text: String): String;
+Var
+ J: Integer;
 Begin
- For J := 1 to Length(Text) do Text[J] := UpCase(Text[J]);
+ For J := 1 To Length(Text) Do Text[J] := UpCase(Text[J]);
  Upper := Text;
 End;
+Procedure ExitCleanup;
+{$IFNDEF FPC}
+ Far;
+{$ENDIF}
 
-Procedure ExitCleanup; {$IFNDEF FPC}Far;{$ENDIF}
-Var ErrorCode: Integer;
+Var
+ ErrorCode: Integer;
 Begin
  ExitProc := SavedExit;
  StopAudio;
- if InputOpen Then Begin
+ If InputOpen Then Begin
   {$I-}Close(InputFile); ErrorCode := IOResult;{$I+}
   InputOpen := False;
  End;
- if OutputOpen Then Begin
+ If OutputOpen Then Begin
   {$I-}Close(OutputFile); ErrorCode := IOResult;{$I+}
   OutputOpen := False;
  End;
- if OutputCreated Then Begin
+ If OutputCreated Then Begin
   {$I-}Erase(OutputFile); ErrorCode := IOResult;{$I+}
   OutputCreated := False;
  End;
 End;
 
-Var Argument, Option: string; I, Code, Value, ErrorCode: Integer;
-Begin
+Var
+ Argument, Option: String;
+ I, Code, Value, ErrorCode: Integer;
+
+BEGIN
  InputName := ''; OutputName := '';
  InputOpen := False; OutputOpen := False; OutputCreated := False;
  InfoOnly := False; AudioActive := False;
  Frames := 0; Written := 0; Phase := 0;
- {$IFDEF MSWINDOWS}FillChar(Slots, SizeOf(Slots), 0);
- {$ELSE}DMAArea := nil; IRQInstalled := False; SBBase := 0; SBIRQ := 0; SBDMA := 0;{$ENDIF}
+ {$IFDEF MSWINDOWS}
+  FillChar(Slots, SizeOf(Slots), 0);
+ {$ELSE}
+  DMAArea := Nil; IRQInstalled := False; SBBase := 0; SBIRQ := 0; SBDMA := 0;
+ {$ENDIF}
  SavedExit := ExitProc; ExitProc := @ExitCleanup;
  Volume := 100; Loops := 1;
- For I := 1 to ParamCount do Begin
+ For I := 1 To ParamCount Do Begin
   Argument := ParamStr(I); Option := Upper(Argument);
-  if (Option = '/?') or (Option = '--HELP') or (Option = '-H') Then Begin Help; Halt(0); End
-  else if Option = '/INFO' Then InfoOnly := True
-  else if (Copy(Option,1,8) = '/VOLUME:') or (Copy(Option,1,6) = '/LOOP:') Then Begin
-   if Copy(Option,1,8) = '/VOLUME:' Then Val(Copy(Option,9,255),Value,Code)
-   else Val(Copy(Option,7,255),Value,Code);
-   if Code <> 0 Then Fail('Valeur numerique incorrecte: ' + Argument);
-   if Copy(Option,1,8) = '/VOLUME:' Then Begin
-    if (Value < 0) or (Value > 100) Then Fail('Volume attendu: 0..100.');
+  If (Option = '/?') Or (Option = '--HELP') Or (Option = '-H') Then Begin
+   Help; Halt(0);
+  End
+  Else If Option = '/INFO' Then InfoOnly := True Else
+  If (Copy(Option,1,8) = '/VOLUME:') Or (Copy(Option,1,6) = '/LOOP:') Then Begin
+   If Copy(Option,1,8) = '/VOLUME:' Then Val(Copy(Option,9,255),Value,Code)
+                                    Else Val(Copy(Option,7,255),Value,Code);
+   If Code <> 0 Then Fail('Valeur numerique incorrecte: ' + Argument);
+   If Copy(Option,1,8) = '/VOLUME:' Then Begin
+    If (Value < 0) Or (Value > 100) Then Fail('Volume attendu: 0..100.');
     Volume := Value;
-   End else Begin
-    if (Value < 1) Then Fail('Nombre de lectures attendu: 1..32767.');
+   End Else
+   Begin
+    If (Value < 1) Then Fail('Nombre de lectures attendu: 1..32767.');
     Loops := Value;
    End;
   End
-  else if (Copy(Option,1,1) = '/') or (Copy(Option,1,1) = '-') Then Fail('Option inconnue: ' + Argument)
-  else if InputName <> '' Then Fail('Un seul fichier MP3 attendu.')
-  else InputName := Argument;
+  Else If (Copy(Option,1,1) = '/') Or (Copy(Option,1,1) = '-') Then Fail(
+  'Option inconnue: ' + Argument)
+  Else If InputName <> '' Then Fail('Un seul fichier MP3 attendu.')
+                          Else InputName := Argument;
  End;
- if InputName = '' Then Begin Help; Halt(1); End;
+ If InputName = '' Then Begin
+  Help; Halt(1);
+ End;
  Prepare;
- if not InfoOnly Then Begin
+ If Not InfoOnly Then Begin
   Play;
   {$I-}Close(OutputFile); ErrorCode := IOResult;{$I+}
   OutputOpen := False;
-  if ErrorCode <> 0 Then Fail('Fermeture temporaire impossible.');
+  If ErrorCode <> 0 Then Fail('Fermeture temporaire impossible.');
   {$I-}Erase(OutputFile); ErrorCode := IOResult;{$I+}
-  if ErrorCode <> 0 Then Fail('Suppression temporaire impossible: ' + OutputName);
+  If ErrorCode <> 0 Then Fail('Suppression temporaire impossible: ' + OutputName);
   OutputCreated := False;
  End;
-End.
+END.
