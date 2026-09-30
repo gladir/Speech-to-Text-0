@@ -581,7 +581,10 @@ Begin
 End;
 
 Procedure Help;Begin
- WriteLn('PLAYMP3 fichier.mp3 [/VOLUME:0..100] [/LOOP:1..32767] [/INFO]');
+ WriteLn('PLAYMP3 - Cette commande permet de laner le lecteur de MP3.');
+ WriteLn;
+ WriteLn('Syntaxe: PLAYMP3 fichier.mp3 [/VOLUME:0..100] [/LOOP:1..32767] [/INFO]');
+ WriteLn;
  WriteLn('/INFO : informations seulement, sans lecture ni fichier temporaire.');
  WriteLn('/LOOP:n : nombre total de lectures (1 par defaut). Volume par defaut: 100.');
  WriteLn('Windows: API waveOut, PCM16. DOS: SB 2.0+, DMA8 mono 22222 Hz environ.');
