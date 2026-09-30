@@ -398,7 +398,8 @@ End;
 
 Procedure Prepare;
 Const
- Signature = 'Creative Voice File';
+ { Une constante chaine non typee ne peut pas etre indexee sous Turbo Pascal. }
+ Signature: String[19] = 'Creative Voice File';
 Type
  TRepeatState = Record
   Position: LongInt;
