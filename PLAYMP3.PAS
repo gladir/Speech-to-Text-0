@@ -1,3 +1,10 @@
+{ @author: Sylvain Maltais (support@gladir.com)
+ @created: 2026
+ @version: 1.00
+ @website(https://www.gladir.com/speech-to-text-0)
+ @abstract(Target: Turbo Pascal 7/Free Pascal 3.2
+ @description: Joueur de MP3 }
+
 Program PLAYMP3;
 {$A-}
 {$IFDEF FPC}
