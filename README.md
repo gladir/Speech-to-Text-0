@@ -56,7 +56,7 @@ Voici la liste des différents fichiers proposés dans Speech-to-Text-0 :
   </tr>
   <tr>
     <td><b>WHISPER-CLI.PAS</b></td>
-      <td>Cette commande permet de lancer le CLI de whisper.</td>
+      <td>Cette commande permet de lancer le moteur Whisper natif en Pascal.</td>
   </tr>
 </table>
 
