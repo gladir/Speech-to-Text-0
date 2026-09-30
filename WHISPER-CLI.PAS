@@ -1,3 +1,10 @@
+{ @author: Sylvain Maltais (support@gladir.com)
+ @created: 2026
+ @version: 1.00
+ @website(https://www.gladir.com/speech-to-text-0)
+ @abstract(Target: Free Pascal 3.2
+ @description: Clone de la commande whisper-cli }
+
 Program WHISPERCLI;
 {$A-}
 {$MODE FPC}{$H+}
@@ -254,7 +261,8 @@ Function FourCC(var S: TBinary): AnsiString;Begin
  ReadBytes(S, FourCC[1], 4);
 End;
 
-Procedure ReadWave(const Name: string; var Samples: TSamples; var Rate: LongWord);
+Procedure ReadWave(const Name: string; var Samples: TSamples; var Rate: LongWord;
+ KeepStereo: Boolean; var Left, Right: TSamples);
 Var
  S: TBinary;
  ID: string;
@@ -308,6 +316,9 @@ Begin
  if (DataSize = 0) or (DataSize mod BlockSize <> 0) Then Fail('Donnees PCM incompletes.');
  Frames := DataSize div BlockSize;
  if Frames > Int64(Rate) * MaxSeconds Then Fail('Duree maximale: 30 minutes.');
+ if KeepStereo and (Channels <> 2) Then Fail('--diarize exige un WAV stereo a deux canaux.');
+ Left := nil; Right := nil;
+ if KeepStereo Then Begin SetLength(Left, Frames); SetLength(Right, Frames); End;
  SetLength(Samples, Frames);
  SeekBinary(S, DataPos);
  For I := 0 to Frames - 1 do Begin
@@ -337,7 +348,11 @@ Begin
    SignedValue - (Int64(1) shl Bits);
    X := SignedValue / (Int64(1) shl (Bits - 1));
   End;
-  Sum := Sum + EnsureRange(X, -1.0, 1.0);
+  X := EnsureRange(X, -1.0, 1.0);
+  if KeepStereo Then Begin
+   if C = 1 Then Left[I] := X else Right[I] := X;
+  End;
+  Sum := Sum + X;
  End;
  Samples[I] := Sum / Channels;
 End;
@@ -415,8 +430,14 @@ TextNorm, TextNormB, Embedding: Integer;
 Encoder, Decoder: array of TWhisperLayer;
 Filters: TSamples;
 EOT, SOT, French, Transcribe, NoSpeech, NoTimestamps: Integer;
+TinyDiarize: Boolean;
+DTWHeads: array of LongWord;
+Suppressed: array of Boolean;
 End;
 TDecoderCache = record SelfK, SelfV, CrossK, CrossV: TMatrix;
+Alignment: TMatrix;
+CaptureDTW: Boolean;
+DTWFrames: Integer;
 End;
 TDecoderCaches = array of TDecoderCache;
 
@@ -539,6 +560,7 @@ Var
  S: TBinary;
  I, Count, N, Kind: Integer;
 Begin
+ M.TinyDiarize := False;
  OpenBinary(S, FileName, False);
  if U32(S) <> $67676D6C Then Fail(
  'Modele Whisper GGML requis (GGUF/ONNX non pris en charge).');
@@ -888,6 +910,216 @@ Begin
   MatrixSize(Cache[I].SelfV, M.TextContext, M.TextWidth);
  End;
 End;
+Procedure ConfigureDTW(const Name: string; var M: TWhisperModel);
+Var Layers, Width, Heads, Mel, Encoder: Integer; English: Boolean;
+Begin
+ M.DTWHeads := nil; if Name = '' Then Exit;
+ Layers := 0; Width := 0; Heads := 0; Mel := 80; Encoder := 0;
+ English := Pos('.en', Name) > 0;
+ if Name = 'tiny.en' Then Begin
+  Layers := 4; Width := 384; Heads := 6; Mel := 80; Encoder := 4;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[1] := M.DTWHeads[1] or (LongWord(1) shl 0);
+  M.DTWHeads[2] := M.DTWHeads[2] or (LongWord(1) shl 0);
+  M.DTWHeads[2] := M.DTWHeads[2] or (LongWord(1) shl 5);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 0);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 1);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 2);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 3);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 4);
+ End;
+ if Name = 'tiny' Then Begin
+  Layers := 4; Width := 384; Heads := 6; Mel := 80; Encoder := 4;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[2] := M.DTWHeads[2] or (LongWord(1) shl 2);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 0);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 2);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 3);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 4);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 5);
+ End;
+ if Name = 'base.en' Then Begin
+  Layers := 6; Width := 512; Heads := 8; Mel := 80; Encoder := 6;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 3);
+  M.DTWHeads[4] := M.DTWHeads[4] or (LongWord(1) shl 7);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 1);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 5);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 7);
+ End;
+ if Name = 'base' Then Begin
+  Layers := 6; Width := 512; Heads := 8; Mel := 80; Encoder := 6;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 1);
+  M.DTWHeads[4] := M.DTWHeads[4] or (LongWord(1) shl 2);
+  M.DTWHeads[4] := M.DTWHeads[4] or (LongWord(1) shl 3);
+  M.DTWHeads[4] := M.DTWHeads[4] or (LongWord(1) shl 7);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 1);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 2);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 4);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 6);
+ End;
+ if Name = 'small.en' Then Begin
+  Layers := 12; Width := 768; Heads := 12; Mel := 80; Encoder := 12;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[6] := M.DTWHeads[6] or (LongWord(1) shl 6);
+  M.DTWHeads[7] := M.DTWHeads[7] or (LongWord(1) shl 0);
+  M.DTWHeads[7] := M.DTWHeads[7] or (LongWord(1) shl 3);
+  M.DTWHeads[7] := M.DTWHeads[7] or (LongWord(1) shl 8);
+  M.DTWHeads[8] := M.DTWHeads[8] or (LongWord(1) shl 2);
+  M.DTWHeads[8] := M.DTWHeads[8] or (LongWord(1) shl 5);
+  M.DTWHeads[8] := M.DTWHeads[8] or (LongWord(1) shl 7);
+  M.DTWHeads[9] := M.DTWHeads[9] or (LongWord(1) shl 0);
+  M.DTWHeads[9] := M.DTWHeads[9] or (LongWord(1) shl 4);
+  M.DTWHeads[9] := M.DTWHeads[9] or (LongWord(1) shl 8);
+  M.DTWHeads[9] := M.DTWHeads[9] or (LongWord(1) shl 10);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 0);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 1);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 2);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 3);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 6);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 11);
+  M.DTWHeads[11] := M.DTWHeads[11] or (LongWord(1) shl 2);
+  M.DTWHeads[11] := M.DTWHeads[11] or (LongWord(1) shl 4);
+ End;
+ if Name = 'small' Then Begin
+  Layers := 12; Width := 768; Heads := 12; Mel := 80; Encoder := 12;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 3);
+  M.DTWHeads[5] := M.DTWHeads[5] or (LongWord(1) shl 9);
+  M.DTWHeads[8] := M.DTWHeads[8] or (LongWord(1) shl 0);
+  M.DTWHeads[8] := M.DTWHeads[8] or (LongWord(1) shl 4);
+  M.DTWHeads[8] := M.DTWHeads[8] or (LongWord(1) shl 7);
+  M.DTWHeads[8] := M.DTWHeads[8] or (LongWord(1) shl 8);
+  M.DTWHeads[9] := M.DTWHeads[9] or (LongWord(1) shl 0);
+  M.DTWHeads[9] := M.DTWHeads[9] or (LongWord(1) shl 7);
+  M.DTWHeads[9] := M.DTWHeads[9] or (LongWord(1) shl 9);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 5);
+ End;
+ if Name = 'medium.en' Then Begin
+  Layers := 24; Width := 1024; Heads := 16; Mel := 80; Encoder := 24;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[11] := M.DTWHeads[11] or (LongWord(1) shl 4);
+  M.DTWHeads[14] := M.DTWHeads[14] or (LongWord(1) shl 1);
+  M.DTWHeads[14] := M.DTWHeads[14] or (LongWord(1) shl 12);
+  M.DTWHeads[14] := M.DTWHeads[14] or (LongWord(1) shl 14);
+  M.DTWHeads[15] := M.DTWHeads[15] or (LongWord(1) shl 4);
+  M.DTWHeads[16] := M.DTWHeads[16] or (LongWord(1) shl 0);
+  M.DTWHeads[16] := M.DTWHeads[16] or (LongWord(1) shl 4);
+  M.DTWHeads[16] := M.DTWHeads[16] or (LongWord(1) shl 9);
+  M.DTWHeads[17] := M.DTWHeads[17] or (LongWord(1) shl 12);
+  M.DTWHeads[17] := M.DTWHeads[17] or (LongWord(1) shl 14);
+  M.DTWHeads[18] := M.DTWHeads[18] or (LongWord(1) shl 7);
+  M.DTWHeads[18] := M.DTWHeads[18] or (LongWord(1) shl 10);
+  M.DTWHeads[18] := M.DTWHeads[18] or (LongWord(1) shl 15);
+  M.DTWHeads[20] := M.DTWHeads[20] or (LongWord(1) shl 0);
+  M.DTWHeads[20] := M.DTWHeads[20] or (LongWord(1) shl 3);
+  M.DTWHeads[20] := M.DTWHeads[20] or (LongWord(1) shl 9);
+  M.DTWHeads[20] := M.DTWHeads[20] or (LongWord(1) shl 14);
+  M.DTWHeads[21] := M.DTWHeads[21] or (LongWord(1) shl 12);
+ End;
+ if Name = 'medium' Then Begin
+  Layers := 24; Width := 1024; Heads := 16; Mel := 80; Encoder := 24;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[13] := M.DTWHeads[13] or (LongWord(1) shl 15);
+  M.DTWHeads[15] := M.DTWHeads[15] or (LongWord(1) shl 4);
+  M.DTWHeads[15] := M.DTWHeads[15] or (LongWord(1) shl 15);
+  M.DTWHeads[16] := M.DTWHeads[16] or (LongWord(1) shl 1);
+  M.DTWHeads[20] := M.DTWHeads[20] or (LongWord(1) shl 0);
+  M.DTWHeads[23] := M.DTWHeads[23] or (LongWord(1) shl 4);
+ End;
+ if Name = 'large-v1' Then Begin
+  Layers := 32; Width := 1280; Heads := 20; Mel := 80; Encoder := 32;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[9] := M.DTWHeads[9] or (LongWord(1) shl 19);
+  M.DTWHeads[11] := M.DTWHeads[11] or (LongWord(1) shl 2);
+  M.DTWHeads[11] := M.DTWHeads[11] or (LongWord(1) shl 4);
+  M.DTWHeads[11] := M.DTWHeads[11] or (LongWord(1) shl 17);
+  M.DTWHeads[22] := M.DTWHeads[22] or (LongWord(1) shl 7);
+  M.DTWHeads[22] := M.DTWHeads[22] or (LongWord(1) shl 11);
+  M.DTWHeads[22] := M.DTWHeads[22] or (LongWord(1) shl 17);
+  M.DTWHeads[23] := M.DTWHeads[23] or (LongWord(1) shl 2);
+  M.DTWHeads[23] := M.DTWHeads[23] or (LongWord(1) shl 15);
+ End;
+ if Name = 'large-v2' Then Begin
+  Layers := 32; Width := 1280; Heads := 20; Mel := 80; Encoder := 32;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 12);
+  M.DTWHeads[13] := M.DTWHeads[13] or (LongWord(1) shl 17);
+  M.DTWHeads[16] := M.DTWHeads[16] or (LongWord(1) shl 11);
+  M.DTWHeads[16] := M.DTWHeads[16] or (LongWord(1) shl 12);
+  M.DTWHeads[16] := M.DTWHeads[16] or (LongWord(1) shl 13);
+  M.DTWHeads[17] := M.DTWHeads[17] or (LongWord(1) shl 15);
+  M.DTWHeads[17] := M.DTWHeads[17] or (LongWord(1) shl 16);
+  M.DTWHeads[18] := M.DTWHeads[18] or (LongWord(1) shl 4);
+  M.DTWHeads[18] := M.DTWHeads[18] or (LongWord(1) shl 11);
+  M.DTWHeads[18] := M.DTWHeads[18] or (LongWord(1) shl 19);
+  M.DTWHeads[19] := M.DTWHeads[19] or (LongWord(1) shl 11);
+  M.DTWHeads[21] := M.DTWHeads[21] or (LongWord(1) shl 2);
+  M.DTWHeads[21] := M.DTWHeads[21] or (LongWord(1) shl 3);
+  M.DTWHeads[22] := M.DTWHeads[22] or (LongWord(1) shl 3);
+  M.DTWHeads[22] := M.DTWHeads[22] or (LongWord(1) shl 9);
+  M.DTWHeads[22] := M.DTWHeads[22] or (LongWord(1) shl 12);
+  M.DTWHeads[23] := M.DTWHeads[23] or (LongWord(1) shl 5);
+  M.DTWHeads[23] := M.DTWHeads[23] or (LongWord(1) shl 7);
+  M.DTWHeads[23] := M.DTWHeads[23] or (LongWord(1) shl 13);
+  M.DTWHeads[25] := M.DTWHeads[25] or (LongWord(1) shl 5);
+  M.DTWHeads[26] := M.DTWHeads[26] or (LongWord(1) shl 1);
+  M.DTWHeads[26] := M.DTWHeads[26] or (LongWord(1) shl 12);
+  M.DTWHeads[27] := M.DTWHeads[27] or (LongWord(1) shl 15);
+ End;
+ if Name = 'large-v3' Then Begin
+  Layers := 32; Width := 1280; Heads := 20; Mel := 128; Encoder := 32;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[7] := M.DTWHeads[7] or (LongWord(1) shl 0);
+  M.DTWHeads[10] := M.DTWHeads[10] or (LongWord(1) shl 17);
+  M.DTWHeads[12] := M.DTWHeads[12] or (LongWord(1) shl 18);
+  M.DTWHeads[13] := M.DTWHeads[13] or (LongWord(1) shl 12);
+  M.DTWHeads[16] := M.DTWHeads[16] or (LongWord(1) shl 1);
+  M.DTWHeads[17] := M.DTWHeads[17] or (LongWord(1) shl 14);
+  M.DTWHeads[19] := M.DTWHeads[19] or (LongWord(1) shl 11);
+  M.DTWHeads[21] := M.DTWHeads[21] or (LongWord(1) shl 4);
+  M.DTWHeads[24] := M.DTWHeads[24] or (LongWord(1) shl 1);
+  M.DTWHeads[25] := M.DTWHeads[25] or (LongWord(1) shl 6);
+ End;
+ if Name = 'large-v3-turbo' Then Begin
+  Layers := 4; Width := 1280; Heads := 20; Mel := 128; Encoder := 32;
+  SetLength(M.DTWHeads, Layers);
+  M.DTWHeads[2] := M.DTWHeads[2] or (LongWord(1) shl 4);
+  M.DTWHeads[2] := M.DTWHeads[2] or (LongWord(1) shl 11);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 3);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 6);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 11);
+  M.DTWHeads[3] := M.DTWHeads[3] or (LongWord(1) shl 14);
+ End;
+ if Layers = 0 Then Fail('Profil --dtw inconnu: ' + Name);
+ if (M.TextLayers <> Layers) or (M.AudioLayers <> Encoder) or (M.TextWidth <> Width) or
+  (M.TextHeads <> Heads) or (M.MelCount <> Mel) or (English <> (M.VocabCount = 51864)) Then
+  Fail('Le profil --dtw ne correspond pas aux dimensions/langue du modele.');
+End;
+
+Procedure CaptureAlignment(const Q, K: TMatrix; Heads: Integer; Mask: LongWord;
+ Frames: Integer; var Alignment: TMatrix);
+Var H, J, D, Row, Count: Integer; Peak, Sum, Scale: Double;
+Begin
+ Count := 0; For H := 0 to Heads - 1 do if (Mask and (LongWord(1) shl H)) <> 0 Then Inc(Count);
+ MatrixSize(Alignment, Count, Frames); Row := 0; D := Q.Cols div Heads; Scale := 1 / Sqrt(D);
+ For H := 0 to Heads - 1 do if (Mask and (LongWord(1) shl H)) <> 0 Then Begin
+  Peak := -1E30;
+  For J := 0 to Frames - 1 do Begin
+   Alignment.Data[Row * Frames + J] := NeuralDot(@Q.Data[H * D], @K.Data[J * K.Cols + H * D], D) * Scale;
+   if Alignment.Data[Row * Frames + J] > Peak Then Peak := Alignment.Data[Row * Frames + J];
+  End;
+  Sum := 0;
+  For J := 0 to Frames - 1 do Begin
+   Alignment.Data[Row * Frames + J] := Exp(Alignment.Data[Row * Frames + J] - Peak);
+   Sum := Sum + Alignment.Data[Row * Frames + J];
+  End;
+  For J := 0 to Frames - 1 do Alignment.Data[Row * Frames + J] := Alignment.Data[Row * Frames + J] / Sum;
+  Inc(Row);
+ End;
+End;
+
 Procedure DecoderStep(Token, Position: Integer; const M: TWhisperModel;
 
 var Cache: TDecoderCaches; var Logits: TMatrix);
@@ -912,6 +1144,9 @@ Begin
   Dense(A, M.Tensors, W.O, W.OB, B); Residual(X, B);
   W := M.Decoder[I].Cross; NeuralNorm(X, M.Tensors, W.LN, W.LNB, N);
   Dense(N, M.Tensors, W.Q, W.QB, Q);
+  if Cache[0].CaptureDTW and (Length(M.DTWHeads) > I) Then
+   if M.DTWHeads[I] <> 0 Then CaptureAlignment(Q, Cache[I].CrossK, M.TextHeads,
+    M.DTWHeads[I], Cache[0].DTWFrames, Cache[I].Alignment);
   NeuralAttention(Q, Cache[I].CrossK, Cache[I].CrossV, Cache[I].CrossK.Rows, M.TextHeads,
   A);
   Dense(A, M.Tensors, W.O, W.OB, B); Residual(X, B);
@@ -976,7 +1211,10 @@ Const
 
 Type
  TTokens = array of Integer;
- TTimeHint = record Sample: Integer; Probability: Double; End;
+ TTimeHint = record Sample, EndSample: Integer; Probability: Double; Aligned: Boolean; End;
+ TAlignedToken = record ID, First, Last: Integer; Probability: Double; End;
+ TAlignedTokens = array of TAlignedToken;
+ TCharacterTimes = array of Integer;
  TTimeHints = array of TTimeHint;
  TExportFormat = (efTXT, efVTT, efSRT, efLRC, efCSV, efJSON, efWords, efHTML);
  TExportFormats = set of TExportFormat;
@@ -990,7 +1228,7 @@ Type
  OutputFormats: TExportFormats;
  FullJSON: Boolean;
  FontPath: string;
- Model, Language: string;
+ Model, Language, DTWModel: string;
  Threads, Processors: Integer;
  OffsetMS, DurationMS, OffsetIndex: Integer;
  ShowIndex: Boolean;
@@ -1000,13 +1238,20 @@ Type
  BestOf, BeamSize: Integer;
  Temperature, TemperatureInc: Double;
  NoFallback: Boolean;
+ SuppressNST, HasSuppressRegex: Boolean;
+ SuppressRegex: string;
  NoPrints, PrintSpecial, PrintColors, PrintProgress, NoTimestamps: Boolean;
  PrintConfidence, LogScore: Boolean;
  DetectLanguage, Translate: Boolean;
+ Diarize, TinyDiarize: Boolean;
  WordThreshold, EntropyThreshold, LogProbThreshold, NoSpeechThreshold: Double;
 End;
 TSegment = record First, Last: Integer;
 Text, Language: string;
+Tokens: TAlignedTokens;
+CharacterTimes: TCharacterTimes;
+Speaker: string;
+SpeakerTurnNext: Boolean;
 Confidence: Double;
 SpecialPrefix, SpecialSuffix: string;
 End;
@@ -1065,6 +1310,335 @@ Begin
   End;
 End;
 
+{ Regex procedural: automate non deterministe, sans retour arriere exponentiel.
+  Correspondance complete sur les octets UTF-8 du vocabulaire GGML. }
+Type
+ TRegexChars = set of Char;
+ TRegexNodeKind = (rnEmpty, rnChars, rnConcat, rnAlt, rnRepeat, rnBegin, rnEnd);
+ TRegexNode = record
+  Kind: TRegexNodeKind; Chars: TRegexChars;
+  Left, Right, Minimum, Maximum: Integer;
+ End;
+ TRegexNodes = array of TRegexNode;
+ TRegexStateKind = (rsChars, rsSplit, rsBegin, rsEnd, rsMatch);
+ TRegexState = record Kind: TRegexStateKind; Chars: TRegexChars; A, B: Integer; End;
+ TRegex = record States: array of TRegexState; Start: Integer; End;
+ TRegexFlags = array of Boolean;
+ TRegexStack = array of Integer;
+
+Procedure CompileRegex(const Pattern: string; var Regex: TRegex);
+Var Nodes: TRegexNodes; P, Depth, Root, Terminal: Integer;
+
+ Procedure Invalid(const Message: string);
+ Begin Fail('--suppress-regex: ' + Message + ' (position ' + IntToStr(P) + ')'); End;
+
+ Function Node(Kind: TRegexNodeKind; Left, Right: Integer): Integer;
+ Var N: Integer;
+ Begin
+  N := Length(Nodes); if N >= 2048 Then Invalid('expression trop complexe');
+  SetLength(Nodes, N + 1); Nodes[N].Kind := Kind; Nodes[N].Left := Left; Nodes[N].Right := Right;
+  Node := N;
+ End;
+
+ Function Escape: TRegexChars;
+ Var C: Char; I, V, D: Integer;
+ Begin
+  if P > Length(Pattern) Then Invalid('echappement incomplet');
+  C := Pattern[P]; Inc(P); Escape := [];
+  Case C of
+   'd', 'D': Escape := ['0'..'9'];
+   'w', 'W': Escape := ['A'..'Z','a'..'z','0'..'9','_'];
+   's', 'S': Escape := [' ',#9,#10,#11,#12,#13];
+   't': Escape := [#9]; 'n': Escape := [#10]; 'r': Escape := [#13];
+   'f': Escape := [#12]; 'v': Escape := [#11];
+   'x': Begin
+    V := 0;
+    For I := 1 to 2 do Begin
+     if P > Length(Pattern) Then Invalid('hexadecimal incomplet');
+     C := UpCase(Pattern[P]); Inc(P);
+     if C in ['0'..'9'] Then D := Ord(C) - Ord('0')
+     else if C in ['A'..'F'] Then D := Ord(C) - Ord('A') + 10
+     else Begin Invalid('hexadecimal invalide'); D := 0; End;
+     V := V * 16 + D;
+    End;
+    Escape := [Chr(V)]; Exit;
+   End;
+   '0'..'9', 'b', 'B', 'p', 'P', 'u', 'k': Invalid('echappement non pris en charge');
+   else Begin
+    if C in ['A'..'Z','a'..'z'] Then Invalid('echappement inconnu');
+    Escape := [C];
+   End;
+  End;
+  if C in ['D','W','S'] Then Escape := [#0..#255] - Escape;
+ End;
+
+ Function ClassItem: TRegexChars;
+ Begin
+  if P > Length(Pattern) Then Invalid('classe non fermee');
+  if Pattern[P] = '\' Then Begin Inc(P); ClassItem := Escape; End
+  else Begin ClassItem := [Pattern[P]]; Inc(P); End;
+ End;
+
+ Function Singleton(const Chars: TRegexChars): Integer;
+ Var I, Count: Integer;
+ Begin
+  Singleton := -1; Count := 0;
+  For I := 0 to 255 do if Chr(I) in Chars Then Begin Singleton := I; Inc(Count); End;
+  if Count <> 1 Then Invalid('borne de plage non litterale');
+ End;
+
+ Function Expression: Integer; Forward;
+
+ Function Atom: Integer;
+ Var C: Char; N, Lo, Hi, I: Integer; Negated, Any: Boolean; Chars, Part: TRegexChars;
+ Begin
+  if P > Length(Pattern) Then Begin Atom := Node(rnEmpty, -1, -1); Exit; End;
+  C := Pattern[P]; Inc(P);
+  if C = '(' Then Begin
+   Inc(Depth); if Depth > 64 Then Invalid('imbrication trop profonde');
+   if P <= Length(Pattern) Then if Pattern[P] = '?' Then Begin
+    if Copy(Pattern, P, 2) <> '?:' Then Invalid('assertion/groupe non pris en charge');
+    Inc(P, 2);
+   End;
+   N := Expression;
+   if (P > Length(Pattern)) or (Pattern[P] <> ')') Then Invalid('parenthese non fermee');
+   Inc(P); Dec(Depth); Atom := N; Exit;
+  End;
+  if C = '^' Then Begin Atom := Node(rnBegin, -1, -1); Exit; End;
+  if C = '$' Then Begin Atom := Node(rnEnd, -1, -1); Exit; End;
+  Chars := [];
+  if C = '[' Then Begin
+   Negated := False; Any := False;
+   if P <= Length(Pattern) Then if Pattern[P] = '^' Then Begin Negated := True; Inc(P); End;
+   While P <= Length(Pattern) do Begin
+    if Pattern[P] = ']' Then Break;
+    Part := ClassItem; Any := True;
+    if (P < Length(Pattern)) and (Pattern[P] = '-') and (Pattern[P + 1] <> ']') Then Begin
+     Inc(P); Lo := Singleton(Part); Hi := Singleton(ClassItem);
+     if Hi < Lo Then Invalid('plage inversee');
+     Part := []; For I := Lo to Hi do Include(Part, Chr(I));
+    End;
+    Chars := Chars + Part;
+   End;
+   if not Any or (P > Length(Pattern)) Then Invalid('classe vide ou non fermee');
+   Inc(P); if Negated Then Chars := [#0..#255] - Chars;
+  End
+  else if C = '\' Then Chars := Escape
+  else if C = '.' Then Chars := [#0..#255] - [#10,#13]
+  else Begin
+   if C in ['*','+','?','{','}',']',')','|'] Then Invalid('operateur sans operande');
+   Chars := [C];
+  End;
+  N := Node(rnChars, -1, -1); Nodes[N].Chars := Chars; Atom := N;
+ End;
+
+ Function Number: Integer;
+ Begin
+  Number := 0;
+  if (P > Length(Pattern)) or not (Pattern[P] in ['0'..'9']) Then Invalid('entier de repetition attendu');
+  While P <= Length(Pattern) do Begin
+   if not (Pattern[P] in ['0'..'9']) Then Break;
+   Number := Number * 10 + Ord(Pattern[P]) - Ord('0'); Inc(P);
+   if Number > 1000 Then Invalid('repetition superieure a 1000');
+  End;
+ End;
+
+ Function Factor: Integer;
+ Var N, R, Lo, Hi: Integer; C: Char;
+ Begin
+  N := Atom; Factor := N; if P > Length(Pattern) Then Exit;
+  C := Pattern[P]; if not (C in ['*','+','?','{']) Then Exit;
+  if Nodes[N].Kind in [rnBegin, rnEnd] Then Invalid('assertion repetee');
+  Inc(P); Lo := 0; Hi := -1;
+  if C = '+' Then Lo := 1 else if C = '?' Then Hi := 1
+  else if C = '{' Then Begin
+   Lo := Number; Hi := Lo;
+   if P <= Length(Pattern) Then if Pattern[P] = ',' Then Begin
+    Inc(P); Hi := -1;
+    if P <= Length(Pattern) Then if Pattern[P] <> '}' Then Hi := Number;
+   End;
+   if (P > Length(Pattern)) or (Pattern[P] <> '}') Then Invalid('repetition non fermee');
+   Inc(P); if (Hi >= 0) and (Hi < Lo) Then Invalid('bornes de repetition inversees');
+  End;
+  R := Node(rnRepeat, N, -1); Nodes[R].Minimum := Lo; Nodes[R].Maximum := Hi; Factor := R;
+ End;
+
+ Function Sequence: Integer;
+ Var N: Integer;
+ Begin
+  Sequence := Node(rnEmpty, -1, -1);
+  While P <= Length(Pattern) do Begin
+   if Pattern[P] in ['|',')'] Then Break;
+   N := Factor; Sequence := Node(rnConcat, Sequence, N);
+  End;
+ End;
+
+ Function Expression: Integer;
+ Var N: Integer;
+ Begin
+  Expression := Sequence;
+  While P <= Length(Pattern) do Begin
+   if Pattern[P] <> '|' Then Break;
+   Inc(P); N := Sequence; Expression := Node(rnAlt, Expression, N);
+  End;
+ End;
+
+ Function State(Kind: TRegexStateKind; A, B: Integer; const Chars: TRegexChars): Integer;
+ Var N: Integer;
+ Begin
+  N := Length(Regex.States); if N >= 4096 Then Invalid('automate trop grand');
+  SetLength(Regex.States, N + 1);
+  Regex.States[N].Kind := Kind; Regex.States[N].A := A; Regex.States[N].B := B;
+  Regex.States[N].Chars := Chars; State := N;
+ End;
+
+ Function Emit(N, Next: Integer): Integer;
+ Var I, Tail, Loop: Integer;
+ Begin
+  Emit := Next;
+  Case Nodes[N].Kind of
+   rnEmpty: ;
+   rnChars: Emit := State(rsChars, Next, -1, Nodes[N].Chars);
+   rnBegin: Emit := State(rsBegin, Next, -1, []);
+   rnEnd: Emit := State(rsEnd, Next, -1, []);
+   rnConcat: Begin Tail := Emit(Nodes[N].Right, Next); Emit := Emit(Nodes[N].Left, Tail); End;
+   rnAlt: Begin Tail := Emit(Nodes[N].Left, Next); Loop := Emit(Nodes[N].Right, Next);
+    Emit := State(rsSplit, Tail, Loop, []); End;
+   rnRepeat: Begin
+    Tail := Next;
+    if Nodes[N].Maximum < 0 Then Begin
+     Loop := State(rsSplit, -1, Next, []);
+     Tail := Emit(Nodes[N].Left, Loop); Regex.States[Loop].A := Tail; Tail := Loop;
+    End else For I := Nodes[N].Minimum + 1 to Nodes[N].Maximum do Begin
+     Loop := Emit(Nodes[N].Left, Tail); Tail := State(rsSplit, Loop, Tail, []);
+    End;
+    For I := 1 to Nodes[N].Minimum do Tail := Emit(Nodes[N].Left, Tail);
+    Emit := Tail;
+   End;
+  End;
+ End;
+
+Begin
+ if Length(Pattern) > 1024 Then Fail('--suppress-regex: maximum 1024 octets.');
+ Nodes := nil; Regex.States := nil; P := 1; Depth := 0;
+ Root := Expression; if P <= Length(Pattern) Then Invalid('caractere inattendu');
+ Terminal := State(rsMatch, -1, -1, []); Regex.Start := Emit(Root, Terminal);
+End;
+
+Function RegexMatches(const Regex: TRegex; const Value: string): Boolean;
+Var Active, Next, Seen: TRegexFlags; Stack: TRegexStack; I, J, N: Integer;
+
+ Procedure Closure(Start, Position: Integer; var Flags: TRegexFlags);
+ Var Top, Current: Integer;
+  Procedure Push(Index: Integer);
+  Begin
+   if not Seen[Index] Then Begin Seen[Index] := True; Stack[Top] := Index; Inc(Top); End;
+  End;
+ Begin
+  Top := 0; Push(Start);
+  While Top > 0 do Begin
+   Dec(Top); Current := Stack[Top];
+   Case Regex.States[Current].Kind of
+    rsSplit: Begin Push(Regex.States[Current].A); Push(Regex.States[Current].B); End;
+    rsBegin: if Position = 0 Then Push(Regex.States[Current].A);
+    rsEnd: if Position = Length(Value) Then Push(Regex.States[Current].A);
+    else Flags[Current] := True;
+   End;
+  End;
+ End;
+
+Begin
+ N := Length(Regex.States); SetLength(Active, N); SetLength(Next, N); SetLength(Seen, N); SetLength(Stack, N);
+ Closure(Regex.Start, 0, Active);
+ For I := 1 to Length(Value) do Begin
+  For J := 0 to N - 1 do Begin Next[J] := False; Seen[J] := False; End;
+  For J := 0 to N - 1 do if Active[J] and (Regex.States[J].Kind = rsChars) Then
+   if Value[I] in Regex.States[J].Chars Then Closure(Regex.States[J].A, I, Next);
+  For J := 0 to N - 1 do Active[J] := Next[J];
+ End;
+ RegexMatches := False;
+ For J := 0 to N - 1 do if Active[J] and (Regex.States[J].Kind = rsMatch) Then RegexMatches := True;
+End;
+
+Const
+ NonSpeechTokens: array[0..53] of string = (
+ '"',
+ '#',
+ '(',
+ ')',
+ '*',
+ '+',
+ '/',
+ ':',
+ ';',
+ '<',
+ '=',
+ '>',
+ '@',
+ '[',
+ '\',
+ ']',
+ '^',
+ '_',
+ '`',
+ '{',
+ '|',
+ '}',
+ '~',
+ #$E3#$80#$8C,
+ #$E3#$80#$8D,
+ #$E3#$80#$8E,
+ #$E3#$80#$8F,
+ '<<',
+ '>>',
+ '<<<',
+ '>>>',
+ '--',
+ '---',
+ '-(',
+ '-[',
+ '(''',
+ '("',
+ '((',
+ '))',
+ '(((',
+ ')))',
+ '[[',
+ ']]',
+ '{{',
+ '}}',
+ #$E2#$99#$AA#$E2#$99#$AA,
+ #$E2#$99#$AA#$E2#$99#$AA#$E2#$99#$AA,
+ #$E2#$99#$A9,
+ #$E2#$99#$AA,
+ #$E2#$99#$AB,
+ #$E2#$99#$AC,
+ #$E2#$99#$AD,
+ #$E2#$99#$AE,
+ #$E2#$99#$AF);
+
+Procedure ConfigureSuppression(var M: TWhisperModel; NonSpeech, HasRegex: Boolean;
+ const Pattern: string);
+Var Regex: TRegex; I, J, Count, Remaining: Integer; Blocked: Boolean;
+Begin
+ M.Suppressed := nil; if not NonSpeech and not HasRegex Then Exit;
+ if HasRegex Then CompileRegex(Pattern, Regex);
+ SetLength(M.Suppressed, M.EOT); Count := 0; Remaining := 0;
+ For I := 0 to M.EOT - 1 do if M.Vocab[I] <> '' Then Begin
+  Blocked := False;
+  if NonSpeech Then Begin
+   For J := 0 to High(NonSpeechTokens) do
+    if (M.Vocab[I] = NonSpeechTokens[J]) or (M.Vocab[I] = ' ' + NonSpeechTokens[J]) Then Blocked := True;
+   if (M.Vocab[I] = ' -') or (M.Vocab[I] = ' ' + #39) Then Blocked := True;
+  End;
+  if HasRegex Then if RegexMatches(Regex, M.Vocab[I]) Then Blocked := True;
+  M.Suppressed[I] := Blocked;
+  if Blocked Then Inc(Count) else if M.Vocab[I] <> ' ' Then Inc(Remaining);
+ End;
+ if Remaining = 0 Then Fail('Suppression: aucun token de texte disponible.');
+ Diagnostic('Tokens supprimes: ' + IntToStr(Count));
+End;
+
 Procedure Version;Begin
  WriteLn('WHISPER-CLI.PAS ', NativeVersion, ' - moteur Whisper natif en Pascal');
  WriteLn('whisper.cpp: non lie; compatibilite partielle de la ligne de commande.');
@@ -1100,6 +1674,11 @@ Procedure Help;Begin
  WriteLn('  -ot N, --offset-t N  Debut en millisecondes (defaut 0)');
  WriteLn('  -on N, --offset-n N  Premier index affiche des segments (defaut 0)');
  WriteLn('  -d N, --duration N   Duree en millisecondes (0 = jusqu''a la fin)');
+ WriteLn('  -sns, --suppress-nst   Supprimer les tokens non vocaux');
+ WriteLn('  --suppress-regex REGEX Masquer les tokens correspondant entierement au regex');
+ WriteLn('  -dtw MODEL, --dtw MODEL  Alignement DTW des tokens (profil du modele)');
+ WriteLn('  -di, --diarize         Identifier le canal stereo du locuteur (0/1/?)');
+ WriteLn('  -tdrz, --tinydiarize   Changements de locuteur (modele tdrz requis)');
  WriteLn('  -np, --no-prints       Resultats seulement (les erreurs restent visibles)');
  WriteLn('  -ps, --print-special   Afficher les tokens speciaux du prefixe et de fin');
  WriteLn('  -pc, --print-colors    Couleurs ANSI selon le score de confiance');
@@ -1242,12 +1821,14 @@ Var
  Positional, LanguageSet: Boolean;
 Begin
  O.Threads := 1; O.Processors := 1; O.Model := 'models/ggml-base.en.bin';
- O.Language := 'en'; LanguageSet := False;
+ O.Language := 'en'; O.DTWModel := ''; LanguageSet := False;
+ O.SuppressNST := False; O.HasSuppressRegex := False; O.SuppressRegex := '';
  O.NoPrints := False; O.PrintSpecial := False; O.PrintColors := False;
  O.PrintProgress := False; O.NoTimestamps := False;
  O.PrintConfidence := False; O.LogScore := False;
  O.OutputFormats := []; O.FullJSON := False; O.FontPath := ''; O.OutputBases := nil;
  O.DetectLanguage := False; O.Translate := False;
+ O.Diarize := False; O.TinyDiarize := False;
  O.WordThreshold := 0.01; O.EntropyThreshold := 2.4;
  O.LogProbThreshold := -1; O.NoSpeechThreshold := 0.6;
  O.BestOf := 1; O.BeamSize := 1; O.Temperature := 0;
@@ -1269,6 +1850,9 @@ Begin
   else if Arg = '--version' Then Begin
    Version; Halt(0);
   End
+  else if (Arg = '-sns') or (Arg = '--suppress-nst') Then O.SuppressNST := True
+  else if (Arg = '-di') or (Arg = '--diarize') Then O.Diarize := True
+  else if (Arg = '-tdrz') or (Arg = '--tinydiarize') Then O.TinyDiarize := True
   else if (Arg = '-np') or (Arg = '--no-prints') Then O.NoPrints := True
   else if (Arg = '-ps') or (Arg = '--print-special') Then O.PrintSpecial := True
   else if (Arg = '-pc') or (Arg = '--print-colors') Then O.PrintColors := True
@@ -1295,6 +1879,8 @@ Begin
   else if Arg = '--carry-initial-prompt' Then O.CarryPrompt := True
   else if (Arg = '-t') or (Arg = '--threads') or (Arg = '-p') or (Arg = '--processors') or
   (Arg = '-m') or (Arg = '--model') or (Arg = '-f') or (Arg = '--file') or
+  (Arg = '--suppress-regex') or
+  (Arg = '-dtw') or (Arg = '--dtw') or
   (Arg = '-of') or (Arg = '--output-file') or
   (Arg = '-fp') or (Arg = '--font-path') or
   (Arg = '-wt') or (Arg = '--word-thold') or
@@ -1313,7 +1899,7 @@ Begin
   (Arg = '-d') or (Arg = '--duration') or
   (Arg = '-l') or (Arg = '--language') Then Begin
    Inc(I); if I > ParamCount Then Fail('Valeur manquante: ' + Arg);
-   Value := ParamStr(I); if (Value = '') and (Arg <> '--prompt') Then Fail('Valeur vide: ' + Arg);
+   Value := ParamStr(I); if (Value = '') and (Arg <> '--prompt') and (Arg <> '--suppress-regex') Then Fail('Valeur vide: ' + Arg);
    if (Arg = '-t') or (Arg = '--threads') Then O.Threads := PositiveInteger(Value, Arg,
    64)
    else if (Arg = '-p') or (Arg = '--processors') Then O.Processors := PositiveInteger(
@@ -1359,12 +1945,19 @@ Begin
     N := Length(O.OutputBases); SetLength(O.OutputBases, N + 1); O.OutputBases[N] := Value;
    End
    else if (Arg = '-fp') or (Arg = '--font-path') Then O.FontPath := Value
+   else if (Arg = '-dtw') or (Arg = '--dtw') Then O.DTWModel := Value
+   else if Arg = '--suppress-regex' Then Begin
+    PromptUTF8 := UTF8Encode(UnicodeString(Value));
+    SetString(O.SuppressRegex, PChar(PromptUTF8), Length(PromptUTF8));
+    O.HasSuppressRegex := True;
+   End
    else AddInput(O, Value);
   End
   else if (Arg <> '') and (Arg[1] = '-') Then Fail('Option non prise en charge: ' + Arg)
   else AddInput(O, Arg);
   Inc(I);
  End;
+ if O.Diarize and O.TinyDiarize Then Fail('--diarize et --tinydiarize sont exclusifs.');
  if Length(O.Files) = 0 Then Fail('Au moins un fichier WAV est requis.');
  if O.Threads * O.Processors > 64 Then Fail(
  'Le produit threads * processors ne doit pas depasser 64.');
@@ -1502,14 +2095,29 @@ Begin
  Candidate.Finished := False; Candidate.Stopped := False;
 End;
 
+Function LastOutputToken(const M: TWhisperModel): Integer;
+Begin
+ LastOutputToken := M.EOT;
+ if M.TinyDiarize Then LastOutputToken := M.Transcribe + 1;
+End;
+
+Function AllowedOutputToken(Token: Integer; const M: TWhisperModel): Boolean;
+Begin
+ AllowedOutputToken := (Token = M.EOT) or
+  ((Token < M.EOT) and (M.Vocab[Token] <> '')) or
+  (M.TinyDiarize and (Token = M.Transcribe + 1));
+ if Token < Length(M.Suppressed) Then
+  if M.Suppressed[Token] Then AllowedOutputToken := False;
+End;
+
 Procedure TokenProbabilities(const Logits: TMatrix; const M: TWhisperModel;
  FirstToken: Boolean; var Probabilities: TLogProbabilities);
 Var I: Integer; Peak, Sum: Double; Allowed: Boolean;
 Begin
- SetLength(Probabilities, M.EOT + 1); Peak := -1E30;
- For I := 0 to M.EOT do Begin
-  Allowed := (I = M.EOT) or (M.Vocab[I] <> '');
-  if FirstToken and ((I = M.EOT) or (M.Vocab[I] = ' ')) Then Allowed := False;
+ SetLength(Probabilities, LastOutputToken(M) + 1); Peak := -1E30;
+ For I := 0 to High(Probabilities) do Begin
+  Allowed := AllowedOutputToken(I, M);
+  if FirstToken and ((I = M.EOT) or (M.TinyDiarize and (I = M.Transcribe + 1)) or (M.Vocab[I] = ' ')) Then Allowed := False;
   Probabilities[I] := -1E30;
   if Allowed Then Begin
    Probabilities[I] := Logits.Data[I];
@@ -1518,10 +2126,10 @@ Begin
  End;
  if Peak <= -1E30 Then Fail('Aucun token de texte disponible.');
  Sum := 0;
- For I := 0 to M.EOT do
+ For I := 0 to High(Probabilities) do
   if Probabilities[I] > -1E30 Then Sum := Sum + Exp(Probabilities[I] - Peak);
  Sum := Ln(Sum);
- For I := 0 to M.EOT do
+ For I := 0 to High(Probabilities) do
   if Probabilities[I] > -1E30 Then Probabilities[I] := Probabilities[I] - Peak - Sum;
 End;
 
@@ -1554,7 +2162,7 @@ End;
 Function TimestampHint(const Logits: TMatrix; const M: TWhisperModel): TTimeHint;
 Var I, Best, Start: Integer; Peak, Sum: Double; Hint: TTimeHint;
 Begin
- Hint.Sample := 0; Hint.Probability := 0;
+ Hint.Sample := 0; Hint.EndSample := 0; Hint.Probability := 0; Hint.Aligned := False;
  Start := M.NoTimestamps + 1; Best := -1; Peak := -1E30;
  For I := 0 to High(Logits.Data) do
   if Logits.Data[I] > Peak Then Peak := Logits.Data[I];
@@ -1576,9 +2184,9 @@ Var I, N: Integer; Peak: Double;
 Begin
  N := Length(Candidate.Scores); SetLength(Candidate.Scores, N + 1);
  Peak := -1E30;
- For I := 0 to M.EOT do Begin
-  if (I < M.EOT) and (M.Vocab[I] = '') Then Continue;
-  if (Length(Candidate.Tokens) = 0) and ((I = M.EOT) or (M.Vocab[I] = ' ')) Then Continue;
+ For I := 0 to LastOutputToken(M) do Begin
+  if not AllowedOutputToken(I, M) Then Continue;
+  if (Length(Candidate.Tokens) = 0) and ((I = M.EOT) or (M.TinyDiarize and (I = M.Transcribe + 1)) or (M.Vocab[I] = ' ')) Then Continue;
   if Candidate.Logits.Data[I] > Peak Then Peak := Candidate.Logits.Data[I];
  End;
  Candidate.Scores[N].Token := Token;
@@ -1701,6 +2309,99 @@ Begin
  EntropyFailure := (Length(Tokens) > 32) and (TokenEntropy(Tokens) < Threshold);
 End;
 
+Procedure DTWPath(const Weights: TMatrix; var Starts: TTokens);
+Var
+ Previous, Current: array of Double;
+ Trace: array of Byte;
+ I, J, K, Direction: Integer; Best: Double;
+Begin
+ if (Weights.Rows < 1) or (Weights.Cols < 1) Then Fail('Matrice DTW vide.');
+ SetLength(Previous, Weights.Cols); SetLength(Current, Weights.Cols);
+ SetLength(Trace, Weights.Rows * Weights.Cols); SetLength(Starts, Weights.Rows);
+ For I := 0 to Weights.Rows - 1 do Begin
+  For J := 0 to Weights.Cols - 1 do Begin
+   Best := 1E100; Direction := 0;
+   if (I = 0) and (J = 0) Then Best := 0;
+   if (I > 0) and (J > 0) Then Begin Best := Previous[J - 1]; Direction := 0; End;
+   if I > 0 Then if Previous[J] < Best Then Begin Best := Previous[J]; Direction := 1; End;
+   if J > 0 Then if Current[J - 1] < Best Then Begin Best := Current[J - 1]; Direction := 2; End;
+   Current[J] := Best - Weights.Data[I * Weights.Cols + J];
+   Trace[I * Weights.Cols + J] := Direction;
+  End;
+  For J := 0 to Weights.Cols - 1 do Previous[J] := Current[J];
+ End;
+ I := Weights.Rows - 1; J := Weights.Cols - 1;
+ Repeat
+  Starts[I] := J;
+  if (I = 0) and (J = 0) Then Break;
+  K := Trace[I * Weights.Cols + J];
+  if K = 0 Then Begin Dec(I); Dec(J); End
+  else if K = 1 Then Dec(I) else Dec(J);
+ Until False;
+End;
+
+Procedure AlignDTWTokens(const M: TWhisperModel; const PrefixCache: TDecoderCaches;
+ Position, Samples: Integer; const Winner: TDecodeCandidate; var Hints: TTimeHints);
+Var
+ Cache: TDecoderCaches; Logits, Weights: TMatrix;
+ Heads: array of TMatrix;
+ Starts: TTokens;
+ Frames, Count, I, J, L, H, K, HeadCount, Row, N, A, B: Integer;
+ Mean, Variance, Scale, V: Double;
+ Median: array[0..6] of Single;
+Begin
+ Count := Length(Winner.Tokens); if Count = 0 Then Exit;
+ Frames := MinInt(PrefixCache[0].CrossK.Rows, (Samples + 319) div 320);
+ HeadCount := 0;
+ For L := 0 to High(M.DTWHeads) do For H := 0 to M.TextHeads - 1 do
+  if (M.DTWHeads[L] and (LongWord(1) shl H)) <> 0 Then Inc(HeadCount);
+ if (Frames < 1) or (HeadCount = 0) Then Fail('Contexte DTW invalide.');
+ SetLength(Heads, HeadCount);
+ For H := 0 to HeadCount - 1 do MatrixSize(Heads[H], Count + 2, Frames);
+ CloneCache(PrefixCache, Cache); Cache[0].CaptureDTW := True; Cache[0].DTWFrames := Frames;
+ For I := 0 to Count + 1 do Begin
+  if I = 0 Then DecoderStep(M.NoTimestamps, Position - 1, M, Cache, Logits)
+  else if I <= Count Then DecoderStep(Winner.Tokens[I - 1], Position + I - 1, M, Cache, Logits)
+  else if Position + Count < M.TextContext Then DecoderStep(M.EOT, Position + Count, M, Cache, Logits);
+  N := 0;
+  For L := 0 to High(Cache) do if M.DTWHeads[L] <> 0 Then
+   For H := 0 to Cache[L].Alignment.Rows - 1 do Begin
+    Move(Cache[L].Alignment.Data[H * Frames], Heads[N].Data[I * Frames], Frames * SizeOf(Single));
+    Inc(N);
+   End;
+ End;
+ Cache := nil;
+ MatrixSize(Weights, Count + 2, Frames);
+ For H := 0 to HeadCount - 1 do Begin
+  { Normalisation par trame sur les tokens, puis mediane temporelle de largeur 7. }
+  For J := 0 to Frames - 1 do Begin
+   Mean := 0; Variance := 0;
+   For I := 0 to Count + 1 do Mean := Mean + Heads[H].Data[I * Frames + J];
+   Mean := Mean / (Count + 2);
+   For I := 0 to Count + 1 do Variance := Variance + Sqr(Heads[H].Data[I * Frames + J] - Mean);
+   Scale := 1 / Sqrt(Variance / (Count + 2) + 1E-9);
+   For I := 0 to Count + 1 do Heads[H].Data[I * Frames + J] := (Heads[H].Data[I * Frames + J] - Mean) * Scale;
+  End;
+  For I := 0 to Count + 1 do For J := 0 to Frames - 1 do Begin
+   For K := 0 to 6 do Median[K] := Heads[H].Data[I * Frames + Max(0, MinInt(Frames - 1, J + K - 3))];
+   For A := 1 to 6 do Begin
+    V := Median[A]; B := A - 1;
+    While B >= 0 do Begin if Median[B] <= V Then Break; Median[B + 1] := Median[B]; Dec(B); End;
+    Median[B + 1] := V;
+   End;
+   Row := I * Frames + J; Weights.Data[Row] := Weights.Data[Row] + Median[3] / HeadCount;
+  End;
+  Heads[H].Data := nil;
+ End;
+ DTWPath(Weights, Starts);
+ For I := 0 to Count - 1 do Begin
+  Hints[I].Sample := MinInt(Samples, Starts[I + 1] * 320);
+  Hints[I].EndSample := MinInt(Samples, Starts[I + 2] * 320);
+  Hints[I].Probability := Exp(Winner.Scores[I].LogProbability);
+  Hints[I].Aligned := True;
+ End;
+End;
+
 Function DecodeChunk(const Audio: TSamples; First, Last: Integer;
 
 const M: TWhisperModel; RequestedLanguage: Integer;
@@ -1797,7 +2498,10 @@ Begin
  Report.SpecialPrefix := Report.SpecialPrefix + '<|notimestamps|>';
  Report.SpecialSuffix := '<|endoftext|>';
  Generated := Winner.Tokens; TimeHints := Winner.TimeHints;
- For I := 0 to High(Generated) do DecodeChunk := DecodeChunk + M.Vocab[Generated[I]];
+ if Length(M.DTWHeads) > 0 Then AlignDTWTokens(M, Cache, Position, Last - First, Winner, TimeHints);
+ For I := 0 to High(Generated) do
+  if not (M.TinyDiarize and (Generated[I] = M.Transcribe + 1)) Then
+   DecodeChunk := DecodeChunk + M.Vocab[Generated[I]];
 End;
 
 { Les limites sont comptees en points de code UTF-8, jamais en octets.
@@ -1812,30 +2516,41 @@ End;
 Procedure AddSegments(var Job: TProcessorJob; const Text: string;
  const Tokens: TTokens; const TimeHints: TTimeHints; First, Last, Detected: Integer);
 Var
- Ends: array of Boolean;
+ Ends, Turns: array of Boolean;
  Times: array of Integer;
- AnchorByte, AnchorTime, HintTime, K: Integer;
+ AnchorByte, AnchorTime, HintTime, K, FinalTime, PieceStart, PieceEnd, TokenStart, TokenEnd, T: Integer;
  P, Start, Stop, Limit, Count, I, N, Offset, Best, TotalChars, UsedChars: Integer;
  Piece: string;
 Begin
  if Trim(Text) = '' Then Exit;
- SetLength(Ends, Length(Text) + 1); Offset := 0;
+ SetLength(Ends, Length(Text) + 1); SetLength(Turns, Length(Text) + 1); Offset := 0;
  For I := 0 to High(Tokens) do Begin
   Inc(Offset, Length(Job.Model^.Vocab[Tokens[I]]));
-  if Offset <= Length(Text) Then Ends[Offset] := True;
+  if Offset <= Length(Text) Then Begin
+   Ends[Offset] := True;
+   if Job.Model^.TinyDiarize and (Tokens[I] = Job.Model^.Transcribe + 1) Then Turns[Offset] := True;
+  End;
  End;
  { Reperes de debut de token, acceptes seulement s'ils sont probables,
    dans la fenetre et monotones. Interpolation entre reperes fiables. }
  SetLength(Times, Length(Text) + 1); AnchorByte := 0; AnchorTime := First;
- Times[0] := First; Offset := 0;
+ FinalTime := Last;
+ if Length(TimeHints) > 0 Then Begin
+  if TimeHints[0].Aligned and (TimeHints[0].Probability >= Job.Options^.WordThreshold) Then
+   AnchorTime := Max(First, MinInt(Last, First + TimeHints[0].Sample));
+  K := High(TimeHints);
+  if TimeHints[K].Aligned and (TimeHints[K].Probability >= Job.Options^.WordThreshold) Then
+   FinalTime := Max(AnchorTime, MinInt(Last, First + TimeHints[K].EndSample));
+ End;
+ Times[0] := AnchorTime; Offset := 0;
  For I := 0 to Length(Tokens) do Begin
-  HintTime := Last;
+  HintTime := FinalTime;
   if I < Length(Tokens) Then Begin
    if I >= Length(TimeHints) Then Break;
    HintTime := First + TimeHints[I].Sample;
   End;
   if (I = Length(Tokens)) or ((TimeHints[I].Probability >= Job.Options^.WordThreshold) and
-   (HintTime > AnchorTime) and (HintTime < Last) and
+   (HintTime > AnchorTime) and (HintTime < FinalTime) and
    UTF8Boundary(Text, Offset + 1)) Then Begin
    if Offset > AnchorByte Then Begin
     Count := 0;
@@ -1856,7 +2571,7 @@ Begin
  N := 0;
  For K := AnchorByte + 1 to Length(Text) do Begin
   if UTF8Boundary(Text, K) Then Inc(N);
-  if Count > 0 Then Times[K] := AnchorTime + Int64(Last - AnchorTime) * N div Count;
+  if Count > 0 Then Times[K] := AnchorTime + Int64(FinalTime - AnchorTime) * N div Count;
  End;
  TotalChars := 0;
  For P := 1 to Length(Text) do if UTF8Boundary(Text, P) Then Inc(TotalChars);
@@ -1880,6 +2595,9 @@ Begin
   End;
   Stop := P - 1;
   if (P <= Length(Text)) and (Best >= Start) Then Stop := Best;
+  For K := Start to Stop do if Turns[K] and UTF8Boundary(Text, K + 1) Then Begin
+   Stop := K; Break;
+  End;
   { Mot ou token plus long que la limite: couper entre caracteres. }
   Count := 0;
   For P := Start to Stop do if UTF8Boundary(Text, P) Then Inc(Count);
@@ -1888,9 +2606,26 @@ Begin
    N := Length(Job.Segments); SetLength(Job.Segments, N + 1);
    Job.Segments[N].First := Times[Start - 1];
    Job.Segments[N].Last := Times[Stop];
-   Job.Segments[N].Text := Piece;
+   Job.Segments[N].Text := Piece; Job.Segments[N].SpeakerTurnNext := Turns[Stop];
+   PieceStart := Start; While Text[PieceStart] <= ' ' do Inc(PieceStart);
+   PieceEnd := Stop; While Text[PieceEnd] <= ' ' do Dec(PieceEnd);
+   Job.Segments[N].CharacterTimes := Copy(Times, PieceStart - 1, PieceEnd - PieceStart + 2);
+   TokenStart := 0;
+   For T := 0 to High(Tokens) do Begin
+    TokenEnd := TokenStart + Length(Job.Model^.Vocab[Tokens[T]]);
+    if (T < Length(TimeHints)) and (TokenEnd >= PieceStart) and (TokenStart < PieceEnd) Then
+     if TimeHints[T].Aligned Then Begin
+      K := Length(Job.Segments[N].Tokens); SetLength(Job.Segments[N].Tokens, K + 1);
+      Job.Segments[N].Tokens[K].ID := Tokens[T];
+      Job.Segments[N].Tokens[K].First := First + TimeHints[T].Sample;
+      Job.Segments[N].Tokens[K].Last := First + TimeHints[T].EndSample;
+      Job.Segments[N].Tokens[K].Probability := TimeHints[T].Probability;
+     End;
+    TokenStart := TokenEnd;
+   End;
    if Detected >= 0 Then Job.Segments[N].Language := LanguageCodes[Detected];
-  End;
+  End else if Turns[Stop] and (Length(Job.Segments) > 0) Then
+   Job.Segments[High(Job.Segments)].SpeakerTurnNext := True;
   Inc(UsedChars, Count); Start := Stop + 1;
  End;
 End;
@@ -2070,9 +2805,14 @@ Begin
    if P > Start Then Begin
     N := Length(Words); SetLength(Words, N + 1);
     Words[N].Text := Copy(Segments[I].Text, Start, P - Start);
-    Words[N].Language := Segments[I].Language;
+    Words[N].Language := Segments[I].Language; Words[N].Speaker := Segments[I].Speaker;
+    Words[N].SpeakerTurnNext := Segments[I].SpeakerTurnNext and (P > Length(Segments[I].Text));
     Words[N].First := Segments[I].First + Int64(Segments[I].Last - Segments[I].First) * Before div Total;
     Words[N].Last := Segments[I].First + Int64(Segments[I].Last - Segments[I].First) * Count div Total;
+    if Length(Segments[I].CharacterTimes) = Length(Segments[I].Text) + 1 Then Begin
+     Words[N].First := Segments[I].CharacterTimes[Start - 1];
+     Words[N].Last := Segments[I].CharacterTimes[P - 1];
+    End;
    End;
   End;
  End;
@@ -2080,7 +2820,7 @@ End;
 
 Procedure WriteJSONSegments(var Stream: TBinary; const Segments: TSegments;
  IndexOffset: Integer; IncludeLanguage: Boolean);
-Var I: Integer;
+Var I, J: Integer;
 Begin
  ExportLine(Stream, '[');
  For I := 0 to High(Segments) do Begin
@@ -2089,9 +2829,29 @@ Begin
    ',"start":' + SecondsText(Segments[I].First) + ',"end":' + SecondsText(Segments[I].Last) +
    ',"text":' + JSONString(Segments[I].Text));
   if IncludeLanguage Then ExportWrite(Stream, ',"language":' + JSONString(Segments[I].Language));
+  if IncludeLanguage and (Length(Segments[I].Tokens) > 0) Then Begin
+   ExportWrite(Stream, ',"tokens":[');
+   For J := 0 to High(Segments[I].Tokens) do Begin
+    if J > 0 Then ExportWrite(Stream, ',');
+    ExportWrite(Stream, '{"id":' + IntToStr(Segments[I].Tokens[J].ID) +
+     ',"start":' + SecondsText(Segments[I].Tokens[J].First) +
+     ',"end":' + SecondsText(Segments[I].Tokens[J].Last) +
+     ',"p":' + RealText(Segments[I].Tokens[J].Probability) + '}');
+   End;
+   ExportWrite(Stream, ']');
+  End;
+  if Segments[I].Speaker <> '' Then ExportWrite(Stream, ',"speaker":' + JSONString(Segments[I].Speaker));
+  if Segments[I].SpeakerTurnNext Then ExportWrite(Stream, ',"speaker_turn_next":true');
   ExportWrite(Stream, '}');
  End;
  ExportLine(Stream, ']');
+End;
+
+Function DisplaySegment(const Segment: TSegment): string;
+Begin
+ DisplaySegment := Segment.Text;
+ if Segment.Speaker <> '' Then DisplaySegment := '[speaker ' + Segment.Speaker + '] ' + DisplaySegment;
+ if Segment.SpeakerTurnNext Then DisplaySegment := DisplaySegment + ' [SPEAKER_TURN]';
 End;
 
 Procedure ExportResults(const InputName: string; const O: TOptions; FileIndex: Integer;
@@ -2114,32 +2874,33 @@ Begin
   OpenBinary(Stream, Name, True);
   N := Length(PendingExports); SetLength(PendingExports, N + 1); PendingExports[N] := Name;
   Case Format of
-   efTXT: For I := 0 to High(Segments) do ExportLine(Stream, Segments[I].Text);
+   efTXT: For I := 0 to High(Segments) do ExportLine(Stream, DisplaySegment(Segments[I]));
    efVTT, efSRT: Begin
     if Format = efVTT Then Begin ExportLine(Stream, 'WEBVTT'); ExportLine(Stream, ''); End;
     For I := 0 to High(Segments) do Begin
      ExportLine(Stream, IntToStr(Int64(O.OffsetIndex) + I + 1));
      if Format = efSRT Then ExportLine(Stream, SRTTime(Segments[I].First) + ' --> ' + SRTTime(Segments[I].Last))
      else ExportLine(Stream, TimeStamp(Segments[I].First) + ' --> ' + TimeStamp(Segments[I].Last));
-     ExportLine(Stream, HTMLText(Segments[I].Text)); ExportLine(Stream, '');
+     ExportLine(Stream, HTMLText(DisplaySegment(Segments[I]))); ExportLine(Stream, '');
     End;
    End;
    efLRC: For I := 0 to High(Segments) do Begin
     MS := Milliseconds(Segments[I].First);
     ExportLine(Stream, '[' + PadNumber(MS div 60000, 2) + ':' +
      PadNumber((MS div 1000) mod 60, 2) + '.' + PadNumber((MS mod 1000) div 10, 2) + ']' +
-     Trim(FlatText(Segments[I].Text)));
+     Trim(FlatText(DisplaySegment(Segments[I]))));
    End;
    efCSV: Begin
     ExportLine(Stream, 'id,start,end,text');
     For I := 0 to High(Segments) do ExportLine(Stream,
      IntToStr(Int64(O.OffsetIndex) + I) + ',' + SecondsText(Segments[I].First) + ',' +
-     SecondsText(Segments[I].Last) + ',' + CSVString(Segments[I].Text));
+     SecondsText(Segments[I].Last) + ',' + CSVString(DisplaySegment(Segments[I])));
    End;
    efJSON: Begin
     ExportLine(Stream, '{"text":' + JSONString(Text) + ',"segments":');
     WriteJSONSegments(Stream, Segments, O.OffsetIndex, O.FullJSON);
     if O.FullJSON Then Begin
+     if O.DTWModel <> '' Then ExportLine(Stream, ',"alignment":"dtw","dtw_model":' + JSONString(O.DTWModel));
      Task := 'transcribe'; if O.Translate Then Task := 'translate';
      ExportLine(Stream, ',"source":' + JSONString(UTF8Path(InputName)) +
       ',"model":' + JSONString(UTF8Path(O.Model)) + ',"task":' + JSONString(Task) +
@@ -2164,7 +2925,7 @@ Begin
     ExportLine(Stream, '<h1>Paroles synchronisees</h1><p>Horodatages estimes.</p>');
     ExportLine(Stream, '<audio id="audio" controls src="' + FileURL(InputName) + '"></audio><p>');
     For I := 0 to High(Words) do ExportLine(Stream, '<span data-start="' + SecondsText(Words[I].First) +
-     '" data-end="' + SecondsText(Words[I].Last) + '">' + HTMLText(Words[I].Text) + '</span>');
+     '" data-end="' + SecondsText(Words[I].Last) + '">' + HTMLText(DisplaySegment(Words[I])) + '</span>');
     ExportLine(Stream, '</p><script>const audio=document.getElementById("audio");' +
      'const words=document.querySelectorAll("span[data-start]");' +
      'audio.addEventListener("timeupdate",()=>{for(const w of words)' +
@@ -2177,10 +2938,21 @@ Begin
  PendingExports := nil;
 End;
 
+Function StereoSpeaker(const Left, Right: TSamples; First, Last: Integer): string;
+Var I: Integer; L, R: Double;
+Begin
+ L := 0; R := 0;
+ Last := MinInt(Last, MinInt(Length(Left), Length(Right)));
+ For I := Max(0, First) to Last - 1 do Begin L := L + Abs(Left[I]); R := R + Abs(Right[I]); End;
+ StereoSpeaker := '?';
+ if L > 1.1 * R Then StereoSpeaker := '0'
+ else if R > 1.1 * L Then StereoSpeaker := '1';
+End;
+
 Procedure TranscribeFile(const Name: string; const O: TOptions; var M: TWhisperModel;
  FileIndex: Integer);
 Var
- Source, Audio: TSamples;
+ Source, Audio, LeftSource, RightSource, LeftAudio, RightAudio: TSamples;
  Rate: LongWord;
  Workers, I, J, Language, FirstSample, LastSample, Selected: Integer;
  Boundary, SegmentIndex: Int64;
@@ -2202,7 +2974,12 @@ Begin
  if (O.DetectLanguage or O.Translate) and (M.VocabCount = 51864) Then
   Fail('Detection de langue et traduction exigent un modele Whisper multilingue.');
  if not O.DetectLanguage Then TokenizePrompt(O.Prompt, M, InitialTokens);
- ReadWave(Name, Source, Rate); Resample(Source, Rate, Audio); Source := nil;
+ ReadWave(Name, Source, Rate, O.Diarize, LeftSource, RightSource);
+ Resample(Source, Rate, Audio); Source := nil;
+ if O.Diarize Then Begin
+  Resample(LeftSource, Rate, LeftAudio); LeftSource := nil; RemoveDC(LeftAudio);
+  Resample(RightSource, Rate, RightAudio); RightSource := nil; RemoveDC(RightAudio);
+ End;
  RemoveDC(Audio);
  Language := LanguageIndex(O.Language);
  if (M.VocabCount = 51864) and (Language > 0) Then Fail(
@@ -2263,6 +3040,8 @@ Begin
    { Les tokens GGML contiennent des octets UTF-8, parfois des caracteres
      coupes entre tokens. Ne declarer l'encodage qu'apres leur assemblage. }
   ResultCount := Length(Results); SetLength(Results, ResultCount + 1);
+  if O.Diarize Then Jobs[I].Segments[J].Speaker := StereoSpeaker(LeftAudio, RightAudio,
+   Jobs[I].Segments[J].First, Jobs[I].Segments[J].Last);
   Results[ResultCount] := Jobs[I].Segments[J];
   SetString(UTF8Text, PChar(Jobs[I].Segments[J].Text), Length(Jobs[I].Segments[J].Text));
   if O.ShowIndex Then Write('[', SegmentIndex, '] ');
@@ -2276,7 +3055,9 @@ Begin
    else Write(#27'[31m');
   End;
   if O.PrintSpecial Then Write(Jobs[I].Segments[J].SpecialPrefix);
+  if Jobs[I].Segments[J].Speaker <> '' Then Write('[speaker ', Jobs[I].Segments[J].Speaker, '] ');
   Write(UTF8Text);
+  if Jobs[I].Segments[J].SpeakerTurnNext Then Write(' [SPEAKER_TURN]');
   if O.PrintSpecial Then Write(Jobs[I].Segments[J].SpecialSuffix);
   if O.PrintColors Then Write(#27'[0m');
   WriteLn;
@@ -2294,6 +3075,10 @@ BEGIN
  ParseOptions(Options); ThreadCount := Options.Threads; SilentConsole := Options.NoPrints;
  InitCriticalSection(ConsoleLock); ConsoleReady := True;
  LoadWhisper(Options.Model, Model);
+ ConfigureDTW(Options.DTWModel, Model);
+ ConfigureSuppression(Model, Options.SuppressNST, Options.HasSuppressRegex, Options.SuppressRegex);
+ Model.TinyDiarize := Options.TinyDiarize;
+ if Model.TinyDiarize Then Model.Vocab[Model.Transcribe + 1] := '';
  For FileIndex := 0 to High(Options.Files) do TranscribeFile(Options.Files[FileIndex],
  Options, Model, FileIndex);
  ConsoleReady := False; DoneCriticalSection(ConsoleLock);
