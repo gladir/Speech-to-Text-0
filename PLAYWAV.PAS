@@ -6,6 +6,7 @@
  @description: Joueur de WAV }
 
 Program PLAYWAV;
+
 {$A-}
 {$IFDEF FPC}
  {$MODE TP}
@@ -90,16 +91,23 @@ Uses DOS
  stdcall; external 'kernel32.dll' name 'Sleep';
 {$ENDIF}
 
-Const MaxWaveData = 2147483600;
-Type TAudioFormat = record Channels: Integer; Rate: LongInt; End;
+Const
+ MaxWaveData = 2147483600;
+
+Type
+ TAudioFormat = Record
+  Channels: Integer;
+  Rate: LongInt;
+ End;
+
 Var
  InputFile, OutputFile: File;
- InputName, OutputName: string;
+ InputName, OutputName: String;
  InputOpen, OutputOpen, OutputCreated: Boolean;
  InputSize, Written: LongInt;
  SavedExit: Pointer;
  Header, FirstHeader: TAudioFormat;
- PCM: array[0..4095] of Byte;
+ PCM: Array[0..4095] Of Byte;
 Procedure StopAudio;Forward;
 
 Procedure Fail(MessageText: String);
@@ -134,7 +142,7 @@ End;
 
 Procedure Help;Begin
  WriteLn('PLAYWAV - Cette commande permet de lancer lecteur de fichier WAV.');
- WriteLn; 
+ WriteLn;
  WriteLn('Syntaxe: PLAYWAV fichier.wav [/VOLUME:0..100] [/LOOP:1..32767]');
  WriteLn;
  WriteLn('Volume logiciel: 100 par defaut. LOOP: nombre total de lectures, defaut 1.');
@@ -167,7 +175,6 @@ Begin
  If (ErrorCode <> 0) Or (Actual <> Count) Then Fail('Ecriture PCM temporaire incomplete.')
  ;
 End;
-
 
 Const
  AudioBlock = 4096;
@@ -305,121 +312,129 @@ Begin
  Fail('Aucun nom temporaire disponible.');
 End;
 
-
-
-Function LE16(const B; Offset: Integer): Word;
-Type TSmallBytes = array[0..63] of Byte;
+Function LE16(Const B; Offset: Integer): Word;
+Type
+ TSmallBytes = Array[0..63] Of Byte;
 Begin
- LE16 := Word(TSmallBytes(B)[Offset]) or (Word(TSmallBytes(B)[Offset+1]) shl 8);
+ LE16 := Word(TSmallBytes(B)[Offset]) Or (Word(TSmallBytes(B)[Offset+1]) Shl 8);
 End;
 
-Function LE32(const B; Offset: Integer): LongInt;
-Type TSmallBytes = array[0..63] of Byte;
+Function LE32(Const B; Offset: Integer): LongInt;
+Type
+ TSmallBytes = Array[0..63] Of Byte;
 Begin
- if TSmallBytes(B)[Offset+3] >= 128 Then Fail('Valeur RIFF depassant 2 Go.');
+ If TSmallBytes(B)[Offset+3] >= 128 Then Fail('Valeur RIFF depassant 2 Go.');
  LE32 := LongInt(TSmallBytes(B)[Offset]) + LongInt(TSmallBytes(B)[Offset+1])*256 +
-  LongInt(TSmallBytes(B)[Offset+2])*65536 + LongInt(TSmallBytes(B)[Offset+3])*16777216;
+ LongInt(TSmallBytes(B)[Offset+2])*65536 + LongInt(TSmallBytes(B)[Offset+3])*16777216;
 End;
 
-Function TagIs(const B; const Tag: string): Boolean;
-Type TSmallBytes = array[0..63] of Byte;
-Var J: Integer; Equal: Boolean;
+Function TagIs(Const B; Const Tag: String): Boolean;
+Type
+ TSmallBytes = Array[0..63] Of Byte;
+Var
+ J: Integer;
+ Equal: Boolean;
 Begin
  Equal := True;
- for J := 1 to 4 do
-  if TSmallBytes(B)[J-1] <> Ord(Tag[J]) Then Equal := False;
+ For J := 1 To 4 Do  If TSmallBytes(B)[J-1] <> Ord(Tag[J]) Then Equal := False;
  TagIs := Equal;
 End;
 
 Procedure Prepare;
 Var
- B: array[0..63] of Byte;
- Raw: array[0..4095] of Byte;
+ B: Array[0..63] Of Byte;
+ Raw: Array[0..4095] Of Byte;
  Position, RiffEnd, ChunkSize, DataStart, DataSize, Remaining, CountFrames: LongInt;
  Bits, BlockAlign, BytesPerSample, Code, J, K, OutCount, C: Integer;
- Sample, Value: LongInt; OldMode: Byte;
+ Sample, Value: LongInt;
+ OldMode: Byte;
  HasFormat, HasData: Boolean;
 Begin
  Assign(InputFile, InputName); OldMode := FileMode; FileMode := 0;
  {$I-}Reset(InputFile, 1); Code := IOResult;{$I+}
  FileMode := OldMode;
- if Code <> 0 Then Fail('Ouverture WAV impossible: ' + InputName);
+ If Code <> 0 Then Fail('Ouverture WAV impossible: ' + InputName);
  InputOpen := True;
  {$I-}InputSize := FileSize(InputFile); Code := IOResult;{$I+}
- if (Code <> 0) or (InputSize < 12) Then Fail('WAV vide, trop grand ou tronque.');
+ If (Code <> 0) Or (InputSize < 12) Then Fail('WAV vide, trop grand ou tronque.');
  ReadAt(0, B, 12);
- if not TagIs(B, 'RIFF') Then Fail('RIFF/WAVE requis (RF64 et RIFX non pris en charge).');
- if (B[8] <> Ord('W')) or (B[9] <> Ord('A')) or (B[10] <> Ord('V')) or (B[11] <> Ord('E')) Then
-  Fail('Signature WAVE manquante.');
+ If Not TagIs(B, 'RIFF') Then Fail('RIFF/WAVE requis (RF64 et RIFX non pris en charge).');
+ If (B[8] <> Ord('W')) Or (B[9] <> Ord('A')) Or (B[10] <> Ord('V')) Or (B[11] <> Ord('E'))
+ Then  Fail('Signature WAVE manquante.');
  RiffEnd := LE32(B, 4);
- if (RiffEnd < 4) or (RiffEnd > InputSize - 8) Then Fail('Taille RIFF incorrecte.');
+ If (RiffEnd < 4) Or (RiffEnd > InputSize - 8) Then Fail('Taille RIFF incorrecte.');
  Inc(RiffEnd, 8); Position := 12; HasFormat := False; HasData := False;
  DataStart := 0; DataSize := 0; Bits := 0; BlockAlign := 0;
- while Position < RiffEnd do Begin
-  if RiffEnd - Position < 8 Then Fail('Entete de bloc WAV tronquee.');
+ While Position < RiffEnd Do Begin
+  If RiffEnd - Position < 8 Then Fail('Entete de bloc WAV tronquee.');
   ReadAt(Position, B, 8); ChunkSize := LE32(B, 4); Inc(Position, 8);
-  if ChunkSize > RiffEnd - Position Then Fail('Bloc WAV tronque.');
-  if TagIs(B, 'fmt ') Then Begin
-   if HasFormat Then Fail('Plusieurs blocs fmt non pris en charge.');
-   if ChunkSize < 16 Then Fail('Bloc fmt trop court.');
+  If ChunkSize > RiffEnd - Position Then Fail('Bloc WAV tronque.');
+  If TagIs(B, 'fmt ') Then Begin
+   If HasFormat Then Fail('Plusieurs blocs fmt non pris en charge.');
+   If ChunkSize < 16 Then Fail('Bloc fmt trop court.');
    ReadAt(Position, B, 16);
-   if LE16(B, 0) <> 1 Then Fail('WAV PCM entier requis; float, ADPCM et extensible non pris en charge.');
+   If LE16(B, 0) <> 1 Then Fail(
+   'WAV PCM entier requis; float, ADPCM et extensible non pris en charge.');
    Header.Channels := LE16(B, 2); Header.Rate := LE32(B, 4);
    BlockAlign := LE16(B, 12); Bits := LE16(B, 14);
-   if not (Header.Channels in [1,2]) Then Fail('WAV mono ou stereo requis.');
-   if not (Bits in [8,16,24,32]) Then Fail('Resolution PCM attendue: 8/16/24/32 bits.');
-   if (Header.Rate < 8000) or (Header.Rate > 192000) Then Fail('Frequence attendue: 8000..192000 Hz.');
-   if (BlockAlign <> Header.Channels*(Bits div 8)) or
-      (LE32(B, 8) <> Header.Rate*BlockAlign) Then Fail('Alignement ou debit PCM incoherent.');
+   If Not (Header.Channels In [1,2]) Then Fail('WAV mono ou stereo requis.');
+   If Not (Bits In [8,16,24,32]) Then Fail('Resolution PCM attendue: 8/16/24/32 bits.');
+   If (Header.Rate < 8000) Or (Header.Rate > 192000) Then Fail(
+   'Frequence attendue: 8000..192000 Hz.');
+   If (BlockAlign <> Header.Channels*(Bits Div 8)) Or
+   (LE32(B, 8) <> Header.Rate*BlockAlign) Then Fail('Alignement ou debit PCM incoherent.')
+   ;
    HasFormat := True;
   End
-  else if TagIs(B, 'data') Then Begin
-   if HasData Then Fail('Plusieurs blocs data non pris en charge.');
+  Else If TagIs(B, 'data') Then Begin
+   If HasData Then Fail('Plusieurs blocs data non pris en charge.');
    DataStart := Position; DataSize := ChunkSize; HasData := True;
   End;
   Inc(Position, ChunkSize);
-  if Odd(ChunkSize) Then Begin
-   if Position >= RiffEnd Then Fail('Octet de bourrage RIFF manquant.');
+  If Odd(ChunkSize) Then Begin
+   If Position >= RiffEnd Then Fail('Octet de bourrage RIFF manquant.');
    Inc(Position);
   End;
  End;
- if not HasFormat or not HasData Then Fail('Bloc fmt ou data manquant.');
- if (DataSize = 0) or (DataSize mod BlockAlign <> 0) Then Fail('Donnees PCM vides ou echantillon incomplet.');
- FirstHeader := Header; BytesPerSample := Bits div 8;
+ If Not HasFormat Or Not HasData Then Fail('Bloc fmt ou data manquant.');
+ If (DataSize = 0) Or (DataSize Mod BlockAlign <> 0) Then Fail(
+ 'Donnees PCM vides ou echantillon incomplet.');
+ FirstHeader := Header; BytesPerSample := Bits Div 8;
  WriteLn(Header.Rate, ' Hz, ', Header.Channels, ' canal/canaux, PCM ', Bits, ' bits.');
  WriteLn('Preparation audio avant lecture...');
  MakeTemporary;
  Remaining := DataSize; Position := DataStart;
- while Remaining > 0 do Begin
-  CountFrames := Remaining div BlockAlign;
-  if CountFrames > 512 Then CountFrames := 512;
+ While Remaining > 0 Do Begin
+  CountFrames := Remaining Div BlockAlign;
+  If CountFrames > 512 Then CountFrames := 512;
   ReadAt(Position, Raw, CountFrames*BlockAlign);
   K := 0; OutCount := 0;
-  for J := 1 to CountFrames do
-   for C := 1 to Header.Channels do Begin
-    if Bits = 8 Then Sample := (LongInt(Raw[K])-128)*256
-    else Begin
+  For J := 1 To CountFrames Do
+  For C := 1 To Header.Channels Do Begin
+   If Bits = 8 Then Sample := (LongInt(Raw[K])-128)*256
+    Else
+   Begin
      { Garder les 16 bits de poids fort du PCM signe little-endian. }
-     Sample := LongInt(Raw[K+BytesPerSample-2]) + LongInt(Raw[K+BytesPerSample-1])*256;
-     if Sample >= 32768 Then Dec(Sample, 65536);
-    End;
-    Value := Sample; if Value < 0 Then Inc(Value, 65536);
-    PCM[OutCount] := Value and 255; PCM[OutCount+1] := Value shr 8;
-    Inc(OutCount, 2); Inc(K, BytesPerSample);
+    Sample := LongInt(Raw[K+BytesPerSample-2]) + LongInt(Raw[K+BytesPerSample-1])*256;
+    If Sample >= 32768 Then Dec(Sample, 65536);
    End;
+   Value := Sample; If Value < 0 Then Inc(Value, 65536);
+   PCM[OutCount] := Value And 255; PCM[OutCount+1] := Value Shr 8;
+   Inc(OutCount, 2); Inc(K, BytesPerSample);
+  End;
   { Borne conservative incluant la conversion DOS vers 22222 Hz. }
-  if Written > MaxWaveData - 4096 Then Fail('PCM temporaire depassant 2 Go.');
+  If Written > MaxWaveData - 4096 Then Fail('PCM temporaire depassant 2 Go.');
   EmitPCM(OutCount);
   Inc(Position, CountFrames*BlockAlign); Dec(Remaining, CountFrames*BlockAlign);
  End;
  {$I-}Close(InputFile); Code := IOResult;{$I+}
  InputOpen := False;
- if Code <> 0 Then Fail('Fermeture WAV impossible.');
+ If Code <> 0 Then Fail('Fermeture WAV impossible.');
  {$I-}Close(OutputFile); Code := IOResult;{$I+}
  OutputOpen := False;
- if Code <> 0 Then Fail('Fermeture temporaire impossible.');
+ If Code <> 0 Then Fail('Fermeture temporaire impossible.');
  {$I-}Reset(OutputFile, 1); Code := IOResult;{$I+}
- if Code <> 0 Then Fail('Relecture temporaire impossible.');
+ If Code <> 0 Then Fail('Relecture temporaire impossible.');
  OutputOpen := True;
 End;
 
@@ -702,7 +717,7 @@ BEGIN
   If (Option = '/?') Or (Option = '--HELP') Or (Option = '-H') Then Begin
    Help; Halt(0);
   End
-  Else
+   Else
   If (Copy(Option,1,8) = '/VOLUME:') Or (Copy(Option,1,6) = '/LOOP:') Then Begin
    If Copy(Option,1,8) = '/VOLUME:' Then Val(Copy(Option,9,255),Value,Code)
                                     Else Val(Copy(Option,7,255),Value,Code);
