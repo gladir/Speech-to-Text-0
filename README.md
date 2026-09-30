@@ -1,5 +1,5 @@
 # Speech-to-Text-0
-Suite de commande écrit en Turbo Pascal/Free Pascal pour la compréhension du son (Speech-to-Text)
+Suite de commandes écritent en Turbo Pascal/Free Pascal pour la compréhension du son (Speech-to-Text).
 
 <h3>Liste des fichiers</h3>
 
