@@ -18,7 +18,57 @@ Program PLAYMP3;
   {$IFNDEF CPU8086}{$FATAL DOS real-mode 8086 or Windows required}{$ENDIF}
  {$ENDIF}
 {$ENDIF}
-Uses DOS {$IFDEF MSWINDOWS}, Windows, MMSystem {$ELSE}, Crt {$ENDIF};
+Uses DOS {$IFNDEF MSWINDOWS}, Crt {$ENDIF};
+
+{$IFDEF MSWINDOWS}
+{ Declarations Win32/Win64 locales. Les DLL sont celles du systeme Windows.
+  DWORD reste sur 32 bits; handles et DWORD_PTR suivent la taille du pointeur.
+  Ces deux structures ont la disposition binaire des en-tetes multimedia. }
+Type
+ DWORD = LongWord;
+ HWAVEOUT = PtrUInt;
+ PHWAVEOUT = ^HWAVEOUT;
+ TWaveFormatEx = packed record
+  wFormatTag, nChannels: Word;
+  nSamplesPerSec, nAvgBytesPerSec: DWORD;
+  nBlockAlign, wBitsPerSample, cbSize: Word;
+ End;
+ PWaveFormatEx = ^TWaveFormatEx;
+ PWaveHdr = ^TWaveHdr;
+ TWaveHdr = packed record
+  lpData: PChar;
+  dwBufferLength, dwBytesRecorded: DWORD;
+  dwUser: PtrUInt;
+  dwFlags, dwLoops: DWORD;
+  lpNext: PWaveHdr;
+  reserved: PtrUInt;
+ End;
+Const
+ WAVE_FORMAT_PCM = 1;
+ WAVE_MAPPER = DWORD($FFFFFFFF);
+ CALLBACK_NULL = 0;
+ MMSYSERR_NOERROR = 0;
+ WHDR_DONE = 1;
+ WHDR_PREPARED = 2;
+ WHDR_INQUEUE = 16;
+
+Function waveOutOpen(Handle: PHWAVEOUT; Device: DWORD; Format: PWaveFormatEx;
+ Callback, Instance: PtrUInt; Flags: DWORD): DWORD; stdcall;
+ external 'winmm.dll' name 'waveOutOpen';
+Function waveOutPrepareHeader(Handle: HWAVEOUT; Header: PWaveHdr;
+ Size: DWORD): DWORD; stdcall; external 'winmm.dll' name 'waveOutPrepareHeader';
+Function waveOutUnprepareHeader(Handle: HWAVEOUT; Header: PWaveHdr;
+ Size: DWORD): DWORD; stdcall; external 'winmm.dll' name 'waveOutUnprepareHeader';
+Function waveOutWrite(Handle: HWAVEOUT; Header: PWaveHdr;
+ Size: DWORD): DWORD; stdcall; external 'winmm.dll' name 'waveOutWrite';
+Function waveOutReset(Handle: HWAVEOUT): DWORD; stdcall;
+ external 'winmm.dll' name 'waveOutReset';
+Function waveOutClose(Handle: HWAVEOUT): DWORD; stdcall;
+ external 'winmm.dll' name 'waveOutClose';
+Function GetTickCount: DWORD; stdcall; external 'kernel32.dll' name 'GetTickCount';
+Procedure Sleep(Milliseconds: DWORD); stdcall; external 'kernel32.dll' name 'Sleep';
+{$ENDIF}
+
 
 Const
  MaxFrame = 2048;
