@@ -1743,8 +1743,10 @@ Procedure Version;Begin
 End;
 
 Procedure Help;Begin
- WriteLn('Usage: whisper-cli [options] fichier0.wav fichier1.wav ...');
- WriteLn('   ou: whisper-cli [options] -f fichier.wav');
+ WriteLn('WHISPER-CLI - Cette commande permet de lancer le moteur Whisper natif en Pascal.');
+ WriteLn;
+ WriteLn('Syntaxe : whisper-cli [options] fichier0.wav fichier1.wav ...');
+ WriteLn('          whisper-cli [options] -f fichier.wav');
  WriteLn;
  WriteLn('  -h, --help           Affiche cette aide (/? accepte aussi)');
  WriteLn('      --version        Version du port Pascal autonome');
