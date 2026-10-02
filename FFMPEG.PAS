@@ -2405,7 +2405,7 @@ Begin
 End;
 { Moteur integre depuis WAV2MP3.PAS }
 
-Procedure EncodeMP3(Const Source,Target: String);
+Procedure EncodeMP3(Const Source,Target: String; BitRateK: Integer);
 Type
  TAudioFormat = Record
   Channels: Integer;
@@ -2845,7 +2845,7 @@ Var
  State: PState;
  Transform: PTransforms;
  WAVPosition, WAVRemaining: LongInt;
- WAVBits, WAVAlign, RateIndex: Integer;
+ WAVBits, WAVAlign, RateIndex, BitRateIndex: Integer;
  Codes: Array[0..1,0..255] Of LongInt;
  CodeLengths: Array[0..1,0..255] Of Byte;
  Frame: Array[0..2047] Of Byte;
@@ -3169,11 +3169,11 @@ Procedure EncodeFrame;
 Var
  G,C,J,SideBytes,Budget,Padding: Integer;
 Begin
- Padding := 0; Inc(PaddingRemainder,46080000 Mod Header.Rate);
+ Padding := 0; Inc(PaddingRemainder,(LongInt(BitRateK)*144000) Mod Header.Rate);
  If PaddingRemainder >= Header.Rate Then Begin
   Padding := 1; Dec(PaddingRemainder,Header.Rate);
  End;
- FrameBytes := 46080000 Div Header.Rate+Padding;
+ FrameBytes := (LongInt(BitRateK)*144000) Div Header.Rate+Padding;
  If Header.Channels = 1 Then SideBytes := 17 Else SideBytes := 32;
  Budget := (FrameBytes-4-SideBytes)*8 Div (2*Header.Channels);
  If Budget > 4095 Then Budget := 4095;
@@ -3183,7 +3183,7 @@ Begin
  End;
  FillChar(Frame,SizeOf(Frame),0); BitPosition := 0;
  PutBits($7FF,11); PutBits(3,2); PutBits(1,2); PutBits(1,1);
- PutBits(14,4); PutBits(RateIndex,2); PutBits(Padding,1); PutBits(0,1);
+ PutBits(BitRateIndex,4); PutBits(RateIndex,2); PutBits(Padding,1); PutBits(0,1);
  If Header.Channels = 1 Then PutBits(3,2) Else PutBits(0,2);
  PutBits(0,2); PutBits(0,1); PutBits(1,1); PutBits(0,2);
  PutBits(0,9);
@@ -3214,7 +3214,7 @@ Begin
  {$I-}Rewrite(OutputFile,1); Code := IOResult;{$I+}
  If Code <> 0 Then Fail('Creation MP3 impossible.');
  OutputOpen := True; OutputCreated := True; Written := 0;
- WriteLn('Encodage MPEG-1 Layer III 320 kbit/s...');
+ WriteLn('Encodage MPEG-1 Layer III ',BitRateK,' kbit/s...');
  While WAVRemaining > 0 Do EncodeFrame;
  { Vidange des retards du filtre polyphase et de la MDCT. }
  For J := 1 To 2 Do EncodeFrame;
@@ -3230,6 +3230,14 @@ End;
 Begin
  InputName:=Source; OutputName:=Target; InputOpen:=False; OutputOpen:=False;
  OutputCreated:=False;
+ Case BitRateK Of
+  32: BitRateIndex:=1; 40: BitRateIndex:=2; 48: BitRateIndex:=3;
+  56: BitRateIndex:=4; 64: BitRateIndex:=5; 80: BitRateIndex:=6;
+  96: BitRateIndex:=7; 112: BitRateIndex:=8; 128: BitRateIndex:=9;
+  160: BitRateIndex:=10; 192: BitRateIndex:=11; 224: BitRateIndex:=12;
+  256: BitRateIndex:=13; 320: BitRateIndex:=14;
+  Else Fail('Debit MPEG-1 Layer III non pris en charge.');
+ End;
  Convert;
 End;
 
@@ -3238,7 +3246,7 @@ Var
  SavedExit: Pointer;
  InputPath,OutputPath,InputFormat,OutputFormat,AudioCodec,PendingFormat: String;
  RequestedRate: LongInt;
- RequestedChannels: Integer;
+ RequestedChannels,RequestedBitRateK: Integer;
  Overwrite,NoOverwrite,HideBanner,HasBitrate: Boolean;
  ActiveInput,ActiveOutput: File;
  InputActive,OutputActive: Boolean;
@@ -3327,6 +3335,7 @@ Function FormatName(S: String): String;Begin
  S:=Lower(S); If (S='aif') Or (S='aifc') Then S:='aiff';
  If S='mod' Then S:='libopenmpt';
  If S='m3u8' Then S:='hls';
+ If (S='wmv') Or (S='wma') Then S:='asf';
  FormatName:=S;
 End;
 
@@ -3426,6 +3435,10 @@ Begin
  OpenRead(Name); Size:=InputSize; N:=1084; If Size<N Then N:=Size;
  FillChar(B,SizeOf(B),0); ReadAt(0,B,N); CloseRead;
  Probe:='';
+ If N>=16 Then If (B[0]=$30) And (B[1]=$26) And (B[2]=$B2) And (B[3]=$75) And
+  (B[4]=$8E) And (B[5]=$66) And (B[6]=$CF) And (B[7]=$11) Then Begin
+  Probe:='asf'; Exit;
+ End;
  If N>=9 Then If (B[0]=70) And (B[1]=76) And (B[2]=86) Then Begin
   Probe:='flv'; Exit;
  End;
@@ -3469,6 +3482,758 @@ Begin
   'libopenmpt';
  End;
 End;
+
+{ ASF packet reader. Reassembles media objects; it does not decode WMV/WMA.
+  ASFP0001 is a private spool/test format, never an FLV output.
+  Reference: FFmpeg libavformat/asfdec_f.c and the ASF object layout. }
+Procedure DemuxASF(Const Source,Target: String);
+Const
+ GHeader: String[16]=#$30#$26#$B2#$75#$8E#$66#$CF#$11#$A6#$D9#$00#$AA#$00#$62#$CE#$6C;
+ GFile: String[16]=#$A1#$DC#$AB#$8C#$47#$A9#$CF#$11#$8E#$E4#$00#$C0#$0C#$20#$53#$65;
+ GStream: String[16]=#$91#$07#$DC#$B7#$B7#$A9#$CF#$11#$8E#$E6#$00#$C0#$0C#$20#$53#$65;
+ GAudio: String[16]=#$40#$9E#$69#$F8#$4D#$5B#$CF#$11#$A8#$FD#$00#$80#$5F#$5C#$44#$2B;
+ GVideo: String[16]=#$C0#$EF#$19#$BC#$4D#$5B#$CF#$11#$A8#$FD#$00#$80#$5F#$5C#$44#$2B;
+ GData: String[16]=#$36#$26#$B2#$75#$8E#$66#$CF#$11#$A6#$D9#$00#$AA#$00#$62#$CE#$6C;
+ GExtension: String[16]=#$B5#$03#$BF#$5F#$2E#$A9#$CF#$11#$8E#$E3#$00#$C0#$0C#$20#$53#$65;
+ GEncrypt: String[16]=#$FB#$B3#$11#$22#$23#$BD#$D2#$11#$B4#$B7#$00#$A0#$C9#$55#$FC#$6E;
+ GEncrypt2: String[16]=#$14#$E6#$8A#$29#$22#$26#$17#$4C#$B9#$35#$DA#$E0#$7E#$E9#$28#$9C;
+Type
+ PFragment=^TFragment;
+ TFragment=Record Next: PFragment; Used: Word; Data: Array[0..4095] Of Byte; End;
+ TStream=Record
+  ID,Kind,Channels,Align,ExtraSize: Integer;
+  Codec,Width,Height,Rate,BitRate,Expected,Received,Sequence,Stamp: LongInt;
+  Key: Boolean;
+  Extra: Array[0..2047] Of Byte;
+  First,Last: PFragment;
+ End;
+ TStreams=Array[0..3] Of TStream;
+ PStreams=^TStreams;
+Var
+ Streams: PStreams;
+ StreamCount: Integer;
+ Cache: Array[0..4095] Of Byte;
+ CacheAt,CacheSize,Limit,PacketSize,PacketCount,Preroll,DataStart,DataEnd: LongInt;
+ HeaderEnd,AtObject,Size,P,PacketEnd,PayloadEnd,PacketStart,PacketLength,Padding: LongInt;
+ Sequence,Offset,RepSize,ObjectSize,Stamp,PayloadSize,Ignored,Delta: LongInt;
+ PacketIndex: LongInt;
+ Flags,Properties,SegFlags,Segments,I,J,S,StreamID,Key,SubSize: Integer;
+ Signature: String[8];
+
+ Procedure ClearObject(Track: Integer);
+ Var F,N: PFragment;
+ Begin
+  F:=Streams^[Track].First;
+  While F<>Nil Do Begin N:=F^.Next; Dispose(F); F:=N; End;
+  Streams^[Track].First:=Nil; Streams^[Track].Last:=Nil;
+  Streams^[Track].Expected:=0; Streams^[Track].Received:=0;
+ End;
+
+ Procedure Release;
+ Var I: Integer;
+ Begin
+  If Streams<>Nil Then Begin
+   For I:=0 To StreamCount-1 Do ClearObject(I); Dispose(Streams); Streams:=Nil;
+  End;
+ End;
+
+ Procedure Bad(Const MessageText: String);
+ Begin Release; Fail('ASF: '+MessageText); End;
+
+ Procedure Bound(Pos,Count,Last: LongInt);
+ Begin
+  If (Pos<0) Or (Count<0) Or (Pos>Last) Then Bad('Position invalide.');
+  If Count>Last-Pos Then Bad('Objet ou paquet tronque.');
+ End;
+
+ Function ByteAt(Pos: LongInt): Byte;
+ Begin
+  Bound(Pos,1,Limit);
+  If (Pos<CacheAt) Or (Pos>=CacheAt+CacheSize) Then Begin
+   CacheAt:=Pos; CacheSize:=4096; If Limit-Pos<CacheSize Then CacheSize:=Limit-Pos;
+   ReadAt(Pos,Cache,CacheSize);
+  End;
+  ByteAt:=Cache[Pos-CacheAt];
+ End;
+
+ Function LE(Pos: LongInt; Count: Integer): LongInt;
+ Var I: Integer; V: LongInt;
+ Begin
+  Bound(Pos,Count,Limit); V:=0;
+  For I:=Count-1 Downto 0 Do Begin
+   If V>8388607 Then Bad('Valeur superieure a 2 Go non prise en charge.');
+   V:=V*256+ByteAt(Pos+I);
+  End;
+  LE:=V;
+ End;
+
+ Function Small64(Pos: LongInt): LongInt;
+ Begin
+  If LE(Pos+4,4)<>0 Then Bad('Valeur 64 bits hors limites.'); Small64:=LE(Pos,4);
+ End;
+
+ Function GUID(Pos: LongInt; Const Value: String): Boolean;
+ Var I: Integer;
+ Begin
+  Bound(Pos,16,Limit); GUID:=False;
+  For I:=1 To 16 Do If ByteAt(Pos+I-1)<>Ord(Value[I]) Then Exit;
+  GUID:=True;
+ End;
+
+ Procedure Put32(V: LongInt);
+ Var B: Array[0..3] Of Byte; I: Integer;
+ Begin For I:=0 To 3 Do B[I]:=(V Shr (I*8)) And 255; WriteBytes(B,4); End;
+
+ Procedure Headers(Start,Last: LongInt; Depth: Integer);
+ Var Pos,N,EndPos,T,TypeSize,ECCSize,ExtraAt,BI: LongInt; ID,I: Integer;
+ Begin
+  If Depth>2 Then Bad('Extensions imbriquees excessives.'); Pos:=Start;
+  While Pos<Last Do Begin
+   Bound(Pos,24,Last); N:=Small64(Pos+16); If N<24 Then Bad('Taille objet invalide.');
+   Bound(Pos,N,Last); EndPos:=Pos+N; T:=Pos+24;
+   If GUID(Pos,GFile) Then Begin
+    If PacketSize<>0 Then Bad('Proprietes fichier dupliquees.'); Bound(T,80,EndPos);
+    If (LE(T+64,4) And 1)<>0 Then Bad('Diffusion ASF sans taille fixe non implementee.');
+    PacketCount:=Small64(T+32); Preroll:=Small64(T+56);
+    PacketSize:=LE(T+68,4);
+    If (PacketSize<16) Or (PacketSize>16777216) Or (PacketSize<>LE(T+72,4)) Then
+     Bad('Tailles de paquets variables ou invalides.');
+   End Else If GUID(Pos,GStream) Then Begin
+    Bound(T,54,EndPos); TypeSize:=LE(T+40,4); ECCSize:=LE(T+44,4);
+    ID:=LE(T+48,2);
+    If (ID And $FF80)<>0 Then Bad('Piste chiffree ou identifiant reserve.');
+    If ID=0 Then Bad('Identifiant de piste nul.');
+    If Small64(T+32)<>0 Then Bad('Decalage temporel de piste non implemente.');
+    If StreamCount=4 Then Bad('Plus de quatre pistes.');
+    For I:=0 To StreamCount-1 Do If Streams^[I].ID=ID Then Bad('Piste dupliquee.');
+    Bound(T+54,TypeSize,EndPos); Bound(T+54+TypeSize,ECCSize,EndPos);
+    Streams^[StreamCount].ID:=ID;
+    If GUID(T,GAudio) Then Begin
+     Streams^[StreamCount].Kind:=2; Inc(T,54); Bound(T,18,T+TypeSize);
+     Streams^[StreamCount].Codec:=LE(T,2); Streams^[StreamCount].Channels:=LE(T+2,2);
+     Streams^[StreamCount].Rate:=LE(T+4,4);
+     Ignored:=LE(T+8,4); If Ignored>268435455 Then Bad('Debit audio invalide.');
+     Streams^[StreamCount].BitRate:=Ignored*8;
+     Streams^[StreamCount].Align:=LE(T+12,2); ExtraAt:=T+18;
+     Streams^[StreamCount].ExtraSize:=LE(T+16,2);
+     If Streams^[StreamCount].ExtraSize>TypeSize-18 Then Bad('Configuration audio tronquee.');
+     If ECCSize>0 Then Begin
+      Bound(T+TypeSize,8,EndPos);
+      If ByteAt(T+TypeSize)>1 Then Bad('Entrelacement audio ASF non implemente.');
+     End;
+    End Else If GUID(T,GVideo) Then Begin
+     Streams^[StreamCount].Kind:=1; Inc(T,54); Bound(T,51,T+TypeSize);
+     BI:=LE(T+11,4); If (BI<40) Or (BI>TypeSize-11) Then Bad('BITMAPINFO invalide.');
+     If BI>2088 Then Bad('Configuration codec trop longue.');
+     Streams^[StreamCount].Width:=LE(T+15,4); Streams^[StreamCount].Height:=LE(T+19,4);
+     Streams^[StreamCount].Codec:=LE(T+27,4); ExtraAt:=T+51;
+     Streams^[StreamCount].ExtraSize:=BI-40;
+    End Else Bad('Type de piste non implemente.');
+    If Streams^[StreamCount].ExtraSize>2048 Then Bad('Configuration codec trop longue.');
+    For I:=0 To Streams^[StreamCount].ExtraSize-1 Do Streams^[StreamCount].Extra[I]:=ByteAt(ExtraAt+I);
+    Inc(StreamCount);
+   End Else If GUID(Pos,GExtension) Then Begin
+    Bound(T,22,EndPos); N:=LE(T+18,4); Bound(T+22,N,EndPos); Headers(T+22,T+22+N,Depth+1);
+   End Else If GUID(Pos,GEncrypt) Or GUID(Pos,GEncrypt2) Then Bad('Chiffrement ASF non implemente.');
+   Pos:=EndPos;
+  End;
+ End;
+
+ Function ReadField(Kind: Integer; Default: LongInt): LongInt;
+ Var N: Integer;
+ Begin
+  N:=Kind And 3; If N=3 Then N:=4;
+  If N=0 Then ReadField:=Default Else Begin
+   Bound(P,N,PacketEnd); ReadField:=LE(P,N); Inc(P,N);
+  End;
+ End;
+
+ Procedure FinishObject(Track: Integer);
+ Var F: PFragment;
+ Begin
+  Put32(Streams^[Track].ID); Put32(Ord(Streams^[Track].Key));
+  Put32(Streams^[Track].Stamp-Preroll); Put32(Streams^[Track].Expected);
+  F:=Streams^[Track].First;
+  While F<>Nil Do Begin WriteBytes(F^.Data,F^.Used); F:=F^.Next; End;
+  ClearObject(Track);
+ End;
+
+ Procedure Fragment(Track: Integer; SourcePos,Count,FragOffset,Total,Seq,Time: LongInt; IsKey: Boolean);
+ Var F: PFragment; N: Word;
+ Begin
+  If FragOffset=0 Then Begin
+   If Streams^[Track].Expected<>0 Then Bad('Objet incomplet avant le suivant.');
+   If (Total<=0) Or (Total>16777216) Then Bad('Taille media invalide.');
+   Streams^[Track].Expected:=Total; Streams^[Track].Sequence:=Seq;
+   Streams^[Track].Stamp:=Time; Streams^[Track].Key:=IsKey Or (Streams^[Track].Kind=2);
+  End;
+  If (Streams^[Track].Expected=0) Or (Streams^[Track].Sequence<>Seq) Or
+   (Streams^[Track].Received<>FragOffset) Then Bad('Fragments manquants ou desordonnes.');
+  If (Total<>0) And (Total<>Streams^[Track].Expected) Then Bad('Taille media changeante.');
+  If Count>Streams^[Track].Expected-Streams^[Track].Received Then Bad('Fragment hors objet.');
+  While Count>0 Do Begin
+   {$IFNDEF FPC}
+   If MaxAvail<SizeOf(TFragment) Then Bad('Memoire DOS insuffisante.');
+   {$ENDIF}
+   New(F); F^.Next:=Nil; N:=4096; If Count<N Then N:=Count; F^.Used:=N;
+   If Streams^[Track].First=Nil Then Streams^[Track].First:=F Else Streams^[Track].Last^.Next:=F;
+   Streams^[Track].Last:=F; ReadAt(SourcePos,F^.Data,N);
+   Inc(SourcePos,N); Dec(Count,N); Inc(Streams^[Track].Received,N);
+  End;
+  If Streams^[Track].Received=Streams^[Track].Expected Then FinishObject(Track);
+ End;
+
+Begin
+ Streams:=Nil; StreamCount:=0; PacketSize:=0; Preroll:=0; PacketCount:=0;
+ CacheAt:=-1; CacheSize:=0; New(Streams); FillChar(Streams^,SizeOf(TStreams),0);
+ OpenRead(Source); Limit:=InputSize;
+ Bound(0,30,Limit); If Not GUID(0,GHeader) Then Bad('Signature absente.');
+ HeaderEnd:=Small64(16); Bound(0,HeaderEnd,Limit);
+ If HeaderEnd<30 Then Bad('En-tete trop court.'); Headers(30,HeaderEnd,0);
+ If (PacketSize=0) Or (StreamCount=0) Then Bad('Proprietes fichier/pistes absentes.');
+ AtObject:=HeaderEnd; DataStart:=0; DataEnd:=0;
+ While AtObject<Limit Do Begin
+  Bound(AtObject,24,Limit); Size:=Small64(AtObject+16);
+  If Size<24 Then Bad('Taille objet invalide.'); Bound(AtObject,Size,Limit);
+  If GUID(AtObject,GData) Then Begin
+   If Size<50 Then Bad('Objet de donnees trop court.');
+   If Small64(AtObject+40)<>PacketCount Then Bad('Nombre de paquets incoherent.');
+   DataStart:=AtObject+50; DataEnd:=AtObject+Size; Break;
+  End;
+  Inc(AtObject,Size);
+ End;
+ If DataStart=0 Then Bad('Objet de donnees absent.');
+ If (DataEnd-DataStart) Div PacketSize<>PacketCount Then Bad('Nombre de paquets invalide.');
+ If (DataEnd-DataStart) Mod PacketSize<>0 Then Bad('Dernier paquet tronque.');
+ OpenWrite(Target); Signature:='ASFP0001'; WriteBytes(Signature[1],8); Put32(StreamCount);
+ For I:=0 To StreamCount-1 Do With Streams^[I] Do Begin
+  Put32(ID); Put32(Kind); Put32(Codec); Put32(Width); Put32(Height);
+  Put32(Rate); Put32(Channels); Put32(Align); Put32(BitRate); Put32(ExtraSize);
+  If ExtraSize>0 Then WriteBytes(Extra,ExtraSize);
+ End;
+ PacketStart:=DataStart;
+ For PacketIndex:=1 To PacketCount Do Begin
+  PacketEnd:=PacketStart+PacketSize; P:=PacketStart; Flags:=ReadField(1,0);
+  If (Flags And $80)<>0 Then Begin
+   If Flags<>$82 Then Bad('Correction erreur ASF non implementee.');
+   If ReadField(2,0)<>0 Then Bad('Correction erreur non nulle.'); Flags:=ReadField(1,0);
+  End;
+  Properties:=ReadField(1,0);
+  If Properties Shr 6<>1 Then Bad('Identifiant de flux de taille non implementee.');
+  PacketLength:=ReadField(Flags Shr 5,PacketSize); Ignored:=ReadField(Flags Shr 1,0);
+  Padding:=ReadField(Flags Shr 3,0);
+  If (PacketLength<=0) Or (PacketLength>PacketSize) Or (Padding>=PacketLength) Then Bad('Longueur paquet invalide.');
+  Stamp:=ReadField(3,0); Ignored:=ReadField(2,0);
+  SegFlags:=0; Segments:=1;
+  If Odd(Flags) Then Begin SegFlags:=ReadField(1,0); Segments:=SegFlags And 63; End;
+  If Segments=0 Then Bad('Paquet sans charges utiles.');
+  PacketEnd:=PacketStart+PacketLength-Padding; Bound(P,0,PacketEnd);
+  For J:=1 To Segments Do Begin
+   StreamID:=ReadField(1,0); Key:=StreamID Shr 7; StreamID:=StreamID And 127; S:=-1;
+   For I:=0 To StreamCount-1 Do If Streams^[I].ID=StreamID Then S:=I;
+   If S<0 Then Bad('Piste de paquet inconnue.');
+   Sequence:=ReadField(Properties Shr 4,0); Offset:=ReadField(Properties Shr 2,0);
+   RepSize:=ReadField(Properties,0); Bound(P,RepSize,PacketEnd); ObjectSize:=0; Delta:=0;
+   If RepSize>=8 Then Begin ObjectSize:=LE(P,4); Stamp:=LE(P+4,4); End
+   Else If RepSize=1 Then Begin Stamp:=Offset; Offset:=0; Delta:=ByteAt(P); End
+   Else If RepSize<>0 Then Bad('Replication invalide.');
+   Inc(P,RepSize);
+   If Odd(Flags) Then Begin
+    If SegFlags Shr 6=0 Then Bad('Longueur de charge utile absente.');
+    PayloadSize:=ReadField(SegFlags Shr 6,0);
+   End Else PayloadSize:=PacketEnd-P;
+   Bound(P,PayloadSize,PacketEnd); PayloadEnd:=P+PayloadSize;
+   If RepSize=1 Then Begin
+    While P<PayloadEnd Do Begin
+     SubSize:=ByteAt(P); Inc(P); Bound(P,SubSize,PayloadEnd);
+     Fragment(S,P,SubSize,0,SubSize,Sequence,Stamp,Key<>0); Inc(P,SubSize);
+     Inc(Stamp,Delta); Inc(Sequence);
+    End;
+   End Else Begin Fragment(S,P,PayloadSize,Offset,ObjectSize,Sequence,Stamp,Key<>0); P:=PayloadEnd; End;
+  End;
+  If P<>PacketEnd Then Bad('Octets non attribues dans le paquet.');
+  Inc(PacketStart,PacketSize);
+ End;
+ For I:=0 To StreamCount-1 Do If Streams^[I].Expected<>0 Then Bad('Objet media final incomplet.');
+ Put32(0); CloseRead; CloseWrite; Release;
+End;
+
+
+{ WMA2 fixed-block, exponent-VLC decoder. No bit reservoir/noise coding.
+  Tables and signal processing reference: FFmpeg wma.c, wmadec.c, wmadata.h,
+  aactab.c; LGPL-2.1-or-later, see THIRD_PARTY_NOTICES.md. }
+Procedure DecodeWMA2Spool(Const Source,Target: String);
+Const
+ Coef4Code: Array[0..475] Of LongInt=(
+  3841,30,0,4,6,13,10,23,29,23,44,49,
+  57,62,57,90,102,112,123,112,119,175,201,242,
+  244,178,227,347,349,385,413,483,453,693,731,824,
+  963,972,1008,717,1018,929,1460,1623,1963,1869,1868,2753,
+  2757,1899,3240,3844,3840,4067,3900,3856,3897,4070,3622,3728,
+  5829,6183,6484,5573,6488,8074,7242,11023,11073,11022,13254,12368,
+  7247,11656,12380,15384,11087,11458,14919,22144,22173,25666,25667,25670,
+  25966,25668,28960,29834,49594,32290,31398,32549,31399,32288,49435,49432,
+  31397,44298,62345,106171,51885,65090,65088,93236,177381,212325,93232,124846,
+  123484,99184,124675,106170,93239,57908,93294,4,42,97,117,203,
+  255,400,491,465,697,775,825,831,1019,948,1548,1657,
+  1605,1661,1930,2019,1865,2756,2770,2787,3088,3094,2769,3316,
+  4066,5510,3741,6641,5732,7718,7480,11085,13253,8130,8131,7464,
+  15389,22926,61588,31396,44344,44044,49434,31210,51329,65092,46645,44045,
+  46622,22919,28961,62338,62343,57911,65095,62339,61585,62341,57907,99054,
+  106168,91710,61587,20,88,345,359,768,980,1461,1949,1898,
+  2919,2912,3845,3312,3863,3733,6178,6419,5826,6191,6489,8139,
+  7719,7232,13255,7803,7241,11657,7715,5728,16146,11462,13281,23348,
+  24730,25961,29832,32289,53087,28972,14493,26575,32552,91711,212327,91709,
+  123485,246187,89156,93238,31,236,803,1458,1951,2754,3862,3742,
+  6486,7695,6634,5734,11145,11010,11660,15387,15385,12981,16284,11471,
+  14487,23349,44290,32553,25665,14468,30856,30798,25960,49595,22918,26572,
+  65097,65096,49596,65089,99185,91708,57905,28958,44297,61586,45,475,
+  1921,3098,3925,5504,7848,11675,12975,16150,15388,30772,15429,14492,
+  26574,25669,49593,30857,32570,30799,32555,44299,61584,49437,59726,28959,
+  59889,62350,31209,44291,61595,51886,65094,177382,59888,106166,424641,424640,
+  212326,62344,113,928,3241,6185,7481,11075,11460,25940,61594,46623,
+  26573,28956,46646,32554,46644,49439,53086,46621,61547,51883,49598,59724,
+  61593,99053,59727,49433,57906,177380,62346,106164,123487,59725,183,1925,
+  5836,12369,13252,25967,14481,28957,51887,61591,29833,61592,51328,51882,
+  62342,106167,93295,62340,99048,99049,57904,124672,212322,212323,212324,93235,
+  57878,253,3093,5733,15434,32571,30870,49436,57877,93234,62347,62349,
+  99050,124673,463583,89158,404,4064,16147,29835,61590,53120,123486,927165,
+  212321,93233,505,6418,22288,62416,49599,769,7716,44296,973,7233,
+  49597,1379,14930,62417,1392,11470,57879,1659,25949,1867,25671,3090,
+  29947,3848,46620,3618,65091,5831,6198,6642,7235,7487,8143,11084,
+  12364,12982,14918,22023,16151,11461,24731,25948,32291,26561,32550,32551,
+  61589,59891,53121,49438,51884,62351,59890,29946,57910,65093,115752,57909,
+  99055,106165,62422,99052,93237,62348,177383,89159,927164,124674,115894,57946,
+  246186,89157,115753,106169,124847,99051,123092,231790);
+ Coef4Bits: Array[0..475] Of Byte=(
+  12,6,2,3,4,4,5,5,5,6,6,6,
+  6,6,7,7,7,7,7,8,8,8,8,8,
+  8,9,9,9,9,9,9,9,10,10,10,10,
+  10,10,10,11,10,11,11,11,11,12,12,12,
+  12,12,12,12,12,12,12,12,12,12,13,13,
+  13,13,13,13,13,13,14,14,14,14,14,14,
+  14,14,14,14,14,15,15,15,15,15,15,15,
+  15,15,16,16,16,15,15,15,15,15,16,16,
+  15,16,16,17,16,16,16,17,18,18,17,17,
+  17,17,17,17,17,17,17,4,6,7,8,8,
+  8,9,9,10,10,10,10,10,10,11,11,11,
+  11,11,11,11,12,12,12,12,12,12,12,12,
+  12,13,13,13,14,13,14,14,14,13,13,14,
+  14,16,16,15,16,16,16,15,16,16,16,16,
+  16,16,16,16,16,17,16,16,16,16,17,17,
+  17,18,16,5,8,9,10,10,10,11,11,12,
+  12,12,12,12,12,13,13,13,13,13,13,13,
+  13,14,14,13,14,14,13,14,14,15,14,15,
+  15,15,16,15,16,16,15,15,15,18,18,18,
+  17,18,17,17,6,9,10,11,11,12,12,13,
+  13,13,13,14,14,14,14,14,14,14,14,15,
+  15,15,16,15,15,15,15,15,15,16,16,15,
+  16,16,16,16,17,18,17,16,16,16,7,10,
+  11,12,12,13,13,14,14,14,14,15,14,15,
+  15,15,16,15,15,15,15,16,16,16,17,16,
+  17,16,15,16,16,16,16,18,17,17,19,19,
+  18,16,7,11,12,13,14,14,15,15,16,16,
+  15,16,16,15,16,16,16,16,16,16,16,17,
+  16,17,17,16,17,18,16,17,17,17,8,11,
+  13,14,14,15,15,16,16,16,16,16,16,16,
+  16,17,17,16,17,17,17,17,18,18,18,17,
+  17,8,12,14,14,15,15,16,17,17,16,16,
+  17,17,20,17,9,12,14,16,16,16,17,21,
+  18,17,9,13,15,16,16,10,13,16,10,14,
+  16,11,15,16,11,15,17,11,15,12,15,12,
+  16,12,16,13,16,13,13,13,14,14,13,14,
+  14,14,15,15,14,15,15,15,15,15,15,15,
+  16,17,16,16,16,16,17,16,17,16,18,17,
+  17,17,16,17,17,16,18,17,21,17,18,17,
+  18,17,18,17,17,17,17,19);
+ Coef5Code: Array[0..434] Of LongInt=(
+  839,11,1,1,12,4,16,21,31,11,35,38,
+  41,53,55,1,21,26,29,28,30,78,73,81,
+  120,4,0,8,13,123,5,50,149,145,150,161,
+  217,3,25,97,102,96,23,14,99,416,439,486,
+  487,438,24,488,56,49,5,61,39,490,26,197,
+  249,255,219,592,252,604,8,117,983,979,432,124,
+  970,54,393,1190,1186,1275,192,127,154,785,110,155,
+  1676,1728,1156,18,195,2383,2425,2553,3337,3494,3496,2305,
+  193,883,3336,2554,3467,3461,3462,223,1762,206,3876,2558,
+  503,1985,207,2556,2559,3465,3497,2557,504,6710,4748,4765,
+  6711,406,1002,3979,3475,7749,7768,7755,7769,5105,777,613,
+  776,9274,10209,3977,804,15548,15494,13973,9276,9275,9278,7754,
+  933,13416,13352,15492,10208,9698,6272,407,805,15543,31006,2028,
+  27765,1224,19399,1222,2435,18462,6995,9499,7000,2436,20392,15547,
+  3978,802,13418,9277,806,13417,18463,18461,1862,36914,6992,7443,
+  55524,18459,27764,31083,31081,2437,55523,2438,4002,4865,27772,2439,
+  15544,62639,3720,111040,4046,13291,16234,16233,4047,31007,1225,18545,
+  4045,2434,4044,4003,7442,31084,6983,801,31082,55522,18546,18547,
+  14,20,10,160,18,125,418,59,607,221,636,835,
+  872,875,62,506,1157,435,127,433,414,1210,1965,825,
+  102,1956,1939,1734,126,241,882,2555,3459,3466,2375,2548,
+  464,6921,6987,2028,993,202,1004,9529,20393,6999,13353,15658,
+  3479,935,3520,3478,3521,2027,15546,3139,3137,6994,2031,803,
+  15545,15491,2000,2029,27775,36915,16236,222083,125277,27768,1863,6993,
+  34,22,57,594,121,1158,824,873,3464,38,3463,3915,
+  3458,39,481,6677,1991,4848,480,1744,6678,7748,7775,13968,
+  3472,3138,3503,3474,3968,3323,13359,18559,6982,31080,3477,3473,
+  6997,16232,19398,15549,3969,800,105,254,1749,831,222,1990,
+  7744,3476,3976,15502,13972,3502,3501,615,934,807,18558,2030,
+  1865,1223,13970,6998,4049,31318,27767,36913,1864,27770,31085,13290,
+  27766,4048,222082,123927,1861,20399,55521,16235,125276,20397,158,1213,
+  1660,6920,1003,6981,13969,55525,30980,2433,2026,6644,27773,20395,
+  20396,27774,4864,27771,111,1015,15493,1220,30,1761,13971,6980,
+  577,7750,413,614,1211,9528,1964,6996,2306,18544,3495,2304,
+  389,27769,1763,1001,7828,1005,1010,13358,13419,9498,1221,6273,
+  18460,7001,15495,20398,2025,16237,61962,36912,20394,55526,16239,18458,
+  16238,123926,55527);
+ Coef5Bits: Array[0..434] Of Byte=(
+  10,4,2,4,4,5,5,5,5,6,6,6,
+  6,6,6,7,7,7,7,7,7,7,7,7,
+  7,8,8,8,8,7,8,8,8,8,8,8,
+  8,9,9,9,9,9,9,9,9,9,9,9,
+  9,9,10,9,10,10,10,10,10,9,10,10,
+  10,10,10,10,10,10,11,11,10,10,11,11,
+  10,11,11,11,11,11,12,12,12,12,12,12,
+  11,11,11,12,12,12,12,12,12,12,12,12,
+  12,12,12,12,12,12,12,13,13,13,12,12,
+  13,13,13,12,12,12,12,12,13,13,13,13,
+  13,14,14,14,14,13,13,13,13,13,14,14,
+  14,14,14,14,15,14,14,14,14,14,14,13,
+  14,14,14,14,14,14,15,14,15,14,15,15,
+  15,15,15,15,16,15,15,14,15,16,15,14,
+  14,15,14,14,15,14,15,15,15,16,15,17,
+  16,15,15,15,15,16,16,16,16,17,15,16,
+  14,16,16,17,16,16,16,16,16,15,15,15,
+  16,16,16,16,17,15,15,15,15,16,15,15,
+  4,7,8,8,9,9,9,10,10,10,10,10,
+  10,10,11,11,11,11,11,11,11,11,11,12,
+  12,11,11,11,12,12,12,12,12,12,12,12,
+  13,13,13,13,12,13,14,14,15,15,14,14,
+  14,14,14,14,14,15,14,14,14,15,15,15,
+  14,14,15,15,15,16,16,18,17,15,15,15,
+  6,9,10,10,11,11,12,12,12,13,12,12,
+  12,13,13,13,13,13,13,13,13,13,13,14,
+  14,14,14,14,14,14,14,15,15,15,14,14,
+  15,16,15,14,14,15,7,10,11,12,13,13,
+  13,14,14,14,14,14,14,14,14,15,15,15,
+  15,15,14,15,16,15,15,16,15,15,15,16,
+  15,16,18,17,15,15,16,16,17,15,8,11,
+  13,13,14,15,14,16,15,16,15,15,15,15,
+  15,15,17,15,9,12,14,15,10,13,14,15,
+  10,13,11,14,11,14,11,15,12,15,12,12,
+  13,15,13,14,13,14,14,14,14,14,15,15,
+  15,15,14,15,15,16,16,16,15,16,16,15,
+  16,17,16);
+ Level4: Array[0..69] Of Word=(
+  113,68,49,42,40,32,27,15,10,5,3,3,
+  3,3,2,2,2,2,2,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,1,1);
+ Level5: Array[0..39] Of Word=(
+  214,72,42,40,18,4,4,2,2,2,2,2,
+  1,1,2,1,1,1,1,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,
+  1,1,1,1);
+ ExpCode: Array[0..120] Of LongInt=(
+  262120,262118,262119,262117,524277,524273,524269,524278,524270,524271,524272,524284,
+  524285,524287,524286,524279,524280,524283,524281,262116,524282,262115,131055,131056,
+  65525,131054,65522,65523,65524,65521,32758,32759,16377,16373,16375,16371,
+  16374,16370,8183,8181,4089,4087,4086,2041,4084,2040,1017,1015,
+  1013,504,503,250,248,246,121,58,56,26,11,4,
+  0,10,12,27,57,59,120,122,247,249,502,505,
+  1012,1014,1016,2037,2036,2038,2039,4085,4088,8180,8182,8184,
+  16376,16372,65520,32756,65526,32757,262114,524249,524250,524251,524252,524253,
+  524254,524248,524242,524243,524244,524245,524246,524274,524255,524263,524264,524265,
+  524266,524267,524262,524256,524257,524258,524259,524260,524261,524247,524268,524276,
+  524275);
+ ExpBits: Array[0..120] Of Byte=(
+  18,18,18,18,19,19,19,19,19,19,19,19,
+  19,19,19,19,19,19,19,18,19,18,17,17,
+  16,17,16,16,16,16,15,15,14,14,14,14,
+  14,14,13,13,12,12,12,11,12,11,10,10,
+  10,9,9,8,8,8,7,6,6,5,4,3,
+  1,4,4,5,6,6,7,7,8,8,9,9,
+  10,10,10,11,11,11,11,12,12,13,13,13,
+  14,14,16,15,16,15,18,19,19,19,19,19,
+  19,19,19,19,19,19,19,19,19,19,19,19,
+  19,19,19,19,19,19,19,19,19,19,19,19,
+  19);
+ Critical: Array[0..24] Of Word=(
+  100,200,300,400,510,630,770,920,1080,1270,1480,1720,
+  2000,2320,2700,3150,3700,4400,5300,6400,7700,9500,12000,15500,
+  24500);
+
+ PiValue=3.14159265358979323846;
+Type
+ TVector=Array[0..2047] Of Single;
+ TFFT=Array[0..8191] Of Single;
+ PFFT=^TFFT;
+ TState=Record
+  Spectrum,Exponent,Overlap: Array[0..1] Of TVector;
+  Window: TVector;
+ End;
+ PState=^TState;
+ TTree=Array[0..1023,0..1] Of Integer;
+ PTree=^TTree;
+ TRun=Array[0..475] Of Integer;
+ TBytes=Array[0..8191] Of Byte;
+Var
+ State: PState;
+ FR,FI: PFFT;
+ Trees: Array[0..2] Of PTree;
+ Runs,Levels: Array[0..1] Of TRun;
+ Buffer: TBytes;
+ BitPos,BitLimit,Rate,Channels,Align,BitRate,AudioID,Count,Pos,FileLimit: LongInt;
+ FrameCount,SampleCount,PacketSize,Track,PacketEnd: LongInt;
+ Meta: Array[0..9] Of LongInt;
+ BandSize: Array[0..24] Of Integer;
+ BandCount,N,CoefEnd: Integer;
+ C,I,J,K,V,Flag,LastPos,BandPos,Code: Integer;
+ Extra: Array[0..2047] Of Byte;
+ PCM: Array[0..4095] Of SmallInt;
+ Coefs: Array[0..2047] Of SmallInt;
+ Powers: Array[-60..95] Of Single;
+ GotTrack: Boolean;
+
+ Procedure Release;
+ Var I: Integer;
+ Begin
+  If State<>Nil Then Dispose(State); If FR<>Nil Then Dispose(FR); If FI<>Nil Then Dispose(FI);
+  For I:=0 To 2 Do If Trees[I]<>Nil Then Dispose(Trees[I]);
+  State:=Nil; FR:=Nil; FI:=Nil;
+ End;
+
+ Procedure Bad(Const S: String);
+ Begin Release; Fail('WMA2: '+S); End;
+
+ Function Read32: LongInt;
+ Var B: Array[0..3] Of Byte;
+ Begin
+  If (Pos<0) Or (Pos>FileLimit-4) Then Bad('Flux de paquets tronque.');
+  ReadAt(Pos,B,4); Inc(Pos,4);
+  Read32:=LongInt(B[0])+LongInt(B[1])*256+LongInt(B[2])*65536+(LongInt(B[3]) Shl 24);
+ End;
+
+ Function Bits(Count: Integer): LongInt;
+ Var I: Integer; V: LongInt;
+ Begin
+  If Count>BitLimit-BitPos Then Bad('Bloc de coefficients tronque.'); V:=0;
+  For I:=1 To Count Do Begin
+   V:=V*2+((Buffer[BitPos Div 8] Shr (7-BitPos Mod 8)) And 1); Inc(BitPos);
+  End;
+  Bits:=V;
+ End;
+
+ Procedure BuildTree(T,Symbols: Integer);
+ Var I,J,Node,Next,Bit: Integer; Value: LongInt;
+ Begin
+  New(Trees[T]); FillChar(Trees[T]^,SizeOf(TTree),0); Next:=1;
+  For I:=0 To Symbols-1 Do Begin
+   Node:=0;
+   If T=0 Then Begin Value:=Coef4Code[I]; J:=Coef4Bits[I]; End
+   Else If T=1 Then Begin Value:=Coef5Code[I]; J:=Coef5Bits[I]; End
+   Else Begin Value:=ExpCode[I]; J:=ExpBits[I]; End;
+   While J>0 Do Begin
+    Dec(J); Bit:=(Value Shr J) And 1;
+    If J=0 Then Trees[T]^[Node,Bit]:=-I-1 Else Begin
+     If Trees[T]^[Node,Bit]=0 Then Begin
+      If Next>1023 Then Bad('Table VLC trop grande.');
+      Trees[T]^[Node,Bit]:=Next; Inc(Next);
+     End;
+     Node:=Trees[T]^[Node,Bit];
+    End;
+   End;
+  End;
+ End;
+
+ Function VLC(T: Integer): Integer;
+ Var Node: Integer;
+ Begin
+  Node:=0;
+  Repeat
+   Node:=Trees[T]^[Node,Bits(1)]; If Node=0 Then Bad('Code VLC invalide.');
+  Until Node<0;
+  VLC:=-Node-1;
+ End;
+
+ Procedure Transform(Channel: Integer);
+ Var I,J,K,L,Step,Half,Index: Integer;
+  Angle,WR,WI,NR,NI,TR,TI,AR,AI: Double;
+  Value: Single;
+ Begin
+  FillChar(FR^,SizeOf(TFFT),0); FillChar(FI^,SizeOf(TFFT),0);
+  For I:=0 To N-1 Do Begin
+   Angle:=-PiValue*(2*I+1)/(4*N); FR^[2*I+1]:=State^.Spectrum[Channel,I]*Cos(Angle);
+   FI^[2*I+1]:=State^.Spectrum[Channel,I]*Sin(Angle);
+  End;
+  L:=N*4; J:=0;
+  For I:=0 To L-1 Do Begin
+   If I<J Then Begin Value:=FR^[I]; FR^[I]:=FR^[J]; FR^[J]:=Value;
+    Value:=FI^[I]; FI^[I]:=FI^[J]; FI^[J]:=Value; End;
+   K:=L Div 2;
+   While (K>0) And (J>=K) Do Begin Dec(J,K); K:=K Div 2; End;
+   Inc(J,K);
+  End;
+  Step:=2;
+  While Step<=L Do Begin
+   Half:=Step Div 2; Angle:=-2*PiValue/Step; AR:=Cos(Angle); AI:=Sin(Angle);
+   I:=0;
+   While I<L Do Begin
+    WR:=1; WI:=0;
+    For J:=0 To Half-1 Do Begin
+     Index:=I+J; K:=Index+Half;
+     TR:=WR*FR^[K]-WI*FI^[K]; TI:=WR*FI^[K]+WI*FR^[K];
+     FR^[K]:=FR^[Index]-TR; FI^[K]:=FI^[Index]-TI;
+     FR^[Index]:=FR^[Index]+TR; FI^[Index]:=FI^[Index]+TI;
+     NR:=WR*AR-WI*AI; NI:=WR*AI+WI*AR; WR:=NR; WI:=NI;
+    End;
+    Inc(I,Step);
+   End;
+   Step:=Step*2;
+  End;
+  For I:=0 To N-1 Do Begin
+   Value:=-FR^[I+N Div 2]*State^.Window[I]+State^.Overlap[Channel,I];
+   If Value>32767 Then Value:=32767 Else If Value< -32768 Then Value:=-32768;
+   PCM[I*Channels+Channel]:=Round(Value);
+   State^.Overlap[Channel,I]:=-FR^[I+N+N Div 2]*State^.Window[N-1-I];
+  End;
+ End;
+
+ Procedure OutputPCM;
+ Begin
+  If SampleCount>(2147483500 Div (Channels*2))-N Then Bad('Sortie WAV trop grande.');
+  WriteBytes(PCM,N*Channels*2); Inc(SampleCount,N);
+ End;
+
+ Procedure DecodeBlock;
+ Var MS,Coded0,Coded1: Boolean;
+  C,I,J,Band,Exponent,Gain,More,CoeffBits,T,Offset,Symbol,Run,Level: Integer;
+  MaxExp,Mult,X: Single;
+ Begin
+  BitPos:=0; BitLimit:=Align*8; MS:=False; If Channels=2 Then MS:=Bits(1)<>0;
+  Coded0:=Bits(1)<>0; Coded1:=False; If Channels=2 Then Coded1:=Bits(1)<>0;
+  FillChar(State^.Spectrum,SizeOf(State^.Spectrum),0);
+  If Coded0 Or Coded1 Then Begin
+   Gain:=1;
+   Repeat
+    More:=Bits(7); Inc(Gain,More); If Gain>255 Then Bad('Gain hors limites.');
+   Until More<>127;
+   CoeffBits:=9;
+   If Gain<15 Then CoeffBits:=13 Else If Gain<32 Then CoeffBits:=12
+   Else If Gain<40 Then CoeffBits:=11 Else If Gain<45 Then CoeffBits:=10;
+   For C:=0 To Channels-1 Do If ((C=0) And Coded0) Or ((C=1) And Coded1) Then Begin
+    Exponent:=36; Offset:=0; MaxExp:=0;
+    For Band:=0 To BandCount-1 Do Begin
+     Inc(Exponent,VLC(2)-60); If (Exponent< -60) Or (Exponent>95) Then Bad('Exposant hors limites.');
+     X:=Powers[Exponent]; If X>MaxExp Then MaxExp:=X;
+     For J:=1 To BandSize[Band] Do Begin State^.Exponent[C,Offset]:=X; Inc(Offset); End;
+    End;
+    State^.Spectrum[C,2047]:=MaxExp; { temporary, replaced after coefficient parsing }
+   End;
+   For C:=0 To Channels-1 Do If ((C=0) And Coded0) Or ((C=1) And Coded1) Then Begin
+    FillChar(Coefs,SizeOf(Coefs),0); T:=0; If (C=1) And MS Then T:=1; Offset:=0;
+    While Offset<CoefEnd Do Begin
+     Symbol:=VLC(T); If Symbol=1 Then Break;
+     If Symbol=0 Then Begin Level:=Bits(CoeffBits); Run:=Bits(11); End
+     Else Begin Level:=Levels[T,Symbol]; Run:=Runs[T,Symbol]; End;
+     Inc(Offset,Run); If Offset>=N Then Bad('Coefficient hors bloc.');
+     If Bits(1)=0 Then Level:=-Level; Coefs[Offset]:=Level; Inc(Offset);
+    End;
+    Mult:=Exp(Ln(10)*Gain*0.05)/State^.Spectrum[C,2047]; Mult:=Mult*(2/N);
+    For I:=0 To CoefEnd-1 Do State^.Spectrum[C,I]:=Coefs[I]*State^.Exponent[C,I]*Mult;
+    State^.Spectrum[C,2047]:=0;
+   End;
+  End;
+  If MS Then Begin
+   If Coded1 Then For I:=0 To N-1 Do Begin
+    X:=State^.Spectrum[0,I]; State^.Spectrum[0,I]:=X+State^.Spectrum[1,I];
+    State^.Spectrum[1,I]:=X-State^.Spectrum[1,I];
+   End Else State^.Spectrum[1]:=State^.Spectrum[0];
+  End;
+  For C:=0 To Channels-1 Do Transform(C);
+  Inc(FrameCount); If FrameCount>2 Then OutputPCM;
+ End;
+
+ Procedure WaveHeader;
+ Var B: Array[0..43] Of Byte; S: String[4]; Size: LongInt; Code: Integer;
+  Procedure Put16(At: Integer; V: LongInt);
+  Begin B[At]:=V And 255; B[At+1]:=(V Shr 8) And 255; End;
+  Procedure Put32(At: Integer; V: LongInt);
+  Begin Put16(At,V); Put16(At+2,V Shr 16); End;
+ Begin
+  FillChar(B,SizeOf(B),0); S:='RIFF'; Move(S[1],B[0],4); S:='WAVE'; Move(S[1],B[8],4);
+  S:='fmt '; Move(S[1],B[12],4); S:='data'; Move(S[1],B[36],4);
+  Size:=SampleCount*Channels*2; Put32(4,Size+36); Put32(16,16); Put16(20,1);
+  Put16(22,Channels); Put32(24,Rate); Put32(28,Rate*Channels*2);
+  Put16(32,Channels*2); Put16(34,16); Put32(40,Size);
+  {$I-}Seek(ActiveOutput,0); Code:=IOResult;{$I+}
+  If Code<>0 Then Bad('Reecriture en-tete WAV impossible.'); WriteBytes(B,44);
+ End;
+
+Begin
+ State:=Nil; FR:=Nil; FI:=Nil; FillChar(Trees,SizeOf(Trees),0); GotTrack:=False;
+ OpenRead(Source); FileLimit:=InputSize; Pos:=0;
+ If (Read32<>$50465341) Or (Read32<>$31303030) Then Bad('Spool ASF attendu.');
+ Count:=Read32; If (Count<1) Or (Count>4) Then Bad('Nombre de pistes invalide.');
+ For I:=1 To Count Do Begin
+  For J:=0 To 9 Do Meta[J]:=Read32;
+  If (Meta[9]<0) Or (Meta[9]>2048) Or (Meta[9]>FileLimit-Pos) Then Bad('Configuration tronquee.');
+  ReadAt(Pos,Extra,Meta[9]); Inc(Pos,Meta[9]);
+  If Meta[1]=2 Then Begin
+   If GotTrack Then Bad('Plusieurs pistes audio non implementees.');
+   If (Meta[2]<>$161) Or (Meta[9]<6) Then Bad('Codec WMAV2 requis.');
+   Flag:=Extra[4]+Extra[5]*256;
+   If Flag<>1 Then Bad('Profil requis: exposants VLC, blocs fixes, sans reservoir.');
+   AudioID:=Meta[0]; Rate:=Meta[5]; Channels:=Meta[6]; Align:=Meta[7]; BitRate:=Meta[8]; GotTrack:=True;
+  End;
+ End;
+ If Not GotTrack Then Bad('Piste WMA2 absente.');
+ If ((Rate<>44100) And (Rate<>48000)) Or ((Channels<>1) And (Channels<>2)) Then
+  Bad('Profil 44100/48000 Hz mono/stereo requis.');
+ If (Align<1) Or (Align>8192) Or (BitRate<=0) Then Bad('Parametres audio invalides.');
+ If (BitRate/(Channels*Rate))*(1+0.6*(Channels-1))<1.16 Then Bad('Tables bas debit/bruit non implementees.');
+ N:=2048; CoefEnd:=N-(N*9 Div 100); BandCount:=0; LastPos:=0;
+ For I:=0 To 24 Do Begin
+  BandPos:=((LongInt(N)*2*Critical[I]+Rate*2) Div (4*Rate))*4; If BandPos>N Then BandPos:=N;
+  If BandPos>LastPos Then Begin BandSize[BandCount]:=BandPos-LastPos; Inc(BandCount); End;
+  LastPos:=BandPos; If LastPos=N Then Break;
+ End;
+ If LastPos<>N Then Bad('Bandes spectrales incompletes.');
+ {$IFNDEF FPC}
+ If MaxAvail<SizeOf(TState) Then Bad('Memoire DOS insuffisante.');
+ {$ENDIF}
+ New(State); FillChar(State^,SizeOf(TState),0); New(FR); New(FI);
+ BuildTree(0,476); BuildTree(1,435); BuildTree(2,121);
+ For C:=0 To 1 Do Begin
+  K:=2; J:=1; V:=0;
+  While K<476-C*41 Do Begin
+   If C=0 Then Flag:=Level4[V] Else Flag:=Level5[V];
+   For I:=0 To Flag-1 Do Begin Runs[C,K]:=I; Levels[C,K]:=J; Inc(K); End;
+   Inc(J); Inc(V);
+  End;
+ End;
+ For I:=0 To N-1 Do State^.Window[I]:=Sin(PiValue*(I+0.5)/(2*N));
+ For I:=-60 To 95 Do Powers[I]:=Exp(Ln(10)*I/16);
+ OpenWrite(Target); SampleCount:=0; FrameCount:=0; WaveHeader;
+ Repeat
+  Track:=Read32; If Track=0 Then Break;
+  Meta[0]:=Read32; Meta[1]:=Read32; PacketSize:=Read32;
+  If (PacketSize<=0) Or (PacketSize>FileLimit-Pos) Then Bad('Paquet tronque.');
+  PacketEnd:=Pos+PacketSize;
+  If Track=AudioID Then Begin
+   If PacketSize Mod Align<>0 Then Bad('Paquet audio non aligne.');
+   While Pos<PacketEnd Do Begin ReadAt(Pos,Buffer,Align); Inc(Pos,Align); DecodeBlock; End;
+  End Else Pos:=PacketEnd;
+ Until False;
+ If FrameCount<2 Then Bad('Trop peu de blocs audio pour enlever l''amorcage.');
+ For I:=0 To N-1 Do For C:=0 To Channels-1 Do Begin
+  If State^.Overlap[C,I]>32767 Then PCM[I*Channels+C]:=32767
+  Else If State^.Overlap[C,I]< -32768 Then PCM[I*Channels+C]:=-32768
+  Else PCM[I*Channels+C]:=Round(State^.Overlap[C,I]);
+ End;
+ OutputPCM; WaveHeader; CloseRead; CloseWrite; Release;
+End;
+
 
 { Native first-picture decoder: FLV AVC / H.264 progressive 8-bit 4:2:0
   I slices, CAVLC, 4x4 transforms. No OS codec or external executable.
@@ -6846,8 +7611,10 @@ Procedure Help;Begin
  WriteLn;
  WriteLn('Syntaxe: FFMPEG [-y|-n] [-f FORMAT] -i ENTREE [options] SORTIE');
  WriteLn;
- WriteLn('Entrees: WAV PCM, MP3, AIFF PCM, VOC PCM, MOD 4 canaux.');
- WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 320 kbit/s.');
+ WriteLn('Entrees: WAV PCM, MP3, AIFF PCM, VOC PCM, MOD 4 canaux, ASF/WMA2.');
+ WriteLn('WMA2: 44100/48000 Hz, mono/stereo, blocs fixes, sans reservoir/bruit.');
+ WriteLn('WMV2 video et encodage FLV1 non encore implementes.');
+ WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 32..320 kbit/s (CBR).');
  WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
  WriteLn('Image: -i entree.flv -vcodec png -vframes 1 -an -f rawvideo -s 106x106 image.png');
  WriteLn('FLV H264 CAVLC 8 bits progressif: premiere image IDR; PNG RGB / GIF 256 couleurs natifs.');
@@ -6861,7 +7628,7 @@ Procedure Help;Begin
  WriteLn('-c:a pcm_s16le|mp3|copy   (-acodec et -codec:a acceptes)');
  WriteLn('-ar HZ   frequence de sortie 4000..192000 (-ar apres -i)');
  WriteLn('-ac 1|2  canaux de sortie (-ac apres -i)');
- WriteLn('-b:a 320k   debit MP3 fixe; -vn; -hide_banner; -y; -n');
+ WriteLn('-b:a 64k   debit MP3 CBR (defaut 320k); -ab 64 accepte; -vn; -hide_banner; -y; -n');
  WriteLn('-f wav|mp3|aiff|voc|libopenmpt avant -i; -f wav|mp3 avant sortie');
  WriteLn('-h, --help, /?, -version, -formats, -codecs');
  WriteLn('HLS local; HTTP/HTTPS sous Windows. Pas de MPEG-TS, DRM ou filtres video.');
@@ -6887,7 +7654,7 @@ BEGIN
  {$ENDIF}
  For J:=0 To 3 Do Temps[J]:='';
  InputPath:=''; OutputPath:=''; InputFormat:=''; OutputFormat:='';
- AudioCodec:=''; PendingFormat:=''; RequestedRate:=0; RequestedChannels:=0;
+ AudioCodec:=''; PendingFormat:=''; RequestedRate:=0; RequestedChannels:=0; RequestedBitRateK:=320;
  Overwrite:=False; NoOverwrite:=False; HideBanner:=False; HasBitrate:=False;
  SavedExit:=ExitProc; ExitProc:=@ExitCleanup; Randomize;
  I:=1;
@@ -6899,7 +7666,7 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.5; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.6; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
@@ -6909,6 +7676,7 @@ BEGIN
    WriteLn(' D  flv (premiere image AVC/CAVLC)');
    WriteLn('  E image2/rawvideo (une image PNG/GIF)');
    WriteLn('  E gif (une image)');
+   WriteLn(' D  asf/wma/wmv (audio WMA2 seulement, profil limite)');
    WriteLn(' D  aiff'); WriteLn(' D  voc');
    WriteLn(' D  libopenmpt (nom compatible, moteur MOD Pascal interne)'); Halt(0);
   End
@@ -6916,9 +7684,10 @@ BEGIN
    WriteLn(' E png (RGB24, sans compression)');
    WriteLn(' E gif (palette RGB 3/3/2, LZW, une image)');
    WriteLn('D  h264 (premiere IDR CAVLC 8 bits 4:2:0 progressive)');
+   WriteLn('D  wmav2 (44100/48000 Hz, VLC, blocs fixes, sans reservoir/bruit)');
    WriteLn('DE pcm_s16le');
    WriteLn('D  pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
-   WriteLn('DE mp3 (encodeur Pascal simple 320 kbit/s)');
+   WriteLn('DE mp3 (encodeur Pascal simple, CBR 32..320 kbit/s)');
    WriteLn('Copie seulement: h264, mpeg4, vp9, aac, opus (voir limites).'); Halt(0);
   End
   Else If Argument='-y' Then Overwrite:=True Else
@@ -6977,8 +7746,21 @@ BEGIN
   Else If (Argument='-b:a') Or (Argument='-ab') Then Begin
    If InputPath='' Then Fail('Debit de sortie attendu apres -i.');
    Value:=Lower(NextArgument);
-   If (Value<>'320k') And (Value<>'320000') Then Fail(
-   'Seul le debit MP3 320k est implemente.');
+   If Value='' Then Fail('Debit audio manquant.');
+   If Value[Length(Value)]='k' Then Begin
+    Delete(Value,Length(Value),1); Val(Value,Number,Code);
+   End Else Begin
+    Val(Value,Number,Code);
+    { Ancienne syntaxe -ab 64: kbit/s. -b:a garde les bits/s. }
+    If (Code=0) And Not ((Argument='-ab') And (Number>=32) And (Number<=320)) Then Begin
+     If Number Mod 1000<>0 Then Code:=1 Else Number:=Number Div 1000;
+    End;
+   End;
+   If Code<>0 Then Fail('Debit audio invalide; exemple -b:a 64k.');
+   Case Number Of
+    32,40,48,56,64,80,96,112,128,160,192,224,256,320: RequestedBitRateK:=Number;
+    Else Fail('Debit MP3 requis: 32,40,48,56,64,80,96,112,128,160,192,224,256,320 kbit/s.');
+   End;
    HasBitrate:=True;
   End
   Else If (Copy(Argument,1,1)='-') Then Fail('Option non prise en charge: '+Argument)
@@ -7009,6 +7791,15 @@ BEGIN
   Temps[0]:=NewTemporary; DownloadHLS(InputPath,Temps[0]); Intermediate:=Temps[0];
   If HLSBase='' Then HLSBase:=LastDownloadURL;
  End;
+ {$IFDEF TEST_WMA2}
+ Temps[0]:=NewTemporary; DemuxASF(Intermediate,Temps[0]);
+ Temps[2]:=NewTemporary; DecodeWMA2Spool(Temps[0],Temps[2]);
+ Commit(Temps[2]); Temps[2]:=''; Halt(0);
+ {$ENDIF}
+ {$IFDEF TEST_ASF_PACKETS}
+ Temps[2]:=NewTemporary; DemuxASF(Intermediate,Temps[2]);
+ Commit(Temps[2]); Temps[2]:=''; Halt(0);
+ {$ENDIF}
  Detected:=Probe(Intermediate);
  If InputFormat='' Then InputFormat:=Detected Else
  If InputFormat<>Detected Then Fail(
@@ -7070,7 +7861,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.5 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.6 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
@@ -7078,6 +7869,10 @@ BEGIN
   Intermediate:=InputPath;
   If InputFormat<>'wav' Then Begin
    Temps[0]:=NewTemporary;
+   If InputFormat='asf' Then Begin
+    Temps[3]:=NewTemporary; DemuxASF(InputPath,Temps[3]);
+    DecodeWMA2Spool(Temps[3],Temps[0]);
+   End Else
    If InputFormat='mp3' Then DecodeMP3(InputPath,Temps[0]) Else
    If InputFormat='aiff' Then DecodeAIFF(InputPath,Temps[0]) Else
    If InputFormat='voc' Then DecodeVOC(InputPath,Temps[0]) Else
@@ -7089,7 +7884,7 @@ BEGIN
    Else
   Begin
    Temps[1]:=NewTemporary; NormalizeWave(Intermediate,Temps[1],True);
-   EncodeMP3(Temps[1],Temps[2]);
+   EncodeMP3(Temps[1],Temps[2],RequestedBitRateK);
   End;
  End;
  Commit(Temps[2]); Temps[2]:='';
