@@ -3335,6 +3335,8 @@ Function FormatName(S: String): String;Begin
  S:=Lower(S); If (S='aif') Or (S='aifc') Then S:='aiff';
  If S='mod' Then S:='libopenmpt';
  If S='m3u8' Then S:='hls';
+ If (S='mpg') Or (S='mpe') Then S:='mpeg';
+ If S='m1v' Then S:='mpeg1video';
  If (S='wmv') Or (S='wma') Then S:='asf';
  FormatName:=S;
 End;
@@ -3435,6 +3437,9 @@ Begin
  OpenRead(Name); Size:=InputSize; N:=1084; If Size<N Then N:=Size;
  FillChar(B,SizeOf(B),0); ReadAt(0,B,N); CloseRead;
  Probe:='';
+ If N>=4 Then If (B[0]=0) And (B[1]=0) And (B[2]=1) And (B[3]=$BA) Then Begin
+  Probe:='mpeg'; Exit;
+ End;
  If N>=16 Then If (B[0]=$30) And (B[1]=$26) And (B[2]=$B2) And (B[3]=$75) And
   (B[4]=$8E) And (B[5]=$66) And (B[6]=$CF) And (B[7]=$11) Then Begin
   Probe:='asf'; Exit;
@@ -5214,6 +5219,188 @@ Begin
  Bad('Aucune premiere image IDR trouvee.');
 End;
 
+
+{ MPEG-1 Systems: bounded pack/PES reader and MPEG-1 Layer III muxer.
+  Packet syntax reference: FFmpeg libavformat/mpeg.c and mpegenc.c.
+  No codec library or external executable is used. }
+Procedure MPEGSystem(Const Source,Target,InKind,OutKind: String);
+Const
+ Rates: Array[0..2] Of LongInt=(44100,48000,32000);
+ BitRates: Array[0..14] Of Integer=(0,32,40,48,56,64,80,96,112,128,160,192,224,256,320);
+Var
+ B: Array[0..4095] Of Byte;
+ H: Array[0..63] Of Byte;
+ First: Array[0..3] Of Byte;
+ P,Limit,Finish,Start,Payload,N,Frames,ClockValue,Remainder,Rate,FrameRate: LongInt;
+ ID,V,K,Selected,FirstCount,Layer,BR,RI,FrameLength,BitPos: Integer;
+ HavePack,HaveMedia,ExtractAudio,ExtractVideo: Boolean;
+
+ Procedure Bad(Const S: String);
+ Begin Fail('MPEG System: '+S); End;
+
+ Procedure Bound(At,Count,Last: LongInt);
+ Begin
+  If (At<0) Or (Count<0) Or (At>Last) Then Bad('Position invalide.');
+  If Count>Last-At Then Bad('Paquet tronque.');
+ End;
+
+ Function At(Position: LongInt): Byte;
+ Var C: Byte;
+ Begin Bound(Position,1,Limit); ReadAt(Position,C,1); At:=C; End;
+
+ Function BE16(Position: LongInt): LongInt;
+ Begin BE16:=LongInt(At(Position))*256+At(Position+1); End;
+
+ Procedure CopyRange(Position,Count: LongInt);
+ Var Take: Word;
+ Begin
+  Bound(Position,Count,Limit);
+  While Count>0 Do Begin
+   Take:=4096; If Count<Take Then Take:=Count;
+   ReadAt(Position,B,Take); WriteBytes(B,Take); Inc(Position,Take); Dec(Count,Take);
+  End;
+ End;
+
+ Procedure CheckTime(Position,Last: LongInt; Prefix: Integer);
+ Begin
+  Bound(Position,5,Last);
+  If (At(Position) Shr 4<>Prefix) Or ((At(Position) And 1)=0) Or
+   ((At(Position+2) And 1)=0) Or ((At(Position+4) And 1)=0) Then
+   Bad('Marqueurs PTS/DTS invalides.');
+ End;
+
+ Procedure PutBits(Value: LongInt; Count: Integer);
+ Var J,Bit: Integer;
+ Begin
+  For J:=Count-1 Downto 0 Do Begin
+   Bit:=(Value Shr J) And 1;
+   H[BitPos Div 8]:=H[BitPos Div 8] Or (Bit Shl (7-(BitPos Mod 8)));
+   Inc(BitPos);
+  End;
+ End;
+
+ Procedure PutTime(Value: LongInt; Prefix: Integer);
+ Begin
+  PutBits(Prefix,4); PutBits(Value Shr 30,3); PutBits(1,1);
+  PutBits((Value Shr 15) And 32767,15); PutBits(1,1);
+  PutBits(Value And 32767,15); PutBits(1,1);
+ End;
+
+ Procedure MuxMP3;
+ Var I: Integer;
+ Begin
+  If NoAudio Then Bad('Entree MP3 incompatible avec -an.');
+  P:=0; Rate:=0; Frames:=0; ClockValue:=45000; Remainder:=0;
+  If Limit>=10 Then If (At(0)=73) And (At(1)=68) And (At(2)=51) Then Begin
+   N:=0; For I:=6 To 9 Do Begin
+    V:=At(I); If V>=128 Then Bad('Taille ID3 invalide.'); N:=N*128+V;
+   End;
+   P:=10+N; If (At(3)=4) And ((At(5) And 16)<>0) Then Inc(P,10);
+   Bound(0,P,Limit);
+  End;
+  If Limit-P>=128 Then If (At(Limit-128)=84) And (At(Limit-127)=65) And
+   (At(Limit-126)=71) Then Dec(Limit,128);
+  While P<Limit Do Begin
+   Bound(P,4,Limit); ReadAt(P,H,4);
+   If (H[0]<>255) Or ((H[1] And $FE)<>$FA) Then
+    Bad('Muxage: MP3 MPEG-1 Layer III requis, sans octets parasites.');
+   BR:=H[2] Shr 4; RI:=(H[2] Shr 2) And 3;
+   If (BR=0) Or (BR=15) Or (RI=3) Then Bad('Entete MP3 invalide.');
+   FrameRate:=Rates[RI]; If Rate=0 Then Rate:=FrameRate;
+   If Rate<>FrameRate Then Bad('Changement de frequence MP3.');
+   FrameLength:=(LongInt(BitRates[BR])*144000) Div Rate+((H[2] Shr 1) And 1);
+   Bound(P,FrameLength,Limit);
+   FillChar(H,SizeOf(H),0); BitPos:=0;
+   PutBits(1,24); PutBits($BA,8); PutTime(ClockValue-45000,2);
+   PutBits(1,1); PutBits(1000,22); PutBits(1,1); WriteBytes(H,12);
+   If Frames=0 Then Begin
+    FillChar(H,SizeOf(H),0); BitPos:=0;
+    PutBits(1,24); PutBits($BB,8); PutBits(9,16);
+    PutBits(1,1); PutBits(1000,22); PutBits(1,1);
+    PutBits(1,6); PutBits(0,1); PutBits(0,1);
+    PutBits(0,1); PutBits(0,1); PutBits(1,1); PutBits(0,5); PutBits(255,8);
+    PutBits($C0,8); PutBits(3,2); PutBits(0,1); PutBits(32,13);
+    WriteBytes(H,15);
+   End;
+   FillChar(H,SizeOf(H),0); BitPos:=0;
+   PutBits(1,24); PutBits($C0,8); PutBits(FrameLength+5,16);
+   PutTime(ClockValue,2); WriteBytes(H,11); CopyRange(P,FrameLength);
+   Inc(P,FrameLength); Inc(Frames);
+   Inc(Remainder,103680000);
+   If ClockValue>2147470000 Then Bad('Duree depassant la limite des horodatages.');
+   Inc(ClockValue,Remainder Div Rate); Remainder:=Remainder Mod Rate;
+  End;
+  If Frames=0 Then Bad('Aucune trame MP3.');
+  H[0]:=0; H[1]:=0; H[2]:=1; H[3]:=$B9; WriteBytes(H,4);
+ End;
+
+Begin
+ OpenRead(Source); Limit:=InputSize; OpenWrite(Target);
+ If InKind='mp3' Then MuxMP3 Else Begin
+  ExtractAudio:=(OutKind='mp3') Or (OutKind='mp2'); ExtractVideo:=OutKind='mpeg1video';
+  P:=0; HavePack:=False; HaveMedia:=False; Selected:=-1; FirstCount:=0;
+  While P<Limit Do Begin
+   Start:=P; Bound(P,4,Limit);
+   If (At(P)<>0) Or (At(P+1)<>0) Or (At(P+2)<>1) Then Bad('Code de debut attendu.');
+   ID:=At(P+3); Inc(P,4);
+   If ID=$B9 Then Begin
+    If P<>Limit Then Bad('Donnees apres la fin du programme.'); Break;
+   End Else If ID=$BA Then Begin
+    Bound(P,8,Limit); CheckTime(P,P+5,2);
+    If ((At(P+5) And 128)=0) Or ((At(P+7) And 1)=0) Then Bad('Pack MPEG-1 invalide.');
+    HavePack:=True; Inc(P,8);
+    If OutKind='mpeg' Then CopyRange(Start,12);
+   End Else Begin
+    If Not HavePack Then Bad('Pack MPEG-1 absent.');
+    Bound(P,2,Limit); N:=BE16(P); Inc(P,2); Bound(P,N,Limit); Finish:=P+N;
+    If ID=$BB Then Begin
+     If (N<6) Or ((N-6) Mod 3<>0) Then Bad('Entete systeme invalide.');
+     If ((At(P) And 128)=0) Or ((At(P+2) And 1)=0) Or
+      ((At(P+4) And 32)=0) Then Bad('Marqueurs systeme invalides.');
+     If OutKind='mpeg' Then CopyRange(Start,Finish-Start);
+    End Else If ID=$BE Then Begin { Padding, omitted when remuxing. }
+    End Else If (ID>=$C0) And (ID<=$EF) Then Begin
+     Payload:=P;
+     While Payload<Finish Do Begin If At(Payload)<>255 Then Break; Inc(Payload); End;
+     Bound(Payload,1,Finish); V:=At(Payload);
+     If (V And $C0)=$40 Then Begin Inc(Payload,2); Bound(Payload,1,Finish); V:=At(Payload); End;
+     If V Shr 4=2 Then Begin CheckTime(Payload,Finish,2); Inc(Payload,5); End
+     Else If V Shr 4=3 Then Begin
+      CheckTime(Payload,Finish,3); CheckTime(Payload+5,Finish,1); Inc(Payload,10);
+     End Else If V=$0F Then Inc(Payload)
+     Else Bad('Entete PES MPEG-1 requise (MPEG-2 non implemente).');
+     If Payload>=Finish Then Bad('Paquet PES sans donnees.');
+     If OutKind='mpeg' Then Begin
+      If Not (((ID<$E0) And NoAudio) Or ((ID>=$E0) And NoVideo)) Then Begin
+       CopyRange(Start,Finish-Start); HaveMedia:=True;
+      End;
+     End Else If (ExtractAudio And (ID<$E0)) Or (ExtractVideo And (ID>=$E0)) Then Begin
+      If Selected=-1 Then Selected:=ID;
+      If ID<>Selected Then Bad('Plusieurs pistes du type demande; selection non implementee.');
+      K:=0;
+      While (FirstCount<4) And (Payload+K<Finish) Do Begin
+       First[FirstCount]:=At(Payload+K); Inc(FirstCount); Inc(K);
+      End;
+      CopyRange(Payload,Finish-Payload); HaveMedia:=True;
+     End;
+    End Else Bad('Type de paquet non pris en charge (flux prives/MPEG-2).');
+    P:=Finish;
+   End;
+  End;
+  If Not HaveMedia Then Bad('Aucune piste compatible.');
+  If ExtractAudio Then Begin
+   If FirstCount<4 Then Bad('Flux audio incomplet.');
+   Layer:=(First[1] Shr 1) And 3;
+   If (First[0]<>255) Or ((First[1] And $F8)<>$F8) Or
+    ((OutKind='mp3') And (Layer<>1)) Or ((OutKind='mp2') And (Layer<>2)) Then
+    Bad('Codec audio incompatible avec la sortie demandee.');
+  End;
+  If ExtractVideo Then If (FirstCount<4) Or (First[0]<>0) Or (First[1]<>0) Or
+   (First[2]<>1) Or (First[3]<>$B3) Then Bad('Sequence video MPEG attendue.');
+  If OutKind='mpeg' Then Begin H[0]:=0; H[1]:=0; H[2]:=1; H[3]:=$B9; WriteBytes(H,4); End;
+ End;
+ CloseRead; CloseWrite;
+End;
 
 Procedure CopyFile(Const Source,Target: String);
 Var
@@ -7620,6 +7807,9 @@ Begin
  WriteLn(' D  libopenmpt      MOD 4 canaux, moteur Pascal interne (alias: mod)');
  WriteLn(' DE mp3             MPEG Layer III; encodage MPEG-1 CBR 32..320 kbit/s');
  WriteLn(' DE mp4             MP4 H264/MPEG4, AAC/MP3, VP9/Opus; copie de flux');
+ WriteLn(' DE mpeg            MPEG-1 System format (copie PES / muxage MP3)');
+ WriteLn('  E mpeg1video      Flux video extrait de MPEG System (alias: m1v)');
+ WriteLn('  E mp2             Flux Layer II extrait de MPEG System');
  WriteLn('  E png             PNG RGB24, une image');
  WriteLn('  E rawvideo        Alias de sortie PNG/GIF; pas de pixels bruts');
  WriteLn(' D  voc             Creative Voice PCM');
@@ -7642,6 +7832,8 @@ Procedure Help;Begin
  WriteLn('WMV2 video et encodage FLV1 non encore implementes.');
  WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 32..320 kbit/s (CBR).');
  WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
+ WriteLn('MPEG-1 System: -i entree.mpg -c copy sortie.mpg|video.m1v|audio.mp2|audio.mp3');
+ WriteLn('Muxage MPEG-1 System: -i audio.mp3 -c copy -f mpeg sortie.mpg');
  WriteLn('Image: -i entree.flv -vcodec png -vframes 1 -an -f rawvideo -s 106x106 image.png');
  WriteLn('FLV H264 CAVLC 8 bits progressif: premiere image IDR; PNG RGB / GIF 256 couleurs natifs.');
  WriteLn('-vcodec png|gif (-c:v/-codec:v); -frames:v 1; -s optionnel; -f image2 accepte.');
@@ -7692,7 +7884,7 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.6; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.7; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
@@ -7713,6 +7905,9 @@ BEGIN
   If Argument='-hide_banner' Then HideBanner:=True Else
   If Argument='-vn' Then NoVideo:=True Else
   If Argument='-an' Then NoAudio:=True Else
+  If Argument='-4mv' Then Begin
+   Fail('-4mv exige un encodeur MPEG-4 Part 2 avec mouvements 8x8; non implemente.');
+  End Else
   If (Argument='-vcodec') Or (Argument='-c:v') Or (Argument='-codec:v') Then Begin
    If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
    VideoCodec:=Lower(NextArgument);
@@ -7824,6 +8019,23 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If (InputFormat='mpeg') Or (OutputFormat='mpeg') Then Begin
+  If IsHTTP(InputPath) Or (HLSBase<>'') Then Fail('MPEG System: entree locale requise.');
+  If (AudioCodec<>'copy') Or Not AllStreams Then Fail('MPEG System exige -c copy.');
+  If (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
+   (VideoCodec<>'') Or (VideoFrames<>0) Or (ImageWidth<>0) Then
+   Fail('MPEG System: copie des flux uniquement, sans reencodage ni filtres.');
+  If NoAudio And NoVideo Then Fail('Aucune piste selectionnee (-an et -vn).');
+  If InputFormat='mpeg' Then Begin
+   If (OutputFormat<>'mpeg') And (OutputFormat<>'mp3') And
+    (OutputFormat<>'mp2') And (OutputFormat<>'mpeg1video') Then
+    Fail('Sorties MPEG System: mpeg, mp3, mp2 ou mpeg1video.');
+   If NoAudio And ((OutputFormat='mp3') Or (OutputFormat='mp2')) Then Fail('-an exclut la sortie audio.');
+   If NoVideo And (OutputFormat='mpeg1video') Then Fail('-vn exclut la sortie video.');
+  End Else If InputFormat<>'mp3' Then Fail('Muxage MPEG System: entree MP3 MPEG-1 requise.');
+  Temps[2]:=NewTemporary; MPEGSystem(Intermediate,Temps[2],InputFormat,OutputFormat);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('Sortie MPEG creee: ',OutputPath); Halt(0);
+ End;
  If (VideoCodec='png') Or (VideoCodec='gif') Or (OutputFormat='png') Or
   (OutputFormat='gif') Or (OutputFormat='image2') Then Begin
   If InputFormat<>'flv' Then Fail('Extraction PNG/GIF: entree FLV AVC/H264 requise.');
@@ -7879,7 +8091,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.6 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.7 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
