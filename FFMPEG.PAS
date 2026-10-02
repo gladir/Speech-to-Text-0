@@ -1,38 +1,58 @@
-{ FFMPEG Pascal: audio natif et copie HLS fMP4, pas le binaire FFmpeg original.
-  Conventions CLI et conteneurs consultees dans C:/SOURCE/ffmpeg (8.0.git).
-  Moteurs proceduraux du projet integres ci-dessous. Voir FFMPEG.md. }
+{ @author: Sylvain Maltais (support@gladir.com)
+ @created: 2026
+ @version: 1.00
+ @website(https://www.gladir.com/speech-to-text-0)
+ @abstract(Target: Free Pascal 3.2
+ @description: FFMPEG Pascal: audio natif et copie HLS fMP4, pas le binaire FFmpeg original. }
+
 Program FFMPEG;
-{$IFDEF FPC}{$MODE TP}{$ENDIF}
-{$IFNDEF FPC}{$N+}{$E+}{$M 32768,0,655360}{$ENDIF}
+
+{$IFDEF FPC}
+ {$MODE TP}
+{$ENDIF}
+{$IFNDEF FPC}
+ {$N+}{$E+}{$M 32768,0,655360}
+{$ENDIF}
+
 Uses DOS;
 
 {$IFDEF MSWINDOWS}
 { API du systeme declaree directement, sans unite Windows/WinInet. }
-Function InternetOpenA(Agent: PChar; Access: LongWord; Proxy,Bypass: PChar;
- Flags: LongWord): Pointer; stdcall; external 'wininet.dll';
-Function InternetOpenUrlA(Session: Pointer; URL,Headers: PChar;
- HeaderLength,Flags: LongWord; Context: PtrUInt): Pointer; stdcall; external 'wininet.dll';
-Function InternetReadFile(Request: Pointer; Buffer: Pointer; Count: LongWord;
- var Actual: LongWord): LongBool; stdcall; external 'wininet.dll';
-Function InternetCloseHandle(Handle: Pointer): LongBool; stdcall; external 'wininet.dll';
-Function HttpQueryInfoA(Request: Pointer; Info: LongWord; Buffer: Pointer;
- var Size,Index: LongWord): LongBool; stdcall; external 'wininet.dll';
-Function InternetSetOptionA(Handle: Pointer; Option: LongWord; Buffer: Pointer;
- Size: LongWord): LongBool; stdcall; external 'wininet.dll';
-Function InternetQueryOptionA(Handle: Pointer; Option: LongWord; Buffer: Pointer;
- var Size: LongWord): LongBool; stdcall; external 'wininet.dll';
+
+ Function InternetOpenA(Agent: PChar; Access: LongWord; Proxy,Bypass: PChar;
+                        Flags: LongWord): Pointer;
+ stdcall; external 'wininet.dll';
+
+ Function InternetOpenUrlA(Session: Pointer; URL,Headers: PChar;
+                           HeaderLength,Flags: LongWord; Context: PtrUInt): Pointer;
+ stdcall; external 'wininet.dll';
+
+ Function InternetReadFile(Request: Pointer; Buffer: Pointer; Count: LongWord;
+                           Var Actual: LongWord): LongBool;
+ stdcall; external 'wininet.dll';
+
+ Function InternetCloseHandle(Handle: Pointer): LongBool;
+ stdcall; external 'wininet.dll';
+
+ Function HttpQueryInfoA(Request: Pointer; Info: LongWord; Buffer: Pointer;
+                         Var Size,Index: LongWord): LongBool;
+ stdcall; external 'wininet.dll';
+
+ Function InternetSetOptionA(Handle: Pointer; Option: LongWord; Buffer: Pointer;
+                             Size: LongWord): LongBool;
+ stdcall; external 'wininet.dll';
+
+ Function InternetQueryOptionA(Handle: Pointer; Option: LongWord; Buffer: Pointer;
+                               Var Size: LongWord): LongBool;
+ stdcall; external 'wininet.dll';
 {$ENDIF}
-
-
 { Moteur integre depuis MP32WAV.PAS }
-Procedure DecodeMP3(const Source,Target: string);
 
-
+Procedure DecodeMP3(Const Source,Target: String);
 Const
  MaxFrame = 2048;
  MaxWaveData = 2147483600;
  MP3Pi = 3.14159265358979323846;
-
 Type
  TBytes = Array[0..4095] Of Byte;
  PBytes = ^TBytes;
@@ -77,7 +97,6 @@ Type
   CS, CA: Array[0..7] Of Double;
  End;
  PTransforms = ^TTransforms;
-
 Const
  HuffTree: Array[0..2803] Of Word = (
  $0201,$0000,$0201,$0010,$0201,$0001,$0011,$0201,$0000,$0401,$0201,$0010,
@@ -468,7 +487,6 @@ Const
  (6,5,5,5,6,5,5,5,6,5,7,3,11,10,0,0,7,7,7,0,6,6,6,3,8,8,5,0),
  (8,9,6,12,6,9,9,9,6,9,12,6,15,18,0,0,6,15,12,0,6,12,9,6,6,18,9,0),
  (9,9,6,12,9,9,9,9,9,9,12,6,18,18,0,0,12,12,12,0,12,9,9,6,15,12,9,0));
-
 Var
  InputFile, OutputFile: File;
  InputName, OutputName: String;
@@ -1219,23 +1237,19 @@ Begin
  WriteLn(FirstHeader.Rate, ' Hz, ', FirstHeader.Channels, ' canal/canaux, PCM 16 bits, ',
  Written, ' octets audio.');
 End;
-
-
 Begin
- InputName := Source; OutputName := Target; InputOpen := False; OutputOpen := False; OutputCreated := False; Written := 0; Frames := 0;
+ InputName := Source; OutputName := Target; InputOpen := False; OutputOpen := False;
+ OutputCreated := False; Written := 0; Frames := 0;
  Convert;
 End;
-
 { Moteur integre depuis AIFF2WAV.PAS }
-Procedure DecodeAIFF(const Source,Target: string);
 
-
+Procedure DecodeAIFF(Const Source,Target: String);
 Type
  TAudioFormat = Record
   Channels: Integer;
   Rate: LongInt;
  End;
-
 Var
  InputFile, OutputFile: File;
  InputName, OutputName: String;
@@ -1259,6 +1273,7 @@ Begin
   OutputCreated := False;
  End;
 End;
+
 Procedure Fail(MessageText: String);Begin
  WriteLn('AIFF2WAV: ', MessageText); Cleanup; Halt(1);
 End;
@@ -1513,23 +1528,19 @@ Begin
  WriteLn(Header.Rate,' Hz, ',Header.Channels,' canal/canaux, PCM ',Bits,' bits, ',
  FrameCount,' trames.');
 End;
-
-
 Begin
- InputName := Source; OutputName := Target; InputOpen := False; OutputOpen := False; OutputCreated := False;
+ InputName := Source; OutputName := Target; InputOpen := False; OutputOpen := False;
+ OutputCreated := False;
  Convert;
 End;
-
 { Moteur integre depuis VOC2WAV.PAS }
-Procedure DecodeVOC(const Source,Target: string);
 
-
+Procedure DecodeVOC(Const Source,Target: String);
 Type
  TAudioFormat = Record
   Channels: Integer;
   Rate: LongInt;
  End;
-
 Var
  InputFile, OutputFile: File;
  InputName, OutputName: String;
@@ -1554,6 +1565,7 @@ Begin
   OutputCreated := False;
  End;
 End;
+
 Procedure Fail(MessageText: String);Begin
  WriteLn('VOC2WAV: ', MessageText); Cleanup; Halt(1);
 End;
@@ -1578,7 +1590,8 @@ Begin
 End;
 
 Procedure Help;Begin
- WriteLn('VOC2WAV - Cette commande permet de lancer le convertisseur Creative VOC PCM vers WAV PCM16');
+ WriteLn(
+ 'VOC2WAV - Cette commande permet de lancer le convertisseur Creative VOC PCM vers WAV PCM16');
  WriteLn;
  WriteLn('Syntaxe : VOC2WAV entree.voc [sortie.wav]');
  WriteLn;
@@ -1823,7 +1836,7 @@ Begin
   4: If Size <> 2 Then Fail('Taille de marqueur VOC incorrecte.');
   5:
   Begin
- { Texte descriptif ignore. } 
+ { Texte descriptif ignore. }
   End;
   6:
   Begin
@@ -1879,23 +1892,19 @@ WriteLn('WAV cree: ',OutputName);
 WriteLn(Header.Rate,' Hz, ',Header.Channels,' canal/canaux, PCM 16 bits, ',Written Div (
 Header.Channels*2),' trames.');
 End;
-
-
 Begin
- InputName := Source; OutputName := Target; InputOpen := False; OutputOpen := False; OutputCreated := False;
+ InputName := Source; OutputName := Target; InputOpen := False; OutputOpen := False;
+ OutputCreated := False;
  Convert;
 End;
-
 { Moteur integre depuis MOD2WAV.PAS }
-Procedure DecodeMOD(const Source,Target: string);
 
-
+Procedure DecodeMOD(Const Source,Target: String);
 Type
  TAudioFormat = Record
   Channels: Integer;
   Rate: LongInt;
  End;
-
 Var
  InputFile, OutputFile: File;
  InputName, OutputName: String;
@@ -1920,6 +1929,7 @@ Begin
   OutputCreated := False;
  End;
 End;
+
 Procedure Fail(MessageText: String);Begin
  WriteLn('MOD2WAV: ', MessageText); Cleanup; Halt(1);
 End;
@@ -1944,7 +1954,8 @@ Begin
 End;
 
 Procedure Help;Begin
- WriteLn('MOD2WAV - Cette commande permet de lancer le convertisseur MOD ProTracker vers WAV PCM16');
+ WriteLn(
+ 'MOD2WAV - Cette commande permet de lancer le convertisseur MOD ProTracker vers WAV PCM16');
  WriteLn;
  WriteLn('Syntaxe: MOD2WAV entree.mod [sortie.wav]');
  WriteLn;
@@ -2376,40 +2387,35 @@ Begin
  FlushMix;
  If Written = 0 Then Fail('Aucune duree audio MOD.');
  {$I-}Seek(OutputFile,0); Code := IOResult;{$I+}
- if Code <> 0 Then Fail('Positionnement entete WAV impossible.');
+ If Code <> 0 Then Fail('Positionnement entete WAV impossible.');
  WriteWaveHeader(Written,16);
  {$I-}Close(InputFile); Code := IOResult;{$I+} InputOpen := False;
- if Code <> 0 Then Fail('Fermeture MOD impossible.');
+ If Code <> 0 Then Fail('Fermeture MOD impossible.');
  {$I-}Close(OutputFile); Code := IOResult;{$I+} OutputOpen := False;
- if Code <> 0 Then Fail('Fermeture WAV impossible.');
+ If Code <> 0 Then Fail('Fermeture WAV impossible.');
  OutputCreated := False;
  WriteLn('WAV cree: ',OutputName);
- WriteLn('PCM16 stereo 22050 Hz, ',Rendered,' trames, ',Rendered/MixRate:0:3,' secondes.');
+ WriteLn('PCM16 stereo 22050 Hz, ',Rendered,' trames, ',Rendered/MixRate:0:3,' secondes.')
+ ;
 End;
-
-
-
 Begin
- InputName := Source; OutputName := Target; InputOpen := False; OutputOpen := False; OutputCreated := False;
+ InputName := Source; OutputName := Target; InputOpen := False; OutputOpen := False;
+ OutputCreated := False;
  Convert;
 End;
-
 { Moteur integre depuis WAV2MP3.PAS }
-Procedure EncodeMP3(const Source,Target: string);
 
-
+Procedure EncodeMP3(Const Source,Target: String);
 Type
  TAudioFormat = Record
   Channels: Integer;
   Rate: LongInt;
  End;
-
 Var
  InputFile, OutputFile: File;
  InputName, OutputName: String;
  InputOpen, OutputOpen, OutputCreated: Boolean;
  InputSize, Written: LongInt;
- 
  Header: TAudioFormat;
 
 Procedure Cleanup;
@@ -2428,6 +2434,7 @@ Begin
   OutputCreated := False;
  End;
 End;
+
 Procedure Fail(MessageText: String);Begin
  WriteLn('WAV2MP3: ', MessageText); Cleanup; Halt(1);
 End;
@@ -2451,8 +2458,7 @@ Begin
  DefaultOutput := Name + '.mp3';
 End;
 
-Procedure Help;
-Begin
+Procedure Help;Begin
  WriteLn('WAV2MP3 entree.wav [sortie.mp3]');
  WriteLn('Encodeur MPEG-1 Layer III integre, 320 kbit/s, mono/stereo.');
  WriteLn('WAV PCM entier 8/16/24/32 bits, 32000/44100/48000 Hz.');
@@ -2482,6 +2488,7 @@ Begin
  If (ErrorCode <> 0) Or (Actual <> Count) Then Fail('Ecriture MP3 incomplete.')
  ;
 End;
+
 Const
  HuffTree: Array[0..2803] Of Word = (
  $0201,$0000,$0201,$0010,$0201,$0001,$0011,$0201,$0000,$0401,$0201,$0010,
@@ -2819,28 +2826,29 @@ Const
  4,5,6,7,8,9,11,13,0,0);
 
 Type
- TState = record
-  History: array[0..1,0..511] of Double;
-  Previous: array[0..1,0..575] of Double;
-  Spectrum: array[0..1,0..1,0..575] of Double;
-  Quantized: array[0..1,0..1,0..575] of Integer;
-  Gain, TableNumber, PairCount, BitCount: array[0..1,0..1] of Integer;
+ TState = Record
+  History: Array[0..1,0..511] Of Double;
+  Previous: Array[0..1,0..575] Of Double;
+  Spectrum: Array[0..1,0..1,0..575] Of Double;
+  Quantized: Array[0..1,0..1,0..575] Of Integer;
+  Gain, TableNumber, PairCount, BitCount: Array[0..1,0..1] Of Integer;
  End;
  PState = ^TState;
- TTransforms = record
-  Filter: array[0..31,0..63] of Double;
-  MDCT: array[0..17,0..35] of Double;
-  CS, CA: array[0..7] of Double;
+ TTransforms = Record
+  Filter: Array[0..31,0..63] Of Double;
+  MDCT: Array[0..17,0..35] Of Double;
+  CS, CA: Array[0..7] Of Double;
  End;
  PTransforms = ^TTransforms;
+
 Var
  State: PState;
  Transform: PTransforms;
  WAVPosition, WAVRemaining: LongInt;
  WAVBits, WAVAlign, RateIndex: Integer;
- Codes: array[0..1,0..255] of LongInt;
- CodeLengths: array[0..1,0..255] of Byte;
- Frame: array[0..2047] of Byte;
+ Codes: Array[0..1,0..255] Of LongInt;
+ CodeLengths: Array[0..1,0..255] Of Byte;
+ Frame: Array[0..2047] Of Byte;
  BitPosition, FrameBytes: Integer;
  PaddingRemainder, EncodedFrames: LongInt;
 
@@ -2931,50 +2939,58 @@ Begin
  'Donnees PCM vides ou echantillon incomplet.');
  WAVPosition := DataStart; WAVRemaining := DataSize;
  WAVBits := Bits; WAVAlign := BlockAlign;
- case Header.Rate of 44100: RateIndex := 0; 48000: RateIndex := 1; 32000: RateIndex := 2;
- else Fail('Frequence MPEG-1 requise: 32000, 44100 ou 48000 Hz.'); End;
+ Case Header.Rate Of 44100: RateIndex := 0; 48000: RateIndex := 1; 32000: RateIndex := 2;
+ Else Fail('Frequence MPEG-1 requise: 32000, 44100 ou 48000 Hz.');
+End;
 End;
 
 Procedure PutBits(Value: LongInt; Count: Integer);
-Var I: Integer;
+Var
+ I: Integer;
 Begin
- if BitPosition+Count > FrameBytes*8 Then Fail('Depassement de trame MP3.');
- for I := Count-1 downto 0 do Begin
-  if ((Value shr I) and 1) <> 0 Then
-   Frame[BitPosition div 8] := Frame[BitPosition div 8] or (1 shl (7-(BitPosition mod 8)));
+ If BitPosition+Count > FrameBytes*8 Then Fail('Depassement de trame MP3.');
+ For I := Count-1 Downto 0 Do Begin
+  If ((Value Shr I) And 1) <> 0 Then   Frame[BitPosition Div 8] :=
+  Frame[BitPosition Div 8] Or (1 Shl (7-(BitPosition Mod 8)));
   Inc(BitPosition);
  End;
 End;
 
 Procedure BuildCodes(SetIndex, Table, Node, Length: Integer; Value: LongInt);
-Var Leaf: Word; Direction, Next, Jump: Integer;
+Var
+ Leaf: Word;
+ Direction, Next, Jump: Integer;
 Begin
- if (Node < 0) or (Node >= HuffLength[Table]) or (Length > 24) Then Fail('Table Huffman invalide.');
+ If (Node < 0) Or (Node >= HuffLength[Table]) Or (Length > 24) Then Fail(
+ 'Table Huffman invalide.');
  Leaf := HuffTree[HuffOffset[Table]+Node];
- if Leaf < 256 Then Begin
+ If Leaf < 256 Then Begin
   Codes[SetIndex,Leaf] := Value; CodeLengths[SetIndex,Leaf] := Length; Exit;
  End;
- for Direction := 0 to 1 do Begin
+ For Direction := 0 To 1 Do Begin
   Next := Node;
-  repeat
-   Leaf := HuffTree[HuffOffset[Table]+Next];
-   if Direction = 0 Then Jump := Leaf shr 8 else Jump := Leaf and 255;
-   Inc(Next,Jump);
-  until Jump < 250;
+  Repeat
+  Leaf := HuffTree[HuffOffset[Table]+Next];
+  If Direction = 0 Then Jump := Leaf Shr 8 Else Jump := Leaf And 255;
+  Inc(Next,Jump);
+  Until Jump < 250;
   BuildCodes(SetIndex,Table,Next,Length+1,Value*2+Direction);
  End;
 End;
 
 Procedure InitializeEncoder;
-Const CI: array[0..7] of Double = (-0.6,-0.535,-0.33,-0.185,-0.095,-0.041,-0.0142,-0.0037);
-Var I,J: Integer;
+Const
+ CI: Array[0..7] Of Double = (-0.6,-0.535,-0.33,-0.185,-0.095,-0.041,-0.0142,-0.0037);
+Var
+ I,J: Integer;
 Begin
  New(State); New(Transform); FillChar(State^,SizeOf(State^),0);
- for I := 0 to 31 do for J := 0 to 63 do
-  Transform^.Filter[I,J] := Cos((2*I+1)*(16-J)*Pi/64);
- for I := 0 to 17 do for J := 0 to 35 do
-  Transform^.MDCT[I,J] := Sin(Pi*(J+0.5)/36)*Cos(Pi*(2*J+19)*(2*I+1)/72)/9;
- for I := 0 to 7 do Begin
+ For I := 0 To 31 Do
+ For J := 0 To 63 Do  Transform^.Filter[I,J] := Cos((2*I+1)*(16-J)*Pi/64);
+ For I := 0 To 17 Do
+ For J := 0 To 35 Do  Transform^.MDCT[I,J] := Sin(Pi*(J+0.5)/36)*Cos(Pi*(2*J+19)*(2*I+1)/
+ 72)/9;
+ For I := 0 To 7 Do Begin
   Transform^.CS[I] := 1/Sqrt(1+Sqr(CI[I]));
   Transform^.CA[I] := CI[I]*Transform^.CS[I];
  End;
@@ -2983,57 +2999,65 @@ Begin
 End;
 
 Procedure AnalyzeGranule(G: Integer);
-Var Raw: array[0..255] of Byte;
- Current: array[0..1,0..575] of Double;
- Y: array[0..63] of Double;
- T,C,I,J,K,SB,N,Bps,Take: Integer; Sample: LongInt; Sum,A,B: Double;
+Var
+ Raw: Array[0..255] Of Byte;
+ Current: Array[0..1,0..575] Of Double;
+ Y: Array[0..63] Of Double;
+ T,C,I,J,K,SB,N,Bps,Take: Integer;
+ Sample: LongInt;
+ Sum,A,B: Double;
 Begin
- Bps := WAVBits div 8;
- for T := 0 to 17 do Begin
+ Bps := WAVBits Div 8;
+ For T := 0 To 17 Do Begin
   Take := 32*WAVAlign;
-  if WAVRemaining < Take Then Take := WAVRemaining;
+  If WAVRemaining < Take Then Take := WAVRemaining;
   FillChar(Raw,SizeOf(Raw),0);
-  if Take > 0 Then Begin ReadAt(WAVPosition,Raw,Take); Inc(WAVPosition,Take); Dec(WAVRemaining,Take); End;
-  for C := 0 to Header.Channels-1 do Begin
-   for I := 511 downto 32 do State^.History[C,I] := State^.History[C,I-32];
-   for I := 0 to 31 do Begin
+  If Take > 0 Then Begin
+   ReadAt(WAVPosition,Raw,Take); Inc(WAVPosition,Take); Dec(WAVRemaining,Take);
+  End;
+  For C := 0 To Header.Channels-1 Do Begin
+   For I := 511 Downto 32 Do State^.History[C,I] := State^.History[C,I-32];
+   For I := 0 To 31 Do Begin
     K := I*WAVAlign+C*Bps; Sample := 0;
-    if K < Take Then Begin
-     if WAVBits = 8 Then Sample := (LongInt(Raw[K])-128)*256
-     else Begin
+    If K < Take Then Begin
+     If WAVBits = 8 Then Sample := (LongInt(Raw[K])-128)*256
+      Else
+     Begin
       Sample := LongInt(Raw[K+Bps-2])+LongInt(Raw[K+Bps-1])*256;
-      if Sample >= 32768 Then Dec(Sample,65536);
+      If Sample >= 32768 Then Dec(Sample,65536);
      End;
     End;
     State^.History[C,31-I] := Sample/32768;
    End;
-   for I := 0 to 63 do Begin
+   For I := 0 To 63 Do Begin
     Sum := 0;
-    for J := 0 to 7 do Begin
+    For J := 0 To 7 Do Begin
      K := I+J*64;
      Sum := Sum+State^.History[C,K]*SynthWindow[K]/32;
     End;
     Y[I] := Sum;
    End;
-   for SB := 0 to 31 do Begin
+   For SB := 0 To 31 Do Begin
     Sum := 0;
-    for I := 0 to 63 do Sum := Sum+Y[I]*Transform^.Filter[SB,I];
-    if Odd(SB) and Odd(T) Then Sum := -Sum;
+    For I := 0 To 63 Do Sum := Sum+Y[I]*Transform^.Filter[SB,I];
+    If Odd(SB) And Odd(T) Then Sum := -Sum;
     Current[C,SB*18+T] := Sum;
    End;
   End;
  End;
- for C := 0 to Header.Channels-1 do Begin
-  for SB := 0 to 31 do for I := 0 to 17 do Begin
+ For C := 0 To Header.Channels-1 Do Begin
+  For SB := 0 To 31 Do
+  For I := 0 To 17 Do Begin
    Sum := 0;
-   for J := 0 to 17 do Sum := Sum+
-    State^.Previous[C,SB*18+J]*Transform^.MDCT[I,J]+
-    Current[C,SB*18+J]*Transform^.MDCT[I,J+18];
+   For J := 0 To 17 Do Sum := Sum+
+   State^.Previous[C,SB*18+J]*Transform^.MDCT[I,J]+
+   Current[C,SB*18+J]*Transform^.MDCT[I,J+18];
    State^.Spectrum[G,C,SB*18+I] := Sum;
   End;
   Move(Current[C],State^.Previous[C],SizeOf(Current[C]));
   { Inverse des papillons de reduction d'alias du decodeur. }
-  for SB := 1 to 31 do for I := 0 to 7 do Begin
+  For SB := 1 To 31 Do
+  For I := 0 To 7 Do Begin
    K := SB*18-1-I; N := SB*18+I;
    A := State^.Spectrum[G,C,K]; B := State^.Spectrum[G,C,N];
    State^.Spectrum[G,C,K] := A*Transform^.CS[I]+B*Transform^.CA[I];
@@ -3042,733 +3066,910 @@ Begin
  End;
 End;
 
-Function Magnitude(G,C,I: Integer): Integer;
-Begin Magnitude := Abs(State^.Quantized[G,C,I]); End;
+Function Magnitude(G,C,I: Integer): Integer;Begin
+ Magnitude := Abs(State^.Quantized[G,C,I]);
+End;
 
 Function HuffCost(G,C,Table,Pairs: Integer): Integer;
-Var I,X,Y,L,SetIndex,Cost,Limit: Integer;
+Var
+ I,X,Y,L,SetIndex,Cost,Limit: Integer;
 Begin
- if Table = 15 Then Begin SetIndex := 0; Limit := 15; End
- else Begin SetIndex := 1; Limit := 15+(1 shl HuffLinBits[Table])-1; End;
+ If Table = 15 Then Begin
+  SetIndex := 0; Limit := 15;
+ End
+  Else
+ Begin
+  SetIndex := 1; Limit := 15+(1 Shl HuffLinBits[Table])-1;
+ End;
  Cost := 0;
- for I := 0 to Pairs-1 do Begin
+ For I := 0 To Pairs-1 Do Begin
   X := Magnitude(G,C,I*2); Y := Magnitude(G,C,I*2+1);
-  if (X > Limit) or (Y > Limit) Then Begin HuffCost := 30000; Exit; End;
-  if X > 0 Then Inc(Cost); if Y > 0 Then Inc(Cost);
-  if Table <> 15 Then Begin
-   if X >= 15 Then Inc(Cost,HuffLinBits[Table]);
-   if Y >= 15 Then Inc(Cost,HuffLinBits[Table]);
+  If (X > Limit) Or (Y > Limit) Then Begin
+   HuffCost := 30000; Exit;
   End;
-  if X > 15 Then X := 15; if Y > 15 Then Y := 15;
+  If X > 0 Then Inc(Cost); If Y > 0 Then Inc(Cost);
+  If Table <> 15 Then Begin
+   If X >= 15 Then Inc(Cost,HuffLinBits[Table]);
+   If Y >= 15 Then Inc(Cost,HuffLinBits[Table]);
+  End;
+  If X > 15 Then X := 15; If Y > 15 Then Y := 15;
   L := CodeLengths[SetIndex,X*16+Y]; Inc(Cost,L);
  End;
  HuffCost := Cost;
 End;
 
 Procedure Quantize(G,C,Budget: Integer);
-Var Powered: array[0..575] of Double;
+Var
+ Powered: Array[0..575] Of Double;
  I,Gain,Pairs,Table,BestTable,BestBits,Cost,Q: Integer;
- Peak,Scale,V: Double; TooLarge: Boolean;
+ Peak,Scale,V: Double;
+ TooLarge: Boolean;
 Begin
  Peak := 0;
- for I := 0 to 575 do Begin
+ For I := 0 To 575 Do Begin
   V := Abs(State^.Spectrum[G,C,I]);
-  if V > 0 Then Powered[I] := Exp(Ln(V)*0.75) else Powered[I] := 0;
-  if Powered[I] > Peak Then Peak := Powered[I];
+  If V > 0 Then Powered[I] := Exp(Ln(V)*0.75) Else Powered[I] := 0;
+  If Powered[I] > Peak Then Peak := Powered[I];
  End;
  Gain := 0;
- if Peak > 0 Then Gain := Trunc(210+Ln(Peak/8205)*16/(3*Ln(2)));
- if Gain < 0 Then Gain := 0;
- repeat
-  if Gain > 255 Then Fail('Quantification MP3 impossible.');
-  Scale := Exp((210-Gain)*3*Ln(2)/16); TooLarge := False; Pairs := 0;
-  for I := 0 to 575 do Begin
-   V := Powered[I]*Scale+0.4054;
-   if V > 8206 Then Begin TooLarge := True; Q := 8206; End else Q := Trunc(V);
-   if Q <> 0 Then Pairs := I div 2+1;
-   if State^.Spectrum[G,C,I] < 0 Then Q := -Q;
-   State^.Quantized[G,C,I] := Q;
-  End;
-  BestBits := 30000; BestTable := 0;
-  if not TooLarge Then Begin
-   if Pairs = 0 Then BestBits := 0
-   else Begin
-    BestTable := 15; BestBits := HuffCost(G,C,15,Pairs);
-    for Table := 24 to 31 do Begin
-     Cost := HuffCost(G,C,Table,Pairs);
-     if Cost < BestBits Then Begin BestBits := Cost; BestTable := Table; End;
+ If Peak > 0 Then Gain := Trunc(210+Ln(Peak/8205)*16/(3*Ln(2)));
+ If Gain < 0 Then Gain := 0;
+ Repeat
+ If Gain > 255 Then Fail('Quantification MP3 impossible.');
+ Scale := Exp((210-Gain)*3*Ln(2)/16); TooLarge := False; Pairs := 0;
+ For I := 0 To 575 Do Begin
+  V := Powered[I]*Scale+0.4054;
+  If V > 8206 Then Begin
+   TooLarge := True; Q := 8206;
+  End Else Q := Trunc(V);
+  If Q <> 0 Then Pairs := I Div 2+1;
+  If State^.Spectrum[G,C,I] < 0 Then Q := -Q;
+  State^.Quantized[G,C,I] := Q;
+ End;
+ BestBits := 30000; BestTable := 0;
+ If Not TooLarge Then Begin
+  If Pairs = 0 Then BestBits := 0
+   Else
+  Begin
+   BestTable := 15; BestBits := HuffCost(G,C,15,Pairs);
+   For Table := 24 To 31 Do Begin
+    Cost := HuffCost(G,C,Table,Pairs);
+    If Cost < BestBits Then Begin
+     BestBits := Cost; BestTable := Table;
     End;
    End;
   End;
-  if BestBits <= Budget Then Break;
-  Inc(Gain);
- until False;
+ End;
+ If BestBits <= Budget Then Break;
+ Inc(Gain);
+ Until False;
  State^.Gain[G,C] := Gain; State^.PairCount[G,C] := Pairs;
  State^.TableNumber[G,C] := BestTable; State^.BitCount[G,C] := BestBits;
 End;
 
 Procedure EncodePairs(G,C: Integer);
-Var I,X,Y,A,B,Table,SetIndex: Integer;
+Var
+ I,X,Y,A,B,Table,SetIndex: Integer;
 Begin
  Table := State^.TableNumber[G,C];
- if Table = 0 Then Exit;
- if Table = 15 Then SetIndex := 0 else SetIndex := 1;
- for I := 0 to State^.PairCount[G,C]-1 do Begin
+ If Table = 0 Then Exit;
+ If Table = 15 Then SetIndex := 0 Else SetIndex := 1;
+ For I := 0 To State^.PairCount[G,C]-1 Do Begin
   X := Magnitude(G,C,I*2); Y := Magnitude(G,C,I*2+1); A := X; B := Y;
-  if A > 15 Then A := 15; if B > 15 Then B := 15;
+  If A > 15 Then A := 15; If B > 15 Then B := 15;
   PutBits(Codes[SetIndex,A*16+B],CodeLengths[SetIndex,A*16+B]);
-  if (Table <> 15) and (X >= 15) Then PutBits(X-15,HuffLinBits[Table]);
-  if X > 0 Then PutBits(Ord(State^.Quantized[G,C,I*2] < 0),1);
-  if (Table <> 15) and (Y >= 15) Then PutBits(Y-15,HuffLinBits[Table]);
-  if Y > 0 Then PutBits(Ord(State^.Quantized[G,C,I*2+1] < 0),1);
+  If (Table <> 15) And (X >= 15) Then PutBits(X-15,HuffLinBits[Table]);
+  If X > 0 Then PutBits(Ord(State^.Quantized[G,C,I*2] < 0),1);
+  If (Table <> 15) And (Y >= 15) Then PutBits(Y-15,HuffLinBits[Table]);
+  If Y > 0 Then PutBits(Ord(State^.Quantized[G,C,I*2+1] < 0),1);
  End;
 End;
 
 Procedure EncodeFrame;
-Var G,C,J,SideBytes,Budget,Padding: Integer;
+Var
+ G,C,J,SideBytes,Budget,Padding: Integer;
 Begin
- Padding := 0; Inc(PaddingRemainder,46080000 mod Header.Rate);
- if PaddingRemainder >= Header.Rate Then Begin Padding := 1; Dec(PaddingRemainder,Header.Rate); End;
- FrameBytes := 46080000 div Header.Rate+Padding;
- if Header.Channels = 1 Then SideBytes := 17 else SideBytes := 32;
- Budget := (FrameBytes-4-SideBytes)*8 div (2*Header.Channels);
- if Budget > 4095 Then Budget := 4095;
- for G := 0 to 1 do Begin
+ Padding := 0; Inc(PaddingRemainder,46080000 Mod Header.Rate);
+ If PaddingRemainder >= Header.Rate Then Begin
+  Padding := 1; Dec(PaddingRemainder,Header.Rate);
+ End;
+ FrameBytes := 46080000 Div Header.Rate+Padding;
+ If Header.Channels = 1 Then SideBytes := 17 Else SideBytes := 32;
+ Budget := (FrameBytes-4-SideBytes)*8 Div (2*Header.Channels);
+ If Budget > 4095 Then Budget := 4095;
+ For G := 0 To 1 Do Begin
   AnalyzeGranule(G);
-  for C := 0 to Header.Channels-1 do Quantize(G,C,Budget);
+  For C := 0 To Header.Channels-1 Do Quantize(G,C,Budget);
  End;
  FillChar(Frame,SizeOf(Frame),0); BitPosition := 0;
  PutBits($7FF,11); PutBits(3,2); PutBits(1,2); PutBits(1,1);
  PutBits(14,4); PutBits(RateIndex,2); PutBits(Padding,1); PutBits(0,1);
- if Header.Channels = 1 Then PutBits(3,2) else PutBits(0,2);
+ If Header.Channels = 1 Then PutBits(3,2) Else PutBits(0,2);
  PutBits(0,2); PutBits(0,1); PutBits(1,1); PutBits(0,2);
  PutBits(0,9);
- if Header.Channels = 1 Then PutBits(0,5) else PutBits(0,3);
- for C := 0 to Header.Channels-1 do PutBits(0,4);
- for G := 0 to 1 do for C := 0 to Header.Channels-1 do Begin
+ If Header.Channels = 1 Then PutBits(0,5) Else PutBits(0,3);
+ For C := 0 To Header.Channels-1 Do PutBits(0,4);
+ For G := 0 To 1 Do
+ For C := 0 To Header.Channels-1 Do Begin
   PutBits(State^.BitCount[G,C],12); PutBits(State^.PairCount[G,C],9);
   PutBits(State^.Gain[G,C],8); PutBits(0,4); PutBits(0,1);
-  for J := 0 to 2 do PutBits(State^.TableNumber[G,C],5);
+  For J := 0 To 2 Do PutBits(State^.TableNumber[G,C],5);
   PutBits(7,4); PutBits(5,3);
   PutBits(0,1); PutBits(0,1); PutBits(0,1);
  End;
- if BitPosition <> (4+SideBytes)*8 Then Fail('Entete MP3 interne incorrecte.');
- for G := 0 to 1 do for C := 0 to Header.Channels-1 do EncodePairs(G,C);
- if Written > 2147483600-FrameBytes Then Fail('Sortie MP3 depassant 2 Go.');
+ If BitPosition <> (4+SideBytes)*8 Then Fail('Entete MP3 interne incorrecte.');
+ For G := 0 To 1 Do
+ For C := 0 To Header.Channels-1 Do EncodePairs(G,C);
+ If Written > 2147483600-FrameBytes Then Fail('Sortie MP3 depassant 2 Go.');
  WriteBytes(Frame,FrameBytes); Inc(Written,FrameBytes); Inc(EncodedFrames);
 End;
 
 Procedure Convert;
-Var Code,J: Integer;
+Var
+ Code,J: Integer;
 Begin
  OpenWave; InitializeEncoder;
- if Exists(OutputName) Then Fail('Le fichier de sortie existe deja: '+OutputName);
+ If Exists(OutputName) Then Fail('Le fichier de sortie existe deja: '+OutputName);
  Assign(OutputFile,OutputName);
  {$I-}Rewrite(OutputFile,1); Code := IOResult;{$I+}
- if Code <> 0 Then Fail('Creation MP3 impossible.');
+ If Code <> 0 Then Fail('Creation MP3 impossible.');
  OutputOpen := True; OutputCreated := True; Written := 0;
  WriteLn('Encodage MPEG-1 Layer III 320 kbit/s...');
- while WAVRemaining > 0 do EncodeFrame;
+ While WAVRemaining > 0 Do EncodeFrame;
  { Vidange des retards du filtre polyphase et de la MDCT. }
- for J := 1 to 2 do EncodeFrame;
+ For J := 1 To 2 Do EncodeFrame;
  {$I-}Close(InputFile); Code := IOResult;{$I+} InputOpen := False;
- if Code <> 0 Then Fail('Fermeture WAV impossible.');
+ If Code <> 0 Then Fail('Fermeture WAV impossible.');
  {$I-}Close(OutputFile); Code := IOResult;{$I+} OutputOpen := False;
- if Code <> 0 Then Fail('Fermeture MP3 impossible.');
+ If Code <> 0 Then Fail('Fermeture MP3 impossible.');
  OutputCreated := False; Dispose(State); Dispose(Transform);
  WriteLn('MP3 cree: ',OutputName);
- WriteLn(Header.Rate,' Hz, ',Header.Channels,' canal/canaux, ',EncodedFrames,' trames MPEG.');
+ WriteLn(Header.Rate,' Hz, ',Header.Channels,' canal/canaux, ',EncodedFrames,
+ ' trames MPEG.');
 End;
-
-
 Begin
- InputName:=Source; OutputName:=Target; InputOpen:=False; OutputOpen:=False; OutputCreated:=False;
+ InputName:=Source; OutputName:=Target; InputOpen:=False; OutputOpen:=False;
+ OutputCreated:=False;
  Convert;
 End;
 
 Var
- Temps: array[0..3] of string;
+ Temps: Array[0..3] Of String;
  SavedExit: Pointer;
- InputPath,OutputPath,InputFormat,OutputFormat,AudioCodec,PendingFormat: string;
+ InputPath,OutputPath,InputFormat,OutputFormat,AudioCodec,PendingFormat: String;
  RequestedRate: LongInt;
  RequestedChannels: Integer;
  Overwrite,NoOverwrite,HideBanner,HasBitrate: Boolean;
  ActiveInput,ActiveOutput: File;
  InputActive,OutputActive: Boolean;
- HLSBase: string;
- LastDownloadURL: string;
+ HLSBase: String;
+ LastDownloadURL: String;
  HLSList: Text;
  HLSListOpen,AllStreams,NoVideo: Boolean;
  {$IFDEF MSWINDOWS}
- NetSession,NetRequest: Pointer;
+  NetSession,NetRequest: Pointer;
  {$ENDIF}
 
-Function Exists(const Name: string): Boolean;
-Var F: File; A: Word;
-Begin Assign(F,Name); GetFAttr(F,A); Exists := DosError=0; End;
+Function Exists(Const Name: String): Boolean;
+Var
+ F: File;
+ A: Word;
+Begin
+ Assign(F,Name); GetFAttr(F,A); Exists := DosError=0;
+End;
 
-Function IsDirectory(const Name: string): Boolean;
-Var F: File; A: Word;
-Begin Assign(F,Name); GetFAttr(F,A); IsDirectory:=(DosError=0) and ((A and Directory)<>0); End;
+Function IsDirectory(Const Name: String): Boolean;
+Var
+ F: File;
+ A: Word;
+Begin
+ Assign(F,Name); GetFAttr(F,A); IsDirectory:=(DosError=0) And ((A And Directory)<>0);
+End;
 
 Procedure Cleanup;
-Var J,Code: Integer; F: File;
+Var
+ J,Code: Integer;
+ F: File;
 Begin
  {$IFDEF MSWINDOWS}
- if NetRequest<>nil Then Begin InternetCloseHandle(NetRequest); NetRequest:=nil; End;
- if NetSession<>nil Then Begin InternetCloseHandle(NetSession); NetSession:=nil; End;
+  If NetRequest<>Nil Then Begin
+   InternetCloseHandle(NetRequest); NetRequest:=Nil;
+  End;
+  If NetSession<>Nil Then Begin
+   InternetCloseHandle(NetSession); NetSession:=Nil;
+  End;
  {$ENDIF}
- if HLSListOpen Then Begin {$I-}Close(HLSList); Code:=IOResult;{$I+} HLSListOpen:=False; End;
- if InputActive Then Begin {$I-}Close(ActiveInput); Code := IOResult;{$I+} InputActive := False; End;
- if OutputActive Then Begin {$I-}Close(ActiveOutput); Code := IOResult;{$I+} OutputActive := False; End;
- for J := 0 to 3 do if Temps[J]<>'' Then if Exists(Temps[J]) Then Begin
+ If HLSListOpen Then Begin
+ {$I-}Close(HLSList); Code:=IOResult;{$I+} HLSListOpen:=False;
+ End;
+ If InputActive Then Begin
+ {$I-}Close(ActiveInput); Code := IOResult;{$I+} InputActive := False;
+ End;
+ If OutputActive Then Begin
+ {$I-}Close(ActiveOutput); Code := IOResult;{$I+} OutputActive := False;
+ End;
+ For J := 0 To 3 Do If Temps[J]<>'' Then If Exists(Temps[J]) Then Begin
   Assign(F,Temps[J]); {$I-}Erase(F); Code := IOResult;{$I+}
-  if Code<>0 Then WriteLn('Temporaire a supprimer: ',Temps[J]);
+  If Code<>0 Then WriteLn('Temporaire a supprimer: ',Temps[J]);
  End;
 End;
-
-Procedure ExitCleanup; {$IFNDEF FPC}Far;{$ENDIF}
-Begin ExitProc := SavedExit; Cleanup; End;
-
-Procedure Fail(const MessageText: string);
-Begin WriteLn('FFMPEG Pascal: ',MessageText); Halt(1); End;
-
-Function Lower(S: string): string;
-Var J: Integer;
-Begin for J:=1 to Length(S) do if S[J] in ['A'..'Z'] Then S[J]:=Chr(Ord(S[J])+32); Lower:=S; End;
-
-Function Extension(const Name: string): string;
-Var J: Integer;
+Procedure ExitCleanup;
+{$IFNDEF FPC}
+ Far;
+{$ENDIF}
 Begin
- J:=Length(Name); while (J>0) and not (Name[J] in ['.','/','\',':']) do Dec(J);
- if (J>0) and (Name[J]='.') Then Extension:=Lower(Copy(Name,J+1,255)) else Extension:='';
+ ExitProc := SavedExit; Cleanup;
 End;
 
-Function FormatName(S: string): string;
+Procedure Fail(Const MessageText: String);Begin
+ WriteLn('FFMPEG Pascal: ',MessageText); Halt(1);
+End;
+
+Function Lower(S: String): String;
+Var
+ J: Integer;
 Begin
- S:=Lower(S); if (S='aif') or (S='aifc') Then S:='aiff';
- if S='mod' Then S:='libopenmpt';
- if S='m3u8' Then S:='hls';
+ For J:=1 To Length(S) Do If S[J] In ['A'..'Z'] Then S[J]:=Chr(Ord(S[J])+32); Lower:=S;
+End;
+
+Function Extension(Const Name: String): String;
+Var
+ J: Integer;
+Begin
+ J:=Length(Name);
+ While (J>0) And Not (Name[J] In ['.','/','\',':']) Do Dec(J);
+ If (J>0) And (Name[J]='.') Then Extension:=Lower(Copy(Name,J+1,255)) Else Extension:='';
+End;
+
+Function FormatName(S: String): String;Begin
+ S:=Lower(S); If (S='aif') Or (S='aifc') Then S:='aiff';
+ If S='mod' Then S:='libopenmpt';
+ If S='m3u8' Then S:='hls';
  FormatName:=S;
 End;
 
-Function NewTemporary: string;
-Var Folder,Digits,Name: string; J,K,Attempt: Integer; Used: Boolean;
+Function NewTemporary: String;
+Var
+ Folder,Digits,Name: String;
+ J,K,Attempt: Integer;
+ Used: Boolean;
 Begin
- J:=Length(OutputPath); while (J>0) and not (OutputPath[J] in ['/','\',':']) do Dec(J);
+ J:=Length(OutputPath);
+ While (J>0) And Not (OutputPath[J] In ['/','\',':']) Do Dec(J);
  Folder:=Copy(OutputPath,1,J);
- if Length(Folder)>240 Then Fail('Chemin de sortie trop long.');
- for Attempt:=1 to 100 do Begin
+ If Length(Folder)>240 Then Fail('Chemin de sortie trop long.');
+ For Attempt:=1 To 100 Do Begin
   Str(Random(30000),Digits); Name:=Folder+'FFP'+Digits+'.TMP';
   Used:=Exists(Name);
-  for K:=0 to 3 do if Lower(Temps[K])=Lower(Name) Then Used:=True;
-  if not Used Then Begin NewTemporary:=Name; Exit; End;
+  For K:=0 To 3 Do If Lower(Temps[K])=Lower(Name) Then Used:=True;
+  If Not Used Then Begin
+   NewTemporary:=Name; Exit;
+  End;
  End;
  Fail('Nom temporaire indisponible.'); NewTemporary:='';
 End;
 
-Procedure OpenRead(const Name: string);
-Var Code: Integer; OldMode: Byte;
+Procedure OpenRead(Const Name: String);
+Var
+ Code: Integer;
+ OldMode: Byte;
 Begin
  Assign(ActiveInput,Name); OldMode:=FileMode; FileMode:=0;
  {$I-}Reset(ActiveInput,1); Code:=IOResult;{$I+} FileMode:=OldMode;
- if Code<>0 Then Fail('Lecture impossible: '+Name); InputActive:=True;
+ If Code<>0 Then Fail('Lecture impossible: '+Name); InputActive:=True;
 End;
 
 Procedure CloseRead;
-Var Code: Integer;
-Begin {$I-}Close(ActiveInput); Code:=IOResult;{$I+} InputActive:=False;
- if Code<>0 Then Fail('Fermeture entree impossible.'); End;
-
-Procedure OpenWrite(const Name: string);
-Var Code: Integer;
+Var
+ Code: Integer;
 Begin
- if Exists(Name) Then Fail('Sortie intermediaire deja existante.');
+ {$I-}Close(ActiveInput); Code:=IOResult;{$I+} InputActive:=False;
+ If Code<>0 Then Fail('Fermeture entree impossible.');
+End;
+
+Procedure OpenWrite(Const Name: String);
+Var
+ Code: Integer;
+Begin
+ If Exists(Name) Then Fail('Sortie intermediaire deja existante.');
  Assign(ActiveOutput,Name); {$I-}Rewrite(ActiveOutput,1); Code:=IOResult;{$I+}
- if Code<>0 Then Fail('Creation impossible: '+Name); OutputActive:=True;
+ If Code<>0 Then Fail('Creation impossible: '+Name); OutputActive:=True;
 End;
 
 Procedure CloseWrite;
-Var Code: Integer;
-Begin {$I-}Close(ActiveOutput); Code:=IOResult;{$I+} OutputActive:=False;
- if Code<>0 Then Fail('Fermeture sortie impossible.'); End;
-
-Procedure ReadAt(Position: LongInt; var Buffer; Count: Word);
-Var Code: Integer; Actual: Word;
+Var
+ Code: Integer;
 Begin
- {$I-}Seek(ActiveInput,Position); Code:=IOResult;{$I+}
- if Code<>0 Then Fail('Position entree incorrecte.');
- {$I-}BlockRead(ActiveInput,Buffer,Count,Actual); Code:=IOResult;{$I+}
- if (Code<>0) or (Actual<>Count) Then Fail('Entree tronquee.');
+ {$I-}Close(ActiveOutput); Code:=IOResult;{$I+} OutputActive:=False;
+ If Code<>0 Then Fail('Fermeture sortie impossible.');
 End;
 
-Procedure WriteBytes(var Buffer; Count: Word);
-Var Code: Integer; Actual: Word;
+Procedure ReadAt(Position: LongInt; Var Buffer; Count: Word);
+Var
+ Code: Integer;
+ Actual: Word;
+Begin
+ {$I-}Seek(ActiveInput,Position); Code:=IOResult;{$I+}
+ If Code<>0 Then Fail('Position entree incorrecte.');
+ {$I-}BlockRead(ActiveInput,Buffer,Count,Actual); Code:=IOResult;{$I+}
+ If (Code<>0) Or (Actual<>Count) Then Fail('Entree tronquee.');
+End;
+
+Procedure WriteBytes(Var Buffer; Count: Word);
+Var
+ Code: Integer;
+ Actual: Word;
 Begin
  {$I-}BlockWrite(ActiveOutput,Buffer,Count,Actual); Code:=IOResult;{$I+}
- if (Code<>0) or (Actual<>Count) Then Fail('Ecriture incomplete.');
+ If (Code<>0) Or (Actual<>Count) Then Fail('Ecriture incomplete.');
 End;
 
 Function InputSize: LongInt;
-Var Code: Integer; N: LongInt;
+Var
+ Code: Integer;
+ N: LongInt;
 Begin
  {$I-}N:=FileSize(ActiveInput); Code:=IOResult;{$I+}
- if (Code<>0) or (N<0) Then Fail('Taille entree invalide ou superieure a 2 Go.');
+ If (Code<>0) Or (N<0) Then Fail('Taille entree invalide ou superieure a 2 Go.');
  InputSize:=N;
 End;
 
-Function Probe(const Name: string): string;
-Var B: array[0..1083] of Byte; N,J: Integer; Size: LongInt; Tag: string[4];
+Function Probe(Const Name: String): String;
+Var
+ B: Array[0..1083] Of Byte;
+ N,J: Integer;
+ Size: LongInt;
+ Tag: String[4];
 Begin
- OpenRead(Name); Size:=InputSize; N:=1084; if Size<N Then N:=Size;
+ OpenRead(Name); Size:=InputSize; N:=1084; If Size<N Then N:=Size;
  FillChar(B,SizeOf(B),0); ReadAt(0,B,N); CloseRead;
  Probe:='';
- if N>=7 Then if (B[0]=35) and (B[1]=69) and (B[2]=88) and
-  (B[3]=84) and (B[4]=77) and (B[5]=51) and (B[6]=85) Then Begin Probe:='hls'; Exit; End;
- if N>=12 Then Begin
-  if (B[0]=82) and (B[1]=73) and (B[2]=70) and (B[3]=70) and
-     (B[8]=87) and (B[9]=65) and (B[10]=86) and (B[11]=69) Then Begin Probe:='wav'; Exit; End;
-  if (B[0]=70) and (B[1]=79) and (B[2]=82) and (B[3]=77) and
-     (B[8]=65) and (B[9]=73) and (B[10]=70) and (B[11] in [70,67]) Then Begin Probe:='aiff'; Exit; End;
+ If N>=7 Then If (B[0]=35) And (B[1]=69) And (B[2]=88) And
+ (B[3]=84) And (B[4]=77) And (B[5]=51) And (B[6]=85) Then Begin
+  Probe:='hls'; Exit;
  End;
- if N>=26 Then if (B[0]=67) and (B[1]=114) and (B[2]=101) and (B[19]=$1A) Then Begin Probe:='voc'; Exit; End;
- if N>=4 Then if ((B[0]=73) and (B[1]=68) and (B[2]=51)) or
-  ((B[0]=$FF) and ((B[1] and $E6)=$E2)) Then Begin Probe:='mp3'; Exit; End;
- if N>=1084 Then Begin
-  Tag:=''; for J:=1080 to 1083 do Tag:=Tag+Chr(B[J]);
-  if (Tag='M.K.') or (Tag='M!K!') or (Tag='4CHN') or (Tag='FLT4') Then Probe:='libopenmpt';
+ If N>=12 Then Begin
+  If (B[0]=82) And (B[1]=73) And (B[2]=70) And (B[3]=70) And
+  (B[8]=87) And (B[9]=65) And (B[10]=86) And (B[11]=69) Then Begin
+   Probe:='wav'; Exit;
+  End;
+  If (B[0]=70) And (B[1]=79) And (B[2]=82) And (B[3]=77) And
+  (B[8]=65) And (B[9]=73) And (B[10]=70) And (B[11] In [70,67]) Then Begin
+   Probe:='aiff'; Exit;
+  End;
+ End;
+ If N>=26 Then If (B[0]=67) And (B[1]=114) And (B[2]=101) And (B[19]=$1A) Then Begin
+  Probe:='voc'; Exit;
+ End;
+ If N>=4 Then If ((B[0]=73) And (B[1]=68) And (B[2]=51)) Or
+ ((B[0]=$FF) And ((B[1] And $E6)=$E2)) Then Begin
+  Probe:='mp3'; Exit;
+ End;
+ If N>=1084 Then Begin
+  Tag:='';
+  For J:=1080 To 1083 Do Tag:=Tag+Chr(B[J]);
+  If (Tag='M.K.') Or (Tag='M!K!') Or (Tag='4CHN') Or (Tag='FLT4') Then Probe:=
+  'libopenmpt';
  End;
 End;
 
-Procedure CopyFile(const Source,Target: string);
-Var B: array[0..4095] of Byte; Remaining,Position: LongInt; N: Word;
+Procedure CopyFile(Const Source,Target: String);
+Var
+ B: Array[0..4095] Of Byte;
+ Remaining,Position: LongInt;
+ N: Word;
 Begin
  OpenRead(Source); Remaining:=InputSize; Position:=0; OpenWrite(Target);
- while Remaining>0 do Begin
-  N:=4096; if Remaining<N Then N:=Remaining;
+ While Remaining>0 Do Begin
+  N:=4096; If Remaining<N Then N:=Remaining;
   ReadAt(Position,B,N); WriteBytes(B,N); Inc(Position,N); Dec(Remaining,N);
  End;
  CloseRead; CloseWrite;
 End;
 
-Function IsHTTP(const S: string): Boolean;
-Begin IsHTTP:=(Copy(Lower(S),1,7)='http://') or (Copy(Lower(S),1,8)='https://'); End;
+Function IsHTTP(Const S: String): Boolean;Begin
+ IsHTTP:=(Copy(Lower(S),1,7)='http://') Or (Copy(Lower(S),1,8)='https://');
+End;
 
-Function JoinPath(const A,B: string): string;
-Begin
- if Length(A)+Length(B)>255 Then Fail('Chemin ou URL HLS trop long (255 caracteres maximum).');
+Function JoinPath(Const A,B: String): String;Begin
+ If Length(A)+Length(B)>255 Then Fail(
+ 'Chemin ou URL HLS trop long (255 caracteres maximum).');
  JoinPath:=A+B;
 End;
 
-Function ResolveHLS(const Base,URI: string): string;
-Var J,K: Integer; Root: string;
+Function ResolveHLS(Const Base,URI: String): String;
+Var
+ J,K: Integer;
+ Root: String;
 Begin
- if URI='' Then Fail('URI HLS vide.');
- if IsHTTP(URI) Then Begin ResolveHLS:=URI; Exit; End;
- if Pos('://',URI)>0 Then Fail('Protocole HLS non pris en charge.');
- if IsHTTP(Base) Then Begin
+ If URI='' Then Fail('URI HLS vide.');
+ If IsHTTP(URI) Then Begin
+  ResolveHLS:=URI; Exit;
+ End;
+ If Pos('://',URI)>0 Then Fail('Protocole HLS non pris en charge.');
+ If IsHTTP(Base) Then Begin
   J:=Pos('://',Base)+3; K:=J;
-  while (K<=Length(Base)) and not (Base[K] in ['/','?','#']) do Inc(K);
+  While (K<=Length(Base)) And Not (Base[K] In ['/','?','#']) Do Inc(K);
   Root:=Copy(Base,1,K-1);
-  if Copy(URI,1,2)='//' Then ResolveHLS:=JoinPath(Copy(Base,1,J-1),Copy(URI,3,255))
-  else if URI[1]='/' Then ResolveHLS:=JoinPath(Root,URI)
-  else Begin
-   J:=Length(Base); K:=Pos('?',Base); if K>0 Then J:=K-1;
-   K:=Pos('#',Base); if (K>0) and (K<=J) Then J:=K-1;
-   while (J>0) and (Base[J]<>'/') do Dec(J);
-   if J<Length(Root) Then ResolveHLS:=JoinPath(Root+'/',URI)
-   else ResolveHLS:=JoinPath(Copy(Base,1,J),URI);
+  If Copy(URI,1,2)='//' Then ResolveHLS:=JoinPath(Copy(Base,1,J-1),Copy(URI,3,255)) Else
+  If URI[1]='/' Then ResolveHLS:=JoinPath(Root,URI)
+   Else
+  Begin
+   J:=Length(Base); K:=Pos('?',Base); If K>0 Then J:=K-1;
+   K:=Pos('#',Base); If (K>0) And (K<=J) Then J:=K-1;
+   While (J>0) And (Base[J]<>'/') Do Dec(J);
+   If J<Length(Root) Then ResolveHLS:=JoinPath(Root+'/',URI)
+                     Else ResolveHLS:=JoinPath(Copy(Base,1,J),URI);
   End;
- End else Begin
-  if (URI[1]='/') or (URI[1]='\') or (Pos(':',URI)>0) Then Begin
-   if not Exists(URI) Then Fail('Chemin HLS absolu introuvable; fournir -hls_base_url URL_ORIGINE.');
+ End Else
+ Begin
+  If (URI[1]='/') Or (URI[1]='\') Or (Pos(':',URI)>0) Then Begin
+   If Not Exists(URI) Then Fail(
+   'Chemin HLS absolu introuvable; fournir -hls_base_url URL_ORIGINE.');
    ResolveHLS:=URI;
-  End else Begin
-   J:=Length(Base); while (J>0) and not (Base[J] in ['/','\',':']) do Dec(J);
+  End Else
+  Begin
+   J:=Length(Base);
+   While (J>0) And Not (Base[J] In ['/','\',':']) Do Dec(J);
    ResolveHLS:=JoinPath(Copy(Base,1,J),URI);
   End;
  End;
 End;
-
-Procedure DownloadHLS(const URL,Target: string);
+Procedure DownloadHLS(Const URL,Target: String);
 {$IFDEF MSWINDOWS}
-Var Address: array[0..255] of Char; B: array[0..8191] of Byte;
- Count,Size,Index,Status,Timeout,ContentLength: LongWord; Total,J: LongInt;
- HasLength: Boolean;
-{$ENDIF}
+
+ Var
+  Address: Array[0..255] Of Char;
+  B: Array[0..8191] Of Byte;
+  Count,Size,Index,Status,Timeout,ContentLength: LongWord;
+  Total,J: LongInt;
+  HasLength: Boolean;
+ {$ENDIF}
 Begin
  {$IFDEF MSWINDOWS}
- FillChar(Address,SizeOf(Address),0); Move(URL[1],Address,Length(URL));
- NetSession:=InternetOpenA('FFMPEG-Pascal',0,nil,nil,0);
- if NetSession=nil Then Fail('Initialisation WinINet impossible.');
- Timeout:=30000;
- InternetSetOptionA(NetSession,2,@Timeout,SizeOf(Timeout));
- InternetSetOptionA(NetSession,6,@Timeout,SizeOf(Timeout));
+  FillChar(Address,SizeOf(Address),0); Move(URL[1],Address,Length(URL));
+  NetSession:=InternetOpenA('FFMPEG-Pascal',0,Nil,Nil,0);
+  If NetSession=Nil Then Fail('Initialisation WinINet impossible.');
+  Timeout:=30000;
+  InternetSetOptionA(NetSession,2,@Timeout,SizeOf(Timeout));
+  InternetSetOptionA(NetSession,6,@Timeout,SizeOf(Timeout));
  { Reload, no cache write, no UI. Verification TLS standard conservee. }
- NetRequest:=InternetOpenUrlA(NetSession,@Address[0],nil,0,$84000200,0);
- if NetRequest=nil Then Fail('Telechargement HLS impossible: '+URL);
- Size:=SizeOf(Status); Index:=0; Status:=0;
- if not HttpQueryInfoA(NetRequest,$20000013,@Status,Size,Index) Then Fail('Statut HTTP indisponible.');
- if Status<>200 Then Begin WriteLn('HTTP ',Status); Fail('Reponse HTTP refusee: '+URL); End;
- Size:=SizeOf(Address); FillChar(Address,SizeOf(Address),0);
- if not InternetQueryOptionA(NetRequest,34,@Address[0],Size) Then
-  Fail('URL finale HTTP indisponible ou trop longue.');
- LastDownloadURL:=''; J:=0;
- while (J<255) and (Address[J]<>#0) do Begin
-  LastDownloadURL:=LastDownloadURL+Address[J]; Inc(J);
- End;
- if Address[J]<>#0 Then Fail('URL finale HTTP trop longue.');
- Size:=SizeOf(ContentLength); Index:=0;
- HasLength:=HttpQueryInfoA(NetRequest,$20000005,@ContentLength,Size,Index);
- if HasLength Then if ContentLength>2147480000 Then Fail('Ressource HTTP superieure a 2 Go.');
- OpenWrite(Target); Total:=0;
- repeat
+  NetRequest:=InternetOpenUrlA(NetSession,@Address[0],Nil,0,$84000200,0);
+  If NetRequest=Nil Then Fail('Telechargement HLS impossible: '+URL);
+  Size:=SizeOf(Status); Index:=0; Status:=0;
+  If Not HttpQueryInfoA(NetRequest,$20000013,@Status,Size,Index) Then Fail(
+  'Statut HTTP indisponible.');
+  If Status<>200 Then Begin
+   WriteLn('HTTP ',Status); Fail('Reponse HTTP refusee: '+URL);
+  End;
+  Size:=SizeOf(Address); FillChar(Address,SizeOf(Address),0);
+  If Not InternetQueryOptionA(NetRequest,34,@Address[0],Size) Then  Fail(
+  'URL finale HTTP indisponible ou trop longue.');
+  LastDownloadURL:=''; J:=0;
+  While (J<255) And (Address[J]<>#0) Do Begin
+   LastDownloadURL:=LastDownloadURL+Address[J]; Inc(J);
+  End;
+  If Address[J]<>#0 Then Fail('URL finale HTTP trop longue.');
+  Size:=SizeOf(ContentLength); Index:=0;
+  HasLength:=HttpQueryInfoA(NetRequest,$20000005,@ContentLength,Size,Index);
+  If HasLength Then If ContentLength>2147480000 Then Fail(
+  'Ressource HTTP superieure a 2 Go.');
+  OpenWrite(Target); Total:=0;
+  Repeat
   Count:=0;
-  if not InternetReadFile(NetRequest,@B[0],SizeOf(B),Count) Then Fail('Lecture HTTP interrompue.');
-  if Count>0 Then Begin
-   if Total>2147480000-LongInt(Count) Then Fail('Ressource HLS superieure a 2 Go.');
+  If Not InternetReadFile(NetRequest,@B[0],SizeOf(B),Count) Then Fail(
+  'Lecture HTTP interrompue.');
+  If Count>0 Then Begin
+   If Total>2147480000-LongInt(Count) Then Fail('Ressource HLS superieure a 2 Go.');
    Inc(Total,Count); WriteBytes(B,Count);
   End;
- until Count=0;
- if HasLength Then if LongWord(Total)<>ContentLength Then Fail('Reponse HTTP tronquee.');
- CloseWrite;
- InternetCloseHandle(NetRequest); NetRequest:=nil;
- InternetCloseHandle(NetSession); NetSession:=nil;
+  Until Count=0;
+  If HasLength Then If LongWord(Total)<>ContentLength Then Fail('Reponse HTTP tronquee.');
+  CloseWrite;
+  InternetCloseHandle(NetRequest); NetRequest:=Nil;
+  InternetCloseHandle(NetSession); NetSession:=Nil;
  {$ELSE}
- Fail('HTTP/HTTPS exige Windows; sous DOS fournir des segments HLS locaux.');
+  Fail('HTTP/HTTPS exige Windows; sous DOS fournir des segments HLS locaux.');
  {$ENDIF}
 End;
-
 { Assemble le profil HLS fMP4 a offsets relatifs au moof. Les octets des
   codecs sont conserves. Pas de conversion MPEG-TS ni de dechiffrement. }
-Procedure AssembleHLS(const Playlist,Target: string);
-Var Line,Base,MapURI,URI,LocalName: string;
- Code,J,K,Segments: Integer; EndList,HaveMap,Pending: Boolean;
- Buffer: array[0..4095] of Byte;
+
+Procedure AssembleHLS(Const Playlist,Target: String);
+Var
+ Line,Base,MapURI,URI,LocalName: String;
+ Code,J,K,Segments: Integer;
+ EndList,HaveMap,Pending: Boolean;
+ Buffer: Array[0..4095] Of Byte;
  Total: LongInt;
- TrackIDs: array[0..15] of LongInt;
+ TrackIDs: Array[0..15] Of LongInt;
  TrackCount: Integer;
 
-Function BE32(At: Integer): LongInt;
-Begin
- if Buffer[At]>=128 Then Fail('Champ MP4 hors limite 2 Go.');
+Function BE32(At: Integer): LongInt;Begin
+ If Buffer[At]>=128 Then Fail('Champ MP4 hors limite 2 Go.');
  BE32:=LongInt(Buffer[At])*16777216+LongInt(Buffer[At+1])*65536+
-  LongInt(Buffer[At+2])*256+Buffer[At+3];
+ LongInt(Buffer[At+2])*256+Buffer[At+3];
 End;
 
 Procedure CheckInit(Start,Limit: LongInt; Depth: Integer);
-Var P,N,ID: LongInt; Tag: string[4]; A: Integer;
+Var
+ P,N,ID: LongInt;
+ Tag: String[4];
+ A: Integer;
 Begin
- if Depth>8 Then Fail('Initialisation MP4 trop imbriquee.');
+ If Depth>8 Then Fail('Initialisation MP4 trop imbriquee.');
  P:=Start;
- while P<Limit do Begin
-  if Limit-P<8 Then Fail('Initialisation MP4 tronquee.');
+ While P<Limit Do Begin
+  If Limit-P<8 Then Fail('Initialisation MP4 tronquee.');
   ReadAt(P,Buffer,8); N:=BE32(0); Tag:='';
-  for A:=4 to 7 do Tag:=Tag+Chr(Buffer[A]);
-  if (N<8) or (N>Limit-P) Then Fail('Boite initialisation MP4 invalide.');
-  if (Tag='moov') or (Tag='mvex') or (Tag='trak') or (Tag='mdia') or
-   (Tag='minf') or (Tag='stbl') Then CheckInit(P+8,P+N,Depth+1)
-  else if Tag='stsd' Then Begin
-   if N<16 Then Fail('stsd MP4 tronque.');
+  For A:=4 To 7 Do Tag:=Tag+Chr(Buffer[A]);
+  If (N<8) Or (N>Limit-P) Then Fail('Boite initialisation MP4 invalide.');
+  If (Tag='moov') Or (Tag='mvex') Or (Tag='trak') Or (Tag='mdia') Or
+  (Tag='minf') Or (Tag='stbl') Then CheckInit(P+8,P+N,Depth+1) Else
+  If Tag='stsd' Then Begin
+   If N<16 Then Fail('stsd MP4 tronque.');
    CheckInit(P+16,P+N,Depth+1);
-  End else if (Tag='encv') or (Tag='enca') or (Tag='pssh') Then
-   Fail('MP4 chiffre non pris en charge.')
-  else if Tag='trex' Then Begin
-   if (N<>32) or (TrackCount=16) Then Fail('trex MP4 invalide ou trop de pistes.');
+  End Else If (Tag='encv') Or (Tag='enca') Or (Tag='pssh') Then   Fail(
+  'MP4 chiffre non pris en charge.')
+  Else If Tag='trex' Then Begin
+   If (N<>32) Or (TrackCount=16) Then Fail('trex MP4 invalide ou trop de pistes.');
    ReadAt(P+12,Buffer,4); ID:=BE32(0);
-   if ID=0 Then Fail('Identifiant de piste MP4 nul.');
-   for A:=0 to TrackCount-1 do if TrackIDs[A]=ID Then Fail('Piste MP4 dupliquee.');
+   If ID=0 Then Fail('Identifiant de piste MP4 nul.');
+   For A:=0 To TrackCount-1 Do If TrackIDs[A]=ID Then Fail('Piste MP4 dupliquee.');
    TrackIDs[TrackCount]:=ID; Inc(TrackCount);
   End;
   Inc(P,N);
  End;
 End;
-
 { Controle les boites, les offsets relogeables et refuse les pistes chiffrees. }
-Procedure Boxes(Start,Limit: LongInt; Depth: Integer; var Found: Boolean);
-Var P,N,Flags: LongInt; Tag: string[4]; A: Integer; Child: Boolean;
+
+Procedure Boxes(Start,Limit: LongInt; Depth: Integer; Var Found: Boolean);
+Var
+ P,N,Flags: LongInt;
+ Tag: String[4];
+ A: Integer;
+ Child: Boolean;
  HasTime,HasRun,Known: Boolean;
 Begin
  P:=Start; HasTime:=False; HasRun:=False;
- while P<Limit do Begin
-  if Limit-P<8 Then Fail('Entete de boite MP4 tronquee.');
+ While P<Limit Do Begin
+  If Limit-P<8 Then Fail('Entete de boite MP4 tronquee.');
   ReadAt(P,Buffer,8); N:=BE32(0); Tag:='';
-  for A:=4 to 7 do Tag:=Tag+Chr(Buffer[A]);
-  if (N<8) or (N>Limit-P) Then Fail('Taille de boite MP4 invalide ou etendue non prise en charge.');
-  if (Tag='senc') or (Tag='saiz') or (Tag='saio') or (Tag='pssh') Then Fail('MP4 chiffre non pris en charge.');
-  if (Tag='moof') or (Tag='traf') Then Begin
-   if Depth>=2 Then Fail('Imbrication MP4 invalide.');
+  For A:=4 To 7 Do Tag:=Tag+Chr(Buffer[A]);
+  If (N<8) Or (N>Limit-P) Then Fail(
+  'Taille de boite MP4 invalide ou etendue non prise en charge.');
+  If (Tag='senc') Or (Tag='saiz') Or (Tag='saio') Or (Tag='pssh') Then Fail(
+  'MP4 chiffre non pris en charge.');
+  If (Tag='moof') Or (Tag='traf') Then Begin
+   If Depth>=2 Then Fail('Imbrication MP4 invalide.');
    Child:=False; Boxes(P+8,P+N,Depth+1,Child);
-   if not Child Then Fail('Fragment MP4 sans traf/tfhd valide.');
+   If Not Child Then Fail('Fragment MP4 sans traf/tfhd valide.');
    Found:=True;
   End;
-  if Tag='tfhd' Then Begin
-   if (Depth<>2) or (N<16) Then Fail('tfhd MP4 invalide.');
+  If Tag='tfhd' Then Begin
+   If (Depth<>2) Or (N<16) Then Fail('tfhd MP4 invalide.');
    ReadAt(P+8,Buffer,8); Flags:=BE32(0);
-   if ((Flags and 1)<>0) or ((Flags and $20000)=0) Then
-    Fail('Fragment MP4 exigeant une reecriture des offsets: non pris en charge.');
+   If ((Flags And 1)<>0) Or ((Flags And $20000)=0) Then    Fail(
+   'Fragment MP4 exigeant une reecriture des offsets: non pris en charge.');
    Known:=False;
-   for A:=0 to TrackCount-1 do if TrackIDs[A]=BE32(4) Then Known:=True;
-   if not Known Then Fail('Piste du fragment absente de initialisation MP4.');
+   For A:=0 To TrackCount-1 Do If TrackIDs[A]=BE32(4) Then Known:=True;
+   If Not Known Then Fail('Piste du fragment absente de initialisation MP4.');
    Found:=True;
   End;
-  if Tag='tfdt' Then Begin
-   if (Depth<>2) or (N<16) Then Fail('tfdt MP4 invalide.');
+  If Tag='tfdt' Then Begin
+   If (Depth<>2) Or (N<16) Then Fail('tfdt MP4 invalide.');
    HasTime:=True;
   End;
-  if Tag='trun' Then Begin
-   if (Depth<>2) or (N<16) Then Fail('trun MP4 invalide.');
+  If Tag='trun' Then Begin
+   If (Depth<>2) Or (N<16) Then Fail('trun MP4 invalide.');
    HasRun:=True;
   End;
   Inc(P,N);
  End;
- if Depth=2 Then if not HasTime or not HasRun Then Fail('traf MP4 sans tfdt/trun.');
+ If Depth=2 Then If Not HasTime Or Not HasRun Then Fail('traf MP4 sans tfdt/trun.');
 End;
 
-Procedure AppendResource(const Resource: string; Init: Boolean);
-Var P,N,Size,Remaining: LongInt; Amount: Word; Tag: string[4];
- A: Integer; HasFTyp,HasMoov,HasMoof,HasMdat,Valid: Boolean; F: File;
+Procedure AppendResource(Const Resource: String; Init: Boolean);
+Var
+ P,N,Size,Remaining: LongInt;
+ Amount: Word;
+ Tag: String[4];
+ A: Integer;
+ HasFTyp,HasMoov,HasMoof,HasMdat,Valid: Boolean;
+ F: File;
 Begin
  URI:=ResolveHLS(Base,Resource); LocalName:=URI;
- if IsHTTP(URI) Then Begin
+ If IsHTTP(URI) Then Begin
   Temps[1]:=NewTemporary; DownloadHLS(URI,Temps[1]); LocalName:=Temps[1];
  End;
  OpenRead(LocalName); Size:=InputSize;
- if Size>2147480000-Total Then Fail('Sortie MP4 superieure a 2 Go.');
+ If Size>2147480000-Total Then Fail('Sortie MP4 superieure a 2 Go.');
  P:=0; HasFTyp:=False; HasMoov:=False; HasMoof:=False; HasMdat:=False;
- while P<Size do Begin
-  if Size-P<8 Then Fail('Segment MP4 tronque.');
+ While P<Size Do Begin
+  If Size-P<8 Then Fail('Segment MP4 tronque.');
   ReadAt(P,Buffer,8); N:=BE32(0); Tag:='';
-  for A:=4 to 7 do Tag:=Tag+Chr(Buffer[A]);
-  if (N<8) or (N>Size-P) Then Fail('Segment non MP4 ou boite tronquee (MPEG-TS non pris en charge).');
-  if Tag='ftyp' Then HasFTyp:=True
-  else if Tag='moov' Then Begin
-   if not Init or HasMoov Then Fail('moov inattendu ou duplique.');
+  For A:=4 To 7 Do Tag:=Tag+Chr(Buffer[A]);
+  If (N<8) Or (N>Size-P) Then Fail(
+  'Segment non MP4 ou boite tronquee (MPEG-TS non pris en charge).');
+  If Tag='ftyp' Then HasFTyp:=True Else
+  If Tag='moov' Then Begin
+   If Not Init Or HasMoov Then Fail('moov inattendu ou duplique.');
    CheckInit(P,P+N,0); HasMoov:=True;
   End
-  else if Tag='moof' Then Begin
+  Else If Tag='moof' Then Begin
    Valid:=False; Boxes(P,P+N,0,Valid); HasMoof:=True;
-  End else if Tag='mdat' Then Begin
-   if not HasMoof Then Fail('mdat avant moof non pris en charge.');
+  End Else If Tag='mdat' Then Begin
+   If Not HasMoof Then Fail('mdat avant moof non pris en charge.');
    HasMdat:=True;
-  End else if (Tag<>'styp') and (Tag<>'sidx') and (Tag<>'free') and (Tag<>'emsg') Then
-   Fail('Boite MP4 non prise en charge: '+Tag);
+  End Else If (Tag<>'styp') And (Tag<>'sidx') And (Tag<>'free') And (Tag<>'emsg')
+  Then   Fail('Boite MP4 non prise en charge: '+Tag);
   Inc(P,N);
  End;
- if Init Then Begin
-  if not HasFTyp or not HasMoov or HasMoof or HasMdat or (TrackCount=0) Then Fail('Initialisation MP4 ftyp/moov/mvex/trex requise.');
- End else if not HasMoof or not HasMdat or HasMoov or HasFTyp Then Fail('Segment MP4 moof/mdat requis.');
- if Total=0 Then OpenWrite(Target)
- else Begin
+ If Init Then Begin
+  If Not HasFTyp Or Not HasMoov Or HasMoof Or HasMdat Or (TrackCount=0) Then Fail(
+  'Initialisation MP4 ftyp/moov/mvex/trex requise.');
+ End Else If Not HasMoof Or Not HasMdat Or HasMoov Or HasFTyp Then Fail(
+ 'Segment MP4 moof/mdat requis.');
+ If Total=0 Then OpenWrite(Target)
+  Else
+ Begin
   Assign(ActiveOutput,Target);
   {$I-}Reset(ActiveOutput,1); Code:=IOResult;{$I+}
-  if Code<>0 Then Fail('Reouverture MP4 impossible.'); OutputActive:=True;
+  If Code<>0 Then Fail('Reouverture MP4 impossible.'); OutputActive:=True;
   {$I-}Seek(ActiveOutput,Total); Code:=IOResult;{$I+}
-  if Code<>0 Then Fail('Position sortie MP4 incorrecte.');
+  If Code<>0 Then Fail('Position sortie MP4 incorrecte.');
  End;
  P:=0; Remaining:=Size;
- while Remaining>0 do Begin
-  Amount:=4096; if Remaining<Amount Then Amount:=Remaining;
+ While Remaining>0 Do Begin
+  Amount:=4096; If Remaining<Amount Then Amount:=Remaining;
   ReadAt(P,Buffer,Amount); WriteBytes(Buffer,Amount);
   Inc(P,Amount); Dec(Remaining,Amount);
  End;
  Inc(Total,Size); CloseRead; CloseWrite;
- if Temps[1]<>'' Then Begin
+ If Temps[1]<>'' Then Begin
   Assign(F,Temps[1]); {$I-}Erase(F); Code:=IOResult;{$I+}
-  if Code<>0 Then Fail('Suppression temporaire HLS impossible.'); Temps[1]:='';
+  If Code<>0 Then Fail('Suppression temporaire HLS impossible.'); Temps[1]:='';
  End;
 End;
 
 Procedure ReadLine;
-Var Ch: Char; Finished: Boolean;
+Var
+ Ch: Char;
+ Finished: Boolean;
 Begin
  Line:=''; Finished:=False;
- while not Finished do Begin
+ While Not Finished Do Begin
   {$I-}Finished:=Eof(HLSList); Code:=IOResult;{$I+}
-  if Code<>0 Then Fail('Lecture liste HLS impossible.');
-  if Finished Then Exit;
+  If Code<>0 Then Fail('Lecture liste HLS impossible.');
+  If Finished Then Exit;
   {$I-}Read(HLSList,Ch); Code:=IOResult;{$I+}
-  if Code<>0 Then Fail('Lecture liste HLS impossible.');
-  if Ch=#10 Then Finished:=True
-  else if Ch<>#13 Then Begin
-   if Length(Line)=255 Then Fail('Ligne HLS trop longue (255 caracteres maximum).');
+  If Code<>0 Then Fail('Lecture liste HLS impossible.');
+  If Ch=#10 Then Finished:=True Else
+  If Ch<>#13 Then Begin
+   If Length(Line)=255 Then Fail('Ligne HLS trop longue (255 caracteres maximum).');
    Line:=Line+Ch;
   End;
  End;
 End;
-
 Begin
- Base:=InputPath; if HLSBase<>'' Then Base:=HLSBase;
+ Base:=InputPath; If HLSBase<>'' Then Base:=HLSBase;
  Assign(HLSList,Playlist); {$I-}Reset(HLSList); Code:=IOResult;{$I+}
- if Code<>0 Then Fail('Ouverture liste HLS impossible.'); HLSListOpen:=True;
- ReadLine; if Line<> '#EXTM3U' Then Fail('Signature #EXTM3U requise.');
+ If Code<>0 Then Fail('Ouverture liste HLS impossible.'); HLSListOpen:=True;
+ ReadLine; If Line<> '#EXTM3U' Then Fail('Signature #EXTM3U requise.');
  Total:=0; Segments:=0; TrackCount:=0; EndList:=False; HaveMap:=False; Pending:=False;
- while not Eof(HLSList) do Begin
+ While Not Eof(HLSList) Do Begin
   ReadLine;
-  if Line<>'' Then Begin
-   if EndList Then Fail('Donnees apres EXT-X-ENDLIST.');
-   if Copy(Line,1,11)='#EXT-X-MAP:' Then Begin
-    if HaveMap Then Fail('Changement de fichier initialisation non pris en charge.');
-    if Copy(Line,12,5)<>'URI="' Then Fail('EXT-X-MAP exige URI entre guillemets, sans BYTERANGE.');
-    J:=17; K:=J; while (K<=Length(Line)) and (Line[K]<>'"') do Inc(K);
-    if K<>Length(Line) Then Fail('Attributs EXT-X-MAP non pris en charge.');
+  If Line<>'' Then Begin
+   If EndList Then Fail('Donnees apres EXT-X-ENDLIST.');
+   If Copy(Line,1,11)='#EXT-X-MAP:' Then Begin
+    If HaveMap Then Fail('Changement de fichier initialisation non pris en charge.');
+    If Copy(Line,12,5)<>'URI="' Then Fail(
+    'EXT-X-MAP exige URI entre guillemets, sans BYTERANGE.');
+    J:=17; K:=J;
+    While (K<=Length(Line)) And (Line[K]<>'"') Do Inc(K);
+    If K<>Length(Line) Then Fail('Attributs EXT-X-MAP non pris en charge.');
     MapURI:=Copy(Line,J,K-J); AppendResource(MapURI,True); HaveMap:=True;
-   End else if Copy(Line,1,8)='#EXTINF:' Then Begin
-    if Pending Then Fail('URI de segment HLS manquante.'); Pending:=True;
-   End else if Line='#EXT-X-ENDLIST' Then Begin
-    if Pending Then Fail('Dernier segment HLS manquant.'); EndList:=True;
-   End else if Line[1]<>'#' Then Begin
-    if not HaveMap Then Fail('HLS fMP4 avec EXT-X-MAP requis; MPEG-TS non implemente.');
-    if not Pending Then Fail('Segment HLS sans EXTINF.');
-    if Segments=32767 Then Fail('Trop de segments HLS.');
+   End Else If Copy(Line,1,8)='#EXTINF:' Then Begin
+    If Pending Then Fail('URI de segment HLS manquante.'); Pending:=True;
+   End Else If Line='#EXT-X-ENDLIST' Then Begin
+    If Pending Then Fail('Dernier segment HLS manquant.'); EndList:=True;
+   End Else If Line[1]<>'#' Then Begin
+    If Not HaveMap Then Fail('HLS fMP4 avec EXT-X-MAP requis; MPEG-TS non implemente.');
+    If Not Pending Then Fail('Segment HLS sans EXTINF.');
+    If Segments=32767 Then Fail('Trop de segments HLS.');
     AppendResource(Line,False); Inc(Segments); Pending:=False;
-    if not HideBanner Then WriteLn('Segment HLS ',Segments,' assemble.');
-   End else if (Copy(Line,1,7)='#EXT-X-') and
-    (Pos('#EXT-X-VERSION:',Line)<>1) and
-    (Pos('#EXT-X-MEDIA-SEQUENCE:',Line)<>1) and
-    (Pos('#EXT-X-TARGETDURATION:',Line)<>1) and
-    (Pos('#EXT-X-PLAYLIST-TYPE:',Line)<>1) and
-    (Line<>'#EXT-X-INDEPENDENT-SEGMENTS') and (Line<>'#EXT-X-KEY:METHOD=NONE') Then
-    Fail('Directive HLS non prise en charge (chiffrement/master/discontinuite/plage): '+Line);
+    If Not HideBanner Then WriteLn('Segment HLS ',Segments,' assemble.');
+   End Else If (Copy(Line,1,7)='#EXT-X-') And
+   (Pos('#EXT-X-VERSION:',Line)<>1) And
+   (Pos('#EXT-X-MEDIA-SEQUENCE:',Line)<>1) And
+   (Pos('#EXT-X-TARGETDURATION:',Line)<>1) And
+   (Pos('#EXT-X-PLAYLIST-TYPE:',Line)<>1) And
+   (Line<>'#EXT-X-INDEPENDENT-SEGMENTS') And (Line<>'#EXT-X-KEY:METHOD=NONE')
+   Then    Fail(
+   'Directive HLS non prise en charge (chiffrement/master/discontinuite/plage): '+Line);
   End;
  End;
- if not EndList or (Segments=0) Then Fail('Liste HLS VOD complete avec ENDLIST et segments requise.');
+ If Not EndList Or (Segments=0) Then Fail(
+ 'Liste HLS VOD complete avec ENDLIST et segments requise.');
  {$I-}Close(HLSList); Code:=IOResult;{$I+} HLSListOpen:=False;
- if Code<>0 Then Fail('Fermeture liste HLS impossible.');
+ If Code<>0 Then Fail('Fermeture liste HLS impossible.');
 End;
 
-Procedure NormalizeWave(const Source,Target: string; ForMP3: Boolean);
-Type TBytes = array[0..4095] of Byte;
-Var B: TBytes; Cache: TBytes; OutBuffer: TBytes;
- Position,Limit,Size,DataStart,DataSize,Rate,Frames,OutFrames,OutRate,J,Index,CacheBase: LongInt;
+Procedure NormalizeWave(Const Source,Target: String; ForMP3: Boolean);
+Type
+ TBytes = Array[0..4095] Of Byte;
+Var
+ B: TBytes;
+ Cache: TBytes;
+ OutBuffer: TBytes;
+ Position,Limit,Size,DataStart,DataSize,Rate,Frames,OutFrames,OutRate,J,Index,
+ CacheBase: LongInt;
  Channels,Bits,Align,OutChannels,CacheFrames,C,Used: Integer;
- HasFormat,HasData: Boolean; Fraction,Value,Left,Right,ExactFrames: Double;
+ HasFormat,HasData: Boolean;
+ Fraction,Value,Left,Right,ExactFrames: Double;
 
-Function U16(At: Integer): Word;
-Begin U16:=Word(B[At])+Word(B[At+1])*256; End;
-Function U32(At: Integer): LongInt;
-Begin
- if B[At+3]>=128 Then Fail('Champ WAV trop grand.');
- U32:=LongInt(B[At])+LongInt(B[At+1])*256+LongInt(B[At+2])*65536+LongInt(B[At+3])*16777216;
+Function U16(At: Integer): Word;Begin
+ U16:=Word(B[At])+Word(B[At+1])*256;
 End;
-Function Tag(const S: string): Boolean;
-Var A: Integer; Equal: Boolean;
-Begin Equal:=True; for A:=1 to 4 do if B[A-1]<>Ord(S[A]) Then Equal:=False; Tag:=Equal; End;
-Procedure Put16(V: Word);
-Begin B[0]:=V and 255; B[1]:=V shr 8; WriteBytes(B,2); End;
-Procedure Put32(V: LongInt);
-Var A: Integer;
-Begin for A:=0 to 3 do Begin B[A]:=V and 255; V:=V shr 8; End; WriteBytes(B,4); End;
-Procedure PutTag(S: string);
-Begin WriteBytes(S[1],4); End;
-Function Sample(N: LongInt; Ch: Integer): Double;
-Var P,Bytes: Integer; V: LongInt;
+
+Function U32(At: Integer): LongInt;Begin
+ If B[At+3]>=128 Then Fail('Champ WAV trop grand.');
+ U32:=LongInt(B[At])+LongInt(B[At+1])*256+LongInt(B[At+2])*65536+LongInt(B[At+3])*
+ 16777216;
+End;
+
+Function Tag(Const S: String): Boolean;
+Var
+ A: Integer;
+ Equal: Boolean;
 Begin
- if N>=Frames Then N:=Frames-1;
- if (CacheBase<0) or (N<CacheBase) or (N>=CacheBase+CacheFrames) Then Begin
-  CacheBase:=N; CacheFrames:=4096 div Align;
-  if Frames-N<CacheFrames Then CacheFrames:=Frames-N;
+ Equal:=True;
+ For A:=1 To 4 Do If B[A-1]<>Ord(S[A]) Then Equal:=False; Tag:=Equal;
+End;
+
+Procedure Put16(V: Word);Begin
+ B[0]:=V And 255; B[1]:=V Shr 8; WriteBytes(B,2);
+End;
+
+Procedure Put32(V: LongInt);
+Var
+ A: Integer;
+Begin
+ For A:=0 To 3 Do Begin
+  B[A]:=V And 255; V:=V Shr 8;
+ End; WriteBytes(B,4);
+End;
+
+Procedure PutTag(S: String);Begin
+ WriteBytes(S[1],4);
+End;
+
+Function Sample(N: LongInt; Ch: Integer): Double;
+Var
+ P,Bytes: Integer;
+ V: LongInt;
+Begin
+ If N>=Frames Then N:=Frames-1;
+ If (CacheBase<0) Or (N<CacheBase) Or (N>=CacheBase+CacheFrames) Then Begin
+  CacheBase:=N; CacheFrames:=4096 Div Align;
+  If Frames-N<CacheFrames Then CacheFrames:=Frames-N;
   ReadAt(DataStart+N*Align,Cache,CacheFrames*Align);
  End;
- Bytes:=Bits div 8; P:=(N-CacheBase)*Align+Ch*Bytes;
- if Bits=8 Then V:=(LongInt(Cache[P])-128)*256
- else Begin
+ Bytes:=Bits Div 8; P:=(N-CacheBase)*Align+Ch*Bytes;
+ If Bits=8 Then V:=(LongInt(Cache[P])-128)*256
+  Else
+ Begin
   V:=LongInt(Cache[P+Bytes-2])+LongInt(Cache[P+Bytes-1])*256;
-  if V>=32768 Then Dec(V,65536);
+  If V>=32768 Then Dec(V,65536);
  End;
  Sample:=V;
 End;
 Begin
  OpenRead(Source); Limit:=InputSize;
- if Limit<12 Then Fail('WAV tronque.');
+ If Limit<12 Then Fail('WAV tronque.');
  ReadAt(0,B,12);
- if not Tag('RIFF') or (B[8]<>87) or (B[9]<>65) or (B[10]<>86) or (B[11]<>69) Then Fail('WAV RIFF requis.');
- Size:=U32(4); if (Size<4) or (Size>Limit-8) Then Fail('Taille RIFF incorrecte.');
+ If Not Tag('RIFF') Or (B[8]<>87) Or (B[9]<>65) Or (B[10]<>86) Or (B[11]<>69) Then Fail(
+ 'WAV RIFF requis.');
+ Size:=U32(4); If (Size<4) Or (Size>Limit-8) Then Fail('Taille RIFF incorrecte.');
  Limit:=Size+8; Position:=12; HasFormat:=False; HasData:=False;
  DataStart:=0; DataSize:=0; Rate:=0; Channels:=0; Align:=0; Bits:=0;
- while Position<Limit do Begin
-  if Limit-Position<8 Then Fail('Bloc WAV tronque.');
+ While Position<Limit Do Begin
+  If Limit-Position<8 Then Fail('Bloc WAV tronque.');
   ReadAt(Position,B,8); Size:=U32(4); Inc(Position,8);
-  if Size>Limit-Position Then Fail('Bloc WAV tronque.');
-  if Tag('fmt ') Then Begin
-   if HasFormat or (Size<16) Then Fail('Bloc fmt incorrect.');
-   ReadAt(Position,B,16); if U16(0)<>1 Then Fail('WAV PCM entier requis.');
+  If Size>Limit-Position Then Fail('Bloc WAV tronque.');
+  If Tag('fmt ') Then Begin
+   If HasFormat Or (Size<16) Then Fail('Bloc fmt incorrect.');
+   ReadAt(Position,B,16); If U16(0)<>1 Then Fail('WAV PCM entier requis.');
    Channels:=U16(2); Rate:=U32(4); Bits:=U16(14); Align:=U16(12);
-   if not (Channels in [1,2]) or not (Bits in [8,16,24,32]) or (Rate<4000) or (Rate>192000) Then Fail('Format PCM non pris en charge.');
-   if (Align<>Channels*(Bits div 8)) or (U32(8)<>Rate*Align) Then Fail('Alignement PCM incorrect.');
+   If Not (Channels In [1,2]) Or Not (Bits In [8,16,24,32]) Or (Rate<4000) Or (Rate>
+   192000) Then Fail('Format PCM non pris en charge.');
+   If (Align<>Channels*(Bits Div 8)) Or (U32(8)<>Rate*Align) Then Fail(
+   'Alignement PCM incorrect.');
    HasFormat:=True;
-  End else if Tag('data') Then Begin
-   if HasData Then Fail('Plusieurs blocs data non pris en charge.');
+  End Else If Tag('data') Then Begin
+   If HasData Then Fail('Plusieurs blocs data non pris en charge.');
    DataStart:=Position; DataSize:=Size; HasData:=True;
   End;
   Inc(Position,Size);
-  if Odd(Size) Then Begin if Position>=Limit Then Fail('Bourrage WAV manquant.'); Inc(Position); End;
+  If Odd(Size) Then Begin
+   If Position>=Limit Then Fail('Bourrage WAV manquant.'); Inc(Position);
+  End;
  End;
- if not HasFormat or not HasData Then Fail('Blocs WAV manquants.');
- if (DataSize=0) or (DataSize mod Align<>0) Then Fail('Donnees PCM vides ou tronquees.');
- Frames:=DataSize div Align; OutRate:=RequestedRate;
- if OutRate=0 Then Begin
+ If Not HasFormat Or Not HasData Then Fail('Blocs WAV manquants.');
+ If (DataSize=0) Or (DataSize Mod Align<>0) Then Fail('Donnees PCM vides ou tronquees.');
+ Frames:=DataSize Div Align; OutRate:=RequestedRate;
+ If OutRate=0 Then Begin
   OutRate:=Rate;
-  if ForMP3 and (Rate<>32000) and (Rate<>44100) and (Rate<>48000) Then OutRate:=44100;
+  If ForMP3 And (Rate<>32000) And (Rate<>44100) And (Rate<>48000) Then OutRate:=44100;
  End;
- if ForMP3 and (OutRate<>32000) and (OutRate<>44100) and (OutRate<>48000) Then Fail('MP3: -ar 32000, 44100 ou 48000 requis.');
- OutChannels:=RequestedChannels; if OutChannels=0 Then OutChannels:=Channels;
+ If ForMP3 And (OutRate<>32000) And (OutRate<>44100) And (OutRate<>48000) Then Fail(
+ 'MP3: -ar 32000, 44100 ou 48000 requis.');
+ OutChannels:=RequestedChannels; If OutChannels=0 Then OutChannels:=Channels;
  ExactFrames:=Frames*(OutRate*1.0)/Rate;
- if ExactFrames>(2147483600 div (OutChannels*2)) Then Fail('Sortie PCM depassant 2 Go.');
- OutFrames:=Round(ExactFrames); if OutFrames<1 Then OutFrames:=1;
+ If ExactFrames>(2147483600 Div (OutChannels*2)) Then Fail('Sortie PCM depassant 2 Go.');
+ OutFrames:=Round(ExactFrames); If OutFrames<1 Then OutFrames:=1;
  OpenWrite(Target);
  PutTag('RIFF'); Put32(36+OutFrames*OutChannels*2); PutTag('WAVE');
  PutTag('fmt '); Put32(16); Put16(1); Put16(OutChannels); Put32(OutRate);
  Put32(OutRate*OutChannels*2); Put16(OutChannels*2); Put16(16);
  PutTag('data'); Put32(OutFrames*OutChannels*2);
  CacheBase:=-1; CacheFrames:=0; Used:=0;
- for J:=0 to OutFrames-1 do Begin
+ For J:=0 To OutFrames-1 Do Begin
   Value:=J*(Rate*1.0)/OutRate; Index:=Trunc(Value); Fraction:=Value-Index;
   Left:=Sample(Index,0)*(1-Fraction)+Sample(Index+1,0)*Fraction;
   Right:=Left;
-  if Channels=2 Then Right:=Sample(Index,1)*(1-Fraction)+Sample(Index+1,1)*Fraction;
-  if OutChannels=1 Then Left:=(Left+Right)/2;
-  for C:=0 to OutChannels-1 do Begin
-   if C=0 Then Value:=Left else Value:=Right;
-   Index:=Round(Value); if Index< -32768 Then Index:=-32768; if Index>32767 Then Index:=32767;
-   if Index<0 Then Inc(Index,65536);
-   OutBuffer[Used]:=Index and 255; OutBuffer[Used+1]:=Index shr 8; Inc(Used,2);
-   if Used=4096 Then Begin WriteBytes(OutBuffer,Used); Used:=0; End;
+  If Channels=2 Then Right:=Sample(Index,1)*(1-Fraction)+Sample(Index+1,1)*Fraction;
+  If OutChannels=1 Then Left:=(Left+Right)/2;
+  For C:=0 To OutChannels-1 Do Begin
+   If C=0 Then Value:=Left Else Value:=Right;
+   Index:=Round(Value); If Index< -32768 Then Index:=-32768;
+   If Index>32767 Then Index:=32767;
+   If Index<0 Then Inc(Index,65536);
+   OutBuffer[Used]:=Index And 255; OutBuffer[Used+1]:=Index Shr 8; Inc(Used,2);
+   If Used=4096 Then Begin
+    WriteBytes(OutBuffer,Used); Used:=0;
+   End;
   End;
  End;
- if Used>0 Then WriteBytes(OutBuffer,Used);
+ If Used>0 Then WriteBytes(OutBuffer,Used);
  CloseRead; CloseWrite;
 End;
 
-Procedure Commit(const Stage: string);
-Var F: File; Backup: string; Code,RestoreCode: Integer;
+Procedure Commit(Const Stage: String);
+Var
+ F: File;
+ Backup: String;
+ Code,RestoreCode: Integer;
 Begin
  Backup:='';
- if IsDirectory(OutputPath) Then Fail('La sortie designe un dossier.');
- if Exists(OutputPath) Then Begin
-  if not Overwrite Then Fail('Sortie existante (utiliser -y pour la remplacer): '+OutputPath);
+ If IsDirectory(OutputPath) Then Fail('La sortie designe un dossier.');
+ If Exists(OutputPath) Then Begin
+  If Not Overwrite Then Fail('Sortie existante (utiliser -y pour la remplacer): '+
+  OutputPath);
   Backup:=NewTemporary; Assign(F,OutputPath);
   {$I-}Rename(F,Backup); Code:=IOResult;{$I+}
-  if Code<>0 Then Fail('Sauvegarde de la sortie existante impossible.');
+  If Code<>0 Then Fail('Sauvegarde de la sortie existante impossible.');
  End;
  Assign(F,Stage); {$I-}Rename(F,OutputPath); Code:=IOResult;{$I+}
- if Code<>0 Then Begin
-  if Backup<>'' Then Begin
+ If Code<>0 Then Begin
+  If Backup<>'' Then Begin
    Assign(F,Backup); {$I-}Rename(F,OutputPath); RestoreCode:=IOResult;{$I+}
-   if RestoreCode<>0 Then WriteLn('Ancienne sortie conservee ici: ',Backup);
+   If RestoreCode<>0 Then WriteLn('Ancienne sortie conservee ici: ',Backup);
   End;
   Fail('Installation du fichier de sortie impossible.');
  End;
- if Backup<>'' Then Begin
+ If Backup<>'' Then Begin
   Assign(F,Backup); {$I-}Erase(F); Code:=IOResult;{$I+}
-  if Code<>0 Then WriteLn('Sauvegarde a supprimer: ',Backup);
+  If Code<>0 Then WriteLn('Sauvegarde a supprimer: ',Backup);
  End;
 End;
 
-Procedure Help;
-Begin
- WriteLn('FFMPEG Pascal 1.1 - audio natif et copie HLS fMP4, pas FFmpeg 8.0');
- WriteLn('Usage: ffmpeg [-y|-n] [-f FORMAT] -i ENTREE [options] SORTIE');
+Procedure Help;Begin
+ WriteLn('FFMPEG - Cette commande permet de manipuler, convertir, encoder, d‚coder, enregistrer et diffuser ',
+         'des fichiers audio et vid‚o');
+ WriteLn;
+ WriteLn('Syntaxe: FFMPEG [-y|-n] [-f FORMAT] -i ENTREE [options] SORTIE');
+ WriteLn;
  WriteLn('Entrees: WAV PCM, MP3, AIFF PCM, VOC PCM, MOD 4 canaux.');
  WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 320 kbit/s.');
  WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
@@ -3783,138 +3984,167 @@ Begin
  WriteLn('Voir FFMPEG.md pour les limites et les sources FFmpeg consultees.');
 End;
 
-Var I,J,Code: Integer; Argument,Value,Detected,Intermediate: string;
-Number: LongInt;
+Var
+ I,J,Code: Integer;
+ Argument,Value,Detected,Intermediate: String;
+ Number: LongInt;
 
-Function NextArgument: string;
-Begin
- Inc(I); if I>ParamCount Then Fail('Valeur manquante pour '+Argument);
+Function NextArgument: String;Begin
+ Inc(I); If I>ParamCount Then Fail('Valeur manquante pour '+Argument);
  NextArgument:=ParamStr(I);
 End;
 
-Begin
+BEGIN
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
- {$IFDEF MSWINDOWS}NetSession:=nil; NetRequest:=nil;{$ENDIF}
- for J:=0 to 3 do Temps[J]:='';
+ {$IFDEF MSWINDOWS}
+  NetSession:=Nil; NetRequest:=Nil;
+ {$ENDIF}
+ For J:=0 To 3 Do Temps[J]:='';
  InputPath:=''; OutputPath:=''; InputFormat:=''; OutputFormat:='';
  AudioCodec:=''; PendingFormat:=''; RequestedRate:=0; RequestedChannels:=0;
  Overwrite:=False; NoOverwrite:=False; HideBanner:=False; HasBitrate:=False;
  SavedExit:=ExitProc; ExitProc:=@ExitCleanup; Randomize;
  I:=1;
- while I<=ParamCount do Begin
+ While I<=ParamCount Do Begin
   Argument:=ParamStr(I);
-  if (Argument='-h') or (Argument='--help') or (Argument='/?') or (Argument='-help') Then Begin Help; Halt(0); End
-  else if Argument='-version' Then Begin
-   WriteLn('FFMPEG Pascal 1.1; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.'); Halt(0);
+  If (Argument='-h') Or (Argument='--help') Or (Argument='/?') Or (Argument='-help')
+  Then Begin
+   Help; Halt(0);
   End
-  else if Argument='-formats' Then Begin
+  Else If Argument='-version' Then Begin
+   WriteLn(
+   'FFMPEG Pascal 1.1; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   Halt(0);
+  End
+  Else If Argument='-formats' Then Begin
    WriteLn(' D = demuxage, E = muxage'); WriteLn(' DE wav'); WriteLn(' DE mp3');
    WriteLn(' D  hls (fMP4 VOD)'); WriteLn('  E mp4 (copie de fragments HLS)');
-   WriteLn(' D  aiff'); WriteLn(' D  voc'); WriteLn(' D  libopenmpt (nom compatible, moteur MOD Pascal interne)'); Halt(0);
+   WriteLn(' D  aiff'); WriteLn(' D  voc');
+   WriteLn(' D  libopenmpt (nom compatible, moteur MOD Pascal interne)'); Halt(0);
   End
-  else if Argument='-codecs' Then Begin
-   WriteLn('DE pcm_s16le'); WriteLn('D  pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
+  Else If Argument='-codecs' Then Begin
+   WriteLn('DE pcm_s16le');
+   WriteLn('D  pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
    WriteLn('DE mp3 (encodeur Pascal simple 320 kbit/s)'); Halt(0);
   End
-  else if Argument='-y' Then Overwrite:=True
-  else if Argument='-n' Then NoOverwrite:=True
-  else if Argument='-hide_banner' Then HideBanner:=True
-  else if Argument='-vn' Then NoVideo:=True
-  else if Argument='-hls_base_url' Then Begin
+  Else If Argument='-y' Then Overwrite:=True Else
+  If Argument='-n' Then NoOverwrite:=True Else
+  If Argument='-hide_banner' Then HideBanner:=True Else
+  If Argument='-vn' Then NoVideo:=True Else
+  If Argument='-hls_base_url' Then Begin
    HLSBase:=NextArgument;
-   if not IsHTTP(HLSBase) Then Fail('-hls_base_url exige une URL HTTP/HTTPS.');
+   If Not IsHTTP(HLSBase) Then Fail('-hls_base_url exige une URL HTTP/HTTPS.');
   End
-  else if Argument='-f' Then PendingFormat:=FormatName(NextArgument)
-  else if Argument='-i' Then Begin
-   if InputPath<>'' Then Fail('Une seule entree est prise en charge.');
+  Else If Argument='-f' Then PendingFormat:=FormatName(NextArgument) Else
+  If Argument='-i' Then Begin
+   If InputPath<>'' Then Fail('Une seule entree est prise en charge.');
    InputPath:=NextArgument; InputFormat:=PendingFormat; PendingFormat:='';
   End
-  else if (Argument='-c') or (Argument='-codec') or (Argument='-c:a') or (Argument='-codec:a') or (Argument='-acodec') Then Begin
-   if InputPath='' Then Fail('Selection du codec de sortie attendue apres -i.');
-   AllStreams:=(Argument='-c') or (Argument='-codec');
+  Else If (Argument='-c') Or (Argument='-codec') Or (Argument='-c:a') Or (Argument=
+  '-codec:a') Or (Argument='-acodec') Then Begin
+   If InputPath='' Then Fail('Selection du codec de sortie attendue apres -i.');
+   AllStreams:=(Argument='-c') Or (Argument='-codec');
    AudioCodec:=Lower(NextArgument);
   End
-  else if (Argument='-ar') or (Argument='-ac') Then Begin
-   if InputPath='' Then Fail('Option de sortie attendue apres -i: '+Argument);
+  Else If (Argument='-ar') Or (Argument='-ac') Then Begin
+   If InputPath='' Then Fail('Option de sortie attendue apres -i: '+Argument);
    Value:=NextArgument; Val(Value,Number,Code);
-   if Code<>0 Then Fail('Valeur numerique incorrecte: '+Value);
-   if Argument='-ar' Then Begin
-    if (Number<4000) or (Number>192000) Then Fail('-ar attendu: 4000..192000.');
+   If Code<>0 Then Fail('Valeur numerique incorrecte: '+Value);
+   If Argument='-ar' Then Begin
+    If (Number<4000) Or (Number>192000) Then Fail('-ar attendu: 4000..192000.');
     RequestedRate:=Number;
-   End else Begin
-    if (Number<>1) and (Number<>2) Then Fail('-ac attendu: 1 ou 2.');
+   End Else
+   Begin
+    If (Number<>1) And (Number<>2) Then Fail('-ac attendu: 1 ou 2.');
     RequestedChannels:=Number;
    End;
   End
-  else if (Argument='-b:a') or (Argument='-ab') Then Begin
-   if InputPath='' Then Fail('Debit de sortie attendu apres -i.');
+  Else If (Argument='-b:a') Or (Argument='-ab') Then Begin
+   If InputPath='' Then Fail('Debit de sortie attendu apres -i.');
    Value:=Lower(NextArgument);
-   if (Value<>'320k') and (Value<>'320000') Then Fail('Seul le debit MP3 320k est implemente.');
+   If (Value<>'320k') And (Value<>'320000') Then Fail(
+   'Seul le debit MP3 320k est implemente.');
    HasBitrate:=True;
   End
-  else if (Copy(Argument,1,1)='-') Then Fail('Option non prise en charge: '+Argument)
-  else Begin
-   if (OutputPath<>'') or (InputPath='') Then Fail('Usage: ffmpeg -i ENTREE [options] SORTIE');
+  Else If (Copy(Argument,1,1)='-') Then Fail('Option non prise en charge: '+Argument)
+   Else
+  Begin
+   If (OutputPath<>'') Or (InputPath='') Then Fail(
+   'Usage: ffmpeg -i ENTREE [options] SORTIE');
    OutputPath:=Argument; OutputFormat:=PendingFormat; PendingFormat:='';
-   if I<>ParamCount Then Fail('La sortie doit etre le dernier argument.');
+   If I<>ParamCount Then Fail('La sortie doit etre le dernier argument.');
   End;
   Inc(I);
  End;
- if ParamCount=0 Then Begin Help; Halt(1); End;
- if (InputPath='') or (OutputPath='') Then Fail('Une entree -i et une sortie sont requises.');
- if Overwrite and NoOverwrite Then Fail('-y et -n sont incompatibles.');
- if (InputPath='-') or ((Pos('://',InputPath)>0) and not IsHTTP(InputPath)) Then Fail('Entree locale ou HLS HTTP/HTTPS requise.');
- if Lower(FExpand(InputPath))=Lower(FExpand(OutputPath)) Then Fail('Entree et sortie doivent etre differentes.');
- if IsDirectory(OutputPath) Then Fail('La sortie designe un dossier.');
- if Exists(OutputPath) and not Overwrite Then Fail('Sortie existante (utiliser -y): '+OutputPath);
+ If ParamCount=0 Then Begin
+  Help; Halt(1);
+ End;
+ If (InputPath='') Or (OutputPath='') Then Fail(
+ 'Une entree -i et une sortie sont requises.');
+ If Overwrite And NoOverwrite Then Fail('-y et -n sont incompatibles.');
+ If (InputPath='-') Or ((Pos('://',InputPath)>0) And Not IsHTTP(InputPath)) Then Fail(
+ 'Entree locale ou HLS HTTP/HTTPS requise.');
+ If Lower(FExpand(InputPath))=Lower(FExpand(OutputPath)) Then Fail(
+ 'Entree et sortie doivent etre differentes.');
+ If IsDirectory(OutputPath) Then Fail('La sortie designe un dossier.');
+ If Exists(OutputPath) And Not Overwrite Then Fail('Sortie existante (utiliser -y): '+
+ OutputPath);
  Intermediate:=InputPath;
- if IsHTTP(InputPath) Then Begin
+ If IsHTTP(InputPath) Then Begin
   Temps[0]:=NewTemporary; DownloadHLS(InputPath,Temps[0]); Intermediate:=Temps[0];
-  if HLSBase='' Then HLSBase:=LastDownloadURL;
+  If HLSBase='' Then HLSBase:=LastDownloadURL;
  End;
  Detected:=Probe(Intermediate);
- if InputFormat='' Then InputFormat:=Detected
- else if InputFormat<>Detected Then Fail('Format impose incompatible avec la signature du fichier.');
- if InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
- if OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
- if InputFormat='hls' Then Begin
-  if (OutputFormat<>'mp4') or (AudioCodec<>'copy') or not AllStreams Then
-   Fail('HLS exige -c copy et une sortie MP4.');
-  if (RequestedRate<>0) or (RequestedChannels<>0) or HasBitrate or NoVideo Then
-   Fail('HLS copy conserve toutes les pistes: conversion et -vn non pris en charge.');
+ If InputFormat='' Then InputFormat:=Detected Else
+ If InputFormat<>Detected Then Fail(
+ 'Format impose incompatible avec la signature du fichier.');
+ If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
+ If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If InputFormat='hls' Then Begin
+  If (OutputFormat<>'mp4') Or (AudioCodec<>'copy') Or Not AllStreams Then   Fail(
+  'HLS exige -c copy et une sortie MP4.');
+  If (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or NoVideo Then   Fail(
+  'HLS copy conserve toutes les pistes: conversion et -vn non pris en charge.');
   Temps[2]:=NewTemporary; AssembleHLS(Intermediate,Temps[2]);
   Commit(Temps[2]); Temps[2]:=''; WriteLn('MP4 fragmente cree: ',OutputPath); Halt(0);
  End;
- if IsHTTP(InputPath) Then Fail('Entree reseau reservee aux listes HLS.');
- if HLSBase<>'' Then Fail('-hls_base_url exige une entree HLS.');
- if (OutputFormat<>'wav') and (OutputFormat<>'mp3') Then Fail('Seules les sorties WAV et MP3 sont implementees.');
- if AudioCodec='' Then if OutputFormat='wav' Then AudioCodec:='pcm_s16le' else AudioCodec:='mp3';
- if (AudioCodec<>'copy') and not (((OutputFormat='wav') and (AudioCodec='pcm_s16le')) or
-  ((OutputFormat='mp3') and (AudioCodec='mp3'))) Then Fail('Codec de sortie non pris en charge pour ce conteneur.');
- if HasBitrate and ((OutputFormat<>'mp3') or (AudioCodec='copy')) Then Fail('-b:a exige un encodage MP3.');
- if (AudioCodec='copy') and ((RequestedRate<>0) or (RequestedChannels<>0) or (InputFormat<>OutputFormat)) Then
-  Fail('-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- if not HideBanner Then WriteLn('FFMPEG Pascal 1.1 - moteur audio natif du projet');
+ If IsHTTP(InputPath) Then Fail('Entree reseau reservee aux listes HLS.');
+ If HLSBase<>'' Then Fail('-hls_base_url exige une entree HLS.');
+ If (OutputFormat<>'wav') And (OutputFormat<>'mp3') Then Fail(
+ 'Seules les sorties WAV et MP3 sont implementees.');
+ If AudioCodec='' Then If OutputFormat='wav' Then AudioCodec:=
+ 'pcm_s16le' Else AudioCodec:='mp3';
+ If (AudioCodec<>'copy') And Not (((OutputFormat='wav') And (AudioCodec='pcm_s16le')) Or
+ ((OutputFormat='mp3') And (AudioCodec='mp3'))) Then Fail(
+ 'Codec de sortie non pris en charge pour ce conteneur.');
+ If HasBitrate And ((OutputFormat<>'mp3') Or (AudioCodec='copy')) Then Fail(
+ '-b:a exige un encodage MP3.');
+ If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
+ <>OutputFormat)) Then  Fail(
+ '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.1 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
- if AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
- else Begin
+ If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
+  Else
+ Begin
   Intermediate:=InputPath;
-  if InputFormat<>'wav' Then Begin
+  If InputFormat<>'wav' Then Begin
    Temps[0]:=NewTemporary;
-   if InputFormat='mp3' Then DecodeMP3(InputPath,Temps[0])
-   else if InputFormat='aiff' Then DecodeAIFF(InputPath,Temps[0])
-   else if InputFormat='voc' Then DecodeVOC(InputPath,Temps[0])
-   else if InputFormat='libopenmpt' Then DecodeMOD(InputPath,Temps[0])
-   else Fail('Decodeur non implemente.');
+   If InputFormat='mp3' Then DecodeMP3(InputPath,Temps[0]) Else
+   If InputFormat='aiff' Then DecodeAIFF(InputPath,Temps[0]) Else
+   If InputFormat='voc' Then DecodeVOC(InputPath,Temps[0]) Else
+   If InputFormat='libopenmpt' Then DecodeMOD(InputPath,Temps[0])
+                               Else Fail('Decodeur non implemente.');
    Intermediate:=Temps[0];
   End;
-  if OutputFormat='wav' Then NormalizeWave(Intermediate,Temps[2],False)
-  else Begin
+  If OutputFormat='wav' Then NormalizeWave(Intermediate,Temps[2],False)
+   Else
+  Begin
    Temps[1]:=NewTemporary; NormalizeWave(Intermediate,Temps[1],True);
    EncodeMP3(Temps[1],Temps[2]);
   End;
  End;
  Commit(Temps[2]); Temps[2]:='';
  WriteLn('Sortie creee: ',OutputPath);
-End.
+END.
