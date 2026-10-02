@@ -3,7 +3,7 @@
  @version: 1.00
  @website(https://www.gladir.com/speech-to-text-0)
  @abstract(Target: Free Pascal 3.2
- @description: FFMPEG Pascal: audio, HLS, conteneurs video et FLV H264 vers PNG natifs. }
+ @description: FFMPEG Pascal: audio, HLS, conteneurs video et FLV H264 vers PNG/GIF natifs. }
 
 Program FFMPEG;
 
@@ -4206,16 +4206,84 @@ Var
   End;
  End;
 
- Procedure WritePNG;
+ Procedure WriteImage;
+ Type
+  TGIFEntry=Record Prefix,Code: Word; Suffix: Byte; End;
  Var Header: Array[0..12] Of Byte; Tiny: Array[0..4] Of Byte;
   X,Y,C,X0,Y0,X1,Y1: Integer; FX,FY: Double;
   RGB: Array[0..3,0..2] Of Integer;
   SX,SY: Double; V: LongInt;
+  IsGIF: Boolean;
+  GIFTable: Array[0..511] Of TGIFEntry;
+  GIFPrefix,GIFNext,GIFBits,GIFCount: Integer;
+  GIFPacked: LongInt;
+  OutputRGB: Array[0..2] Of Integer;
   Procedure RawByte(B: Byte);
   Begin WriteBytes(B,1); End;
   Procedure Raw32(V: LongInt);
   Var I: Integer;
   Begin For I:=3 Downto 0 Do RawByte((V Shr (I*8)) And 255); End;
+  { GIF87a: palette RGB 3/3/2, LZW natif a codes de 9 bits.
+    Le dictionnaire est reinitialise avant le passage a 10 bits.
+    Les chaines sont compressees; aucune bibliotheque GIF n'est chargee. }
+  Procedure GIFByte(B: Byte);
+  Begin
+   PNGBuffer^[GIFCount]:=B; Inc(GIFCount);
+   If GIFCount=255 Then Begin RawByte(255); WriteBytes(PNGBuffer^,255); GIFCount:=0; End;
+  End;
+  Procedure GIFCode(Code: Integer);
+  Begin
+   GIFPacked:=GIFPacked Or (LongInt(Code) Shl GIFBits); Inc(GIFBits,9);
+   While GIFBits>=8 Do Begin
+    GIFByte(GIFPacked And 255); GIFPacked:=GIFPacked Shr 8; Dec(GIFBits,8);
+   End;
+  End;
+  Procedure GIFReset;
+  Begin FillChar(GIFTable,SizeOf(GIFTable),0); GIFNext:=258; End;
+  Procedure GIFPixel(R,G,B: Integer);
+  Var Index,Slot: Integer;
+  Begin
+   Index:=((LongInt(R)*7+127) Div 255)*32+
+          ((LongInt(G)*7+127) Div 255)*4+(LongInt(B)*3+127) Div 255;
+   If GIFPrefix<0 Then Begin GIFPrefix:=Index; Exit; End;
+   Slot:=((GIFPrefix Shl 4) Xor Index) And 511;
+   While GIFTable[Slot].Code<>0 Do Begin
+    If (GIFTable[Slot].Prefix=GIFPrefix) And (GIFTable[Slot].Suffix=Index) Then Begin
+     GIFPrefix:=GIFTable[Slot].Code; Exit;
+    End;
+    Slot:=(Slot+1) And 511;
+   End;
+   GIFCode(GIFPrefix);
+   If GIFNext<511 Then Begin
+    GIFTable[Slot].Prefix:=GIFPrefix; GIFTable[Slot].Suffix:=Index;
+    GIFTable[Slot].Code:=GIFNext; Inc(GIFNext);
+   End Else Begin GIFCode(256); GIFReset; End;
+   GIFPrefix:=Index;
+  End;
+  Procedure GIFWord(V: Integer);
+  Begin RawByte(V And 255); RawByte(V Shr 8); End;
+  Procedure GIFStart;
+  Var I: Integer; Signature: String[6];
+  Begin
+   Signature:='GIF87a'; WriteBytes(Signature[1],6);
+   GIFWord(OutW); GIFWord(OutH); RawByte($F7); RawByte(0); RawByte(0);
+   For I:=0 To 255 Do Begin
+    RawByte(((I Shr 5)*255+3) Div 7);
+    RawByte((((I Shr 2) And 7)*255+3) Div 7);
+    RawByte((I And 3)*85);
+   End;
+   RawByte($2C); GIFWord(0); GIFWord(0); GIFWord(OutW); GIFWord(OutH); RawByte(0);
+   RawByte(8); GIFCount:=0; GIFPacked:=0; GIFBits:=0; GIFPrefix:=-1;
+   GIFReset; GIFCode(256);
+  End;
+  Procedure GIFEnd;
+  Begin
+   If GIFPrefix>=0 Then GIFCode(GIFPrefix);
+   GIFCode(257);
+   If GIFBits<>0 Then GIFByte(GIFPacked And 255);
+   If GIFCount<>0 Then Begin RawByte(GIFCount); WriteBytes(PNGBuffer^,GIFCount); End;
+   RawByte(0); RawByte($3B);
+  End;
   Procedure CRCByte(B: Byte);
   Var I: Integer;
   Begin
@@ -4269,15 +4337,17 @@ Var
  Begin
   If OutW=0 Then Begin OutW:=VisibleW; OutH:=VisibleH; End;
   New(PNGBuffer); PNGCount:=0; AdlerA:=1; AdlerB:=0;
-  OpenWrite(Target);
+  OpenWrite(Target); IsGIF:=VideoCodec='gif';
+  If IsGIF Then GIFStart Else Begin
   RawByte(137); RawByte(80); RawByte(78); RawByte(71);
   RawByte(13); RawByte(10); RawByte(26); RawByte(10);
   FillChar(Header,SizeOf(Header),0);
   Header[2]:=OutW Shr 8; Header[3]:=OutW And 255;
   Header[6]:=OutH Shr 8; Header[7]:=OutH And 255; Header[8]:=8; Header[9]:=2;
   Chunk('IHDR',Header,13); Tiny[0]:=$78; Tiny[1]:=$01; Chunk('IDAT',Tiny,2);
+  End;
   For Y:=0 To OutH-1 Do Begin
-   DataByte(0); SY:=(Y+0.5)*VisibleH/OutH-0.5;
+   If Not IsGIF Then DataByte(0); SY:=(Y+0.5)*VisibleH/OutH-0.5;
    If SY<0 Then SY:=0; If SY>VisibleH-1 Then SY:=VisibleH-1;
    Y0:=Trunc(SY); Y1:=Y0+1; If Y1>=VisibleH Then Y1:=Y0; FY:=SY-Y0;
    For X:=0 To OutW-1 Do Begin
@@ -4287,13 +4357,16 @@ Var
     Pixel(X0,Y0,0); Pixel(X1,Y0,1); Pixel(X0,Y1,2); Pixel(X1,Y1,3);
     For C:=0 To 2 Do Begin
      V:=Trunc(((RGB[0,C]*(1-FX)+RGB[1,C]*FX)*(1-FY)+
-              (RGB[2,C]*(1-FX)+RGB[3,C]*FX)*FY)+0.5); DataByte(V);
+              (RGB[2,C]*(1-FX)+RGB[3,C]*FX)*FY)+0.5);
+     If IsGIF Then OutputRGB[C]:=V Else DataByte(V);
     End;
+    If IsGIF Then GIFPixel(OutputRGB[0],OutputRGB[1],OutputRGB[2]);
    End;
   End;
+  If IsGIF Then GIFEnd Else Begin
   Flush(True); Tiny[0]:=AdlerB Shr 8; Tiny[1]:=AdlerB And 255;
   Tiny[2]:=AdlerA Shr 8; Tiny[3]:=AdlerA And 255; Chunk('IDAT',Tiny,4);
-  Chunk('IEND',Tiny,0); CloseWrite;
+  Chunk('IEND',Tiny,0); End; CloseWrite;
  End;
 
 Begin
@@ -4316,7 +4389,7 @@ Begin
   If At(TagAt)=9 Then Begin
    If TagSize<5 Then Bad('Tag video trop court.');
    P:=TagAt+11; FrameKind:=At(P) Shr 4;
-   If (At(P) And 15)<>7 Then Bad('Seul le codec AVC/H264 FLV est implemente pour PNG.');
+   If (At(P) And 15)<>7 Then Bad('Seul le codec AVC/H264 FLV est implemente pour PNG/GIF.');
    If At(P+1)=0 Then Begin
     Inc(P,5); If TagEnd-P<7 Then Bad('Configuration AVC tronquee.');
     If At(P)<>1 Then Bad('Version AVC invalide.');
@@ -4365,7 +4438,7 @@ Begin
      End;
      CloseWrite;
      {$ELSE}
-     WritePNG;
+     WriteImage;
      {$ENDIF}
      ReleasePicture; Exit;
     End;
@@ -6777,8 +6850,9 @@ Procedure Help;Begin
  WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 320 kbit/s.');
  WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
  WriteLn('Image: -i entree.flv -vcodec png -vframes 1 -an -f rawvideo -s 106x106 image.png');
- WriteLn('FLV H264 CAVLC 8 bits progressif: premiere image IDR; PNG RGB natif.');
- WriteLn('-c:v/-codec:v png, -frames:v 1; -s optionnel; -f image2 accepte.');
+ WriteLn('FLV H264 CAVLC 8 bits progressif: premiere image IDR; PNG RGB / GIF 256 couleurs natifs.');
+ WriteLn('-vcodec png|gif (-c:v/-codec:v); -frames:v 1; -s optionnel; -f image2 accepte.');
+ WriteLn('GIF: image unique, palette 256 couleurs RGB 3/3/2, LZW Pascal.');
  WriteLn('Video locale: MP4 vers AVI, AVI vers MP4, WebM VP9/Opus vers MP4.');
  WriteLn('-c copy: changement de conteneur, pas de reencodage video.');
  WriteLn('AVI B-frames H264/MPEG4; montages MP4 elst 32/64 bits a vitesse 1.');
@@ -6825,7 +6899,7 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.4; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.5; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
@@ -6833,12 +6907,14 @@ BEGIN
    WriteLn(' D  hls (fMP4 VOD)'); WriteLn(' DE mp4 (profils limites et copie HLS)');
    WriteLn(' DE avi (H264/MPEG4, AAC/MP3)'); WriteLn(' D  webm (VP9/Opus)');
    WriteLn(' D  flv (premiere image AVC/CAVLC)');
-   WriteLn('  E image2/rawvideo (une image PNG)');
+   WriteLn('  E image2/rawvideo (une image PNG/GIF)');
+   WriteLn('  E gif (une image)');
    WriteLn(' D  aiff'); WriteLn(' D  voc');
    WriteLn(' D  libopenmpt (nom compatible, moteur MOD Pascal interne)'); Halt(0);
   End
   Else If Argument='-codecs' Then Begin
    WriteLn(' E png (RGB24, sans compression)');
+   WriteLn(' E gif (palette RGB 3/3/2, LZW, une image)');
    WriteLn('D  h264 (premiere IDR CAVLC 8 bits 4:2:0 progressive)');
    WriteLn('DE pcm_s16le');
    WriteLn('D  pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
@@ -6853,20 +6929,21 @@ BEGIN
   If (Argument='-vcodec') Or (Argument='-c:v') Or (Argument='-codec:v') Then Begin
    If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
    VideoCodec:=Lower(NextArgument);
-   If VideoCodec<>'png' Then Fail('Encodage video implemente: png, une image.');
+   If (VideoCodec<>'png') And (VideoCodec<>'gif') Then
+    Fail('Encodage video implemente: png ou gif, une image.');
   End Else If (Argument='-vframes') Or (Argument='-frames:v') Then Begin
    If InputPath='' Then Fail('Nombre d''images attendu apres -i.');
    Value:=NextArgument; Val(Value,Number,Code);
-   If (Code<>0) Or (Number<>1) Then Fail('Extraction PNG: -vframes 1 uniquement.');
+   If (Code<>0) Or (Number<>1) Then Fail('Extraction PNG/GIF: -vframes 1 uniquement.');
    VideoFrames:=1;
   End Else If Argument='-s' Then Begin
    If InputPath='' Then Fail('Dimensions de sortie attendues apres -i.');
    Value:=Lower(NextArgument); J:=Pos('x',Value);
    If J<2 Then Fail('-s exige LARGEURxHAUTEUR, exemple 106x106.');
    Val(Copy(Value,1,J-1),Number,Code);
-   If (Code<>0) Or (Number<1) Or (Number>8192) Then Fail('Largeur PNG: 1..8192.');
+   If (Code<>0) Or (Number<1) Or (Number>8192) Then Fail('Largeur image: 1..8192.');
    ImageWidth:=Number; Val(Copy(Value,J+1,255),Number,Code);
-   If (Code<>0) Or (Number<1) Or (Number>4096) Then Fail('Hauteur PNG: 1..4096.');
+   If (Code<>0) Or (Number<1) Or (Number>4096) Then Fail('Hauteur image: 1..4096.');
    ImageHeight:=Number;
   End Else
   If Argument='-hls_base_url' Then Begin
@@ -6938,20 +7015,26 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
- If (VideoCodec='png') Or (OutputFormat='png') Or (OutputFormat='image2') Then Begin
-  If InputFormat<>'flv' Then Fail('Extraction PNG: entree FLV AVC/H264 requise.');
-  If (VideoCodec<>'') And (VideoCodec<>'png') Then Fail('Codec PNG requis.');
-  If Not ((OutputFormat='rawvideo') Or (OutputFormat='png') Or
-   (OutputFormat='image2')) Then Fail('PNG: muxeur rawvideo ou image2 requis.');
-  If NoVideo Then Fail('-vn est incompatible avec extraction PNG.');
+ If (VideoCodec='png') Or (VideoCodec='gif') Or (OutputFormat='png') Or
+  (OutputFormat='gif') Or (OutputFormat='image2') Then Begin
+  If InputFormat<>'flv' Then Fail('Extraction PNG/GIF: entree FLV AVC/H264 requise.');
+  If VideoCodec='' Then Begin
+   If (OutputFormat='gif') Or (Extension(OutputPath)='gif') Then VideoCodec:='gif'
+   Else VideoCodec:='png';
+  End;
+  If ((OutputFormat='gif') And (VideoCodec<>'gif')) Or
+     ((OutputFormat='png') And (VideoCodec<>'png')) Then Fail('Codec et format image incompatibles.');
+  If Not ((OutputFormat='rawvideo') Or (OutputFormat='png') Or (OutputFormat='gif') Or
+   (OutputFormat='image2')) Then Fail('Image: muxeur rawvideo, image2, png ou gif requis.');
+  If NoVideo Then Fail('-vn est incompatible avec extraction PNG/GIF.');
   If (AudioCodec<>'') Or (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Then
-   Fail('Options audio incompatibles avec extraction PNG.');
-  If Not HideBanner Then WriteLn('Premiere image FLV H264 CAVLC: decodage et PNG natifs Pascal.');
+   Fail('Options audio incompatibles avec extraction PNG/GIF.');
+  If Not HideBanner Then WriteLn('Premiere image FLV H264 CAVLC: decodage et image natifs Pascal.');
   Temps[2]:=NewTemporary; ExtractFLVPicture(Intermediate,Temps[2],ImageWidth,ImageHeight);
-  Commit(Temps[2]); Temps[2]:=''; WriteLn('Image PNG creee: ',OutputPath); Halt(0);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('Image ',VideoCodec,' creee: ',OutputPath); Halt(0);
  End;
  If (VideoFrames<>0) Or (ImageWidth<>0) Or (VideoCodec<>'') Or NoAudio Then
-  Fail('-vframes, -s, -vcodec png et -an: reserves a extraction PNG.');
+  Fail('-vframes, -s, -vcodec png/gif et -an: reserves a extraction PNG/GIF.');
  If InputFormat='hls' Then Begin
   If (OutputFormat<>'mp4') Or (AudioCodec<>'copy') Or Not AllStreams Then   Fail(
   'HLS exige -c copy et une sortie MP4.');
@@ -6987,7 +7070,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.4 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.5 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
