@@ -3337,6 +3337,7 @@ Function FormatName(S: String): String;Begin
  If S='m3u8' Then S:='hls';
  If (S='mpg') Or (S='mpe') Then S:='mpeg';
  If S='m1v' Then S:='mpeg1video';
+ If S='m2v' Then S:='mpeg2video';
  If (S='wmv') Or (S='wma') Then S:='asf';
  FormatName:=S;
 End;
@@ -5234,6 +5235,7 @@ Var
  P,Limit,Finish,Start,Payload,N,Frames,ClockValue,Remainder,Rate,FrameRate: LongInt;
  ID,V,K,Selected,FirstCount,Layer,BR,RI,FrameLength,BitPos: Integer;
  HavePack,HaveMedia,ExtractAudio,ExtractVideo,ScanVideo: Boolean;
+ PendingExtension,HaveMPEG2Sequence: Boolean;
  VideoPrefix: LongInt;
 
  Procedure Bad(Const S: String);
@@ -5260,8 +5262,15 @@ Var
    Take:=4096; If Count<Take Then Take:=Count;
    ReadAt(Position,B,Take);
    If ScanVideo Then For J:=0 To Take-1 Do Begin
-    If (VideoPrefix=1) And (B[J]=$B5) Then
-     Bad('Extension MPEG-2 incompatible avec raw MPEG-1 video.');
+    If PendingExtension Then Begin
+     If B[J] Shr 4=1 Then HaveMPEG2Sequence:=True;
+     PendingExtension:=False;
+    End;
+    If (VideoPrefix=1) And (B[J]=$B5) Then Begin
+     If OutKind='mpeg1video' Then
+      Bad('Extension MPEG-2 incompatible avec raw MPEG-1 video.');
+     PendingExtension:=True;
+    End;
     VideoPrefix:=((VideoPrefix And 65535)*256)+B[J];
    End;
    WriteBytes(B,Take); Inc(Position,Take); Dec(Count,Take);
@@ -5343,9 +5352,10 @@ Var
 
 Begin
  ScanVideo:=False; VideoPrefix:=$FFFFFF;
+ PendingExtension:=False; HaveMPEG2Sequence:=False;
  OpenRead(Source); Limit:=InputSize; OpenWrite(Target);
  If InKind='mp3' Then MuxMP3 Else Begin
-  ExtractAudio:=(OutKind='mp3') Or (OutKind='mp2'); ExtractVideo:=OutKind='mpeg1video';
+  ExtractAudio:=(OutKind='mp3') Or (OutKind='mp2'); ExtractVideo:=(OutKind='mpeg1video') Or (OutKind='mpeg2video');
   P:=0; HavePack:=False; HaveMedia:=False; Selected:=-1; FirstCount:=0;
   While P<Limit Do Begin
    Start:=P; Bound(P,4,Limit);
@@ -5406,6 +5416,9 @@ Begin
   End;
   If ExtractVideo Then If (FirstCount<4) Or (First[0]<>0) Or (First[1]<>0) Or
    (First[2]<>1) Or (First[3]<>$B3) Then Bad('Sequence video MPEG attendue.');
+  If (OutKind='mpeg2video') And Not HaveMPEG2Sequence Then
+   Bad('raw MPEG-2 video exige une extension de sequence MPEG-2.');
+  If ExtractVideo And PendingExtension Then Bad('Extension video tronquee.');
   If OutKind='mpeg' Then Begin H[0]:=0; H[1]:=0; H[2]:=1; H[3]:=$B9; WriteBytes(H,4); End;
  End;
  CloseRead; CloseWrite;
@@ -7818,6 +7831,7 @@ Begin
  WriteLn(' DE mp4             MP4 H264/MPEG4, AAC/MP3, VP9/Opus; copie de flux');
  WriteLn(' DE mpeg            MPEG-1 System format (copie PES / muxage MP3)');
  WriteLn('  E mpeg1video      raw MPEG-1 video (copie depuis MPEG System; alias: m1v)');
+ WriteLn('  E mpeg2video      raw MPEG-2 video (copie depuis MPEG System; alias: m2v)');
  WriteLn('  E mp2             Flux Layer II extrait de MPEG System');
  WriteLn('  E png             PNG RGB24, une image');
  WriteLn('  E rawvideo        Alias de sortie PNG/GIF; pas de pixels bruts');
@@ -7841,7 +7855,7 @@ Procedure Help;Begin
  WriteLn('WMV2 video et encodage FLV1 non encore implementes.');
  WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 32..320 kbit/s (CBR).');
  WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
- WriteLn('MPEG-1 System: -i entree.mpg -c copy sortie.mpg|video.m1v|audio.mp2|audio.mp3');
+ WriteLn('MPEG-1 System: -i entree.mpg -c copy sortie.mpg|video.m1v|video.m2v|audio.mp2|audio.mp3');
  WriteLn('Muxage MPEG-1 System: -i audio.mp3 -c copy -f mpeg sortie.mpg');
  WriteLn('Image: -i entree.flv -vcodec png -vframes 1 -an -f rawvideo -s 106x106 image.png');
  WriteLn('FLV H264 CAVLC 8 bits progressif: premiere image IDR; PNG RGB / GIF 256 couleurs natifs.');
@@ -7921,7 +7935,7 @@ BEGIN
    If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
    VideoCodec:=Lower(NextArgument);
    If (VideoCodec<>'png') And (VideoCodec<>'gif') And (VideoCodec<>'copy') Then
-    Fail('Codec video: png/gif (image) ou copy (extraction MPEG-1).');
+    Fail('Codec video: png/gif (image) ou copy (extraction video MPEG).');
   End Else If (Argument='-vframes') Or (Argument='-frames:v') Then Begin
    If InputPath='' Then Fail('Nombre d''images attendu apres -i.');
    Value:=NextArgument; Val(Value,Number,Code);
@@ -8032,18 +8046,18 @@ BEGIN
   If IsHTTP(InputPath) Or (HLSBase<>'') Then Fail('MPEG System: entree locale requise.');
   If Not (((AudioCodec='copy') And AllStreams) Or
    ((VideoCodec='copy') And (AudioCodec='') And (InputFormat='mpeg') And
-    (OutputFormat='mpeg1video'))) Then Fail('MPEG System exige -c copy (ou -c:v copy pour mpeg1video).');
+    ((OutputFormat='mpeg1video') Or (OutputFormat='mpeg2video')))) Then Fail('MPEG System exige -c copy (ou -c:v copy pour mpeg1video/mpeg2video).');
   If (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
-   ((VideoCodec<>'') And Not ((VideoCodec='copy') And (OutputFormat='mpeg1video'))) Or
+   ((VideoCodec<>'') And Not ((VideoCodec='copy') And ((OutputFormat='mpeg1video') Or (OutputFormat='mpeg2video')))) Or
    (VideoFrames<>0) Or (ImageWidth<>0) Then
    Fail('MPEG System: copie des flux uniquement, sans reencodage ni filtres.');
   If NoAudio And NoVideo Then Fail('Aucune piste selectionnee (-an et -vn).');
   If InputFormat='mpeg' Then Begin
    If (OutputFormat<>'mpeg') And (OutputFormat<>'mp3') And
-    (OutputFormat<>'mp2') And (OutputFormat<>'mpeg1video') Then
-    Fail('Sorties MPEG System: mpeg, mp3, mp2 ou mpeg1video.');
+    (OutputFormat<>'mp2') And (OutputFormat<>'mpeg1video') And (OutputFormat<>'mpeg2video') Then
+    Fail('Sorties MPEG System: mpeg, mp3, mp2, mpeg1video ou mpeg2video.');
    If NoAudio And ((OutputFormat='mp3') Or (OutputFormat='mp2')) Then Fail('-an exclut la sortie audio.');
-   If NoVideo And (OutputFormat='mpeg1video') Then Fail('-vn exclut la sortie video.');
+   If NoVideo And ((OutputFormat='mpeg1video') Or (OutputFormat='mpeg2video')) Then Fail('-vn exclut la sortie video.');
   End Else If InputFormat<>'mp3' Then Fail('Muxage MPEG System: entree MP3 MPEG-1 requise.');
   Temps[2]:=NewTemporary; MPEGSystem(Intermediate,Temps[2],InputFormat,OutputFormat);
   Commit(Temps[2]); Temps[2]:=''; WriteLn('Sortie MPEG creee: ',OutputPath); Halt(0);
