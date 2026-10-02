@@ -19,6 +19,9 @@ Uses DOS;
 {$IFDEF MSWINDOWS}
 { API du systeme declaree directement, sans unite Windows/WinInet. }
 
+ Function MultiByteToWideChar(CodePage,Flags: LongWord; Text: Pointer; Count: LongInt; Wide: Pointer; Capacity: LongInt): LongInt;
+ stdcall; external 'kernel32.dll';
+
  Function InternetOpenA(Agent: PChar; Access: LongWord; Proxy,Bypass: PChar;
                         Flags: LongWord): Pointer;
  stdcall; external 'wininet.dll';
@@ -3305,7 +3308,7 @@ Begin
 End;
 
 Var
- Temps: Array[0..3] Of String;
+ Temps: Array[0..4] Of String;
  SavedExit: Pointer;
  InputPath,OutputPath,InputFormat,OutputFormat,AudioCodec,PendingFormat: String;
  RequestedRate: LongInt;
@@ -3319,6 +3322,11 @@ Var
  HLSListOpen,AllStreams,NoVideo,NoAudio: Boolean;
  VideoCodec: String;
  AspectNum,AspectDen: LongInt;
+ HasAlbum: Boolean;
+ AlbumName: String;
+ AlbumWide: Array[0..254] Of Word;
+ AlbumUTF8: Array[0..764] Of Byte;
+ AlbumWideSize,AlbumUTF8Size: Integer;
  VideoFrames,ImageWidth,ImageHeight: Integer;
  {$IFDEF MSWINDOWS}
   NetSession,NetRequest: Pointer;
@@ -3362,7 +3370,7 @@ Begin
  If OutputActive Then Begin
  {$I-}Close(ActiveOutput); Code := IOResult;{$I+} OutputActive := False;
  End;
- For J := 0 To 3 Do If Temps[J]<>'' Then If Exists(Temps[J]) Then Begin
+ For J := 0 To 4 Do If Temps[J]<>'' Then If Exists(Temps[J]) Then Begin
   Assign(F,Temps[J]); {$I-}Erase(F); Code := IOResult;{$I+}
   If Code<>0 Then WriteLn('Temporaire a supprimer: ',Temps[J]);
  End;
@@ -3420,7 +3428,7 @@ Begin
  For Attempt:=1 To 100 Do Begin
   Str(Random(30000),Digits); Name:=Folder+'FFP'+Digits+'.TMP';
   Used:=Exists(Name);
-  For K:=0 To 3 Do If Lower(Temps[K])=Lower(Name) Then Used:=True;
+  For K:=0 To 4 Do If Lower(Temps[K])=Lower(Name) Then Used:=True;
   If Not Used Then Begin
    NewTemporary:=Name; Exit;
   End;
@@ -7930,7 +7938,15 @@ Begin
  End;
  StartBox('mvhd'); W32(0); W32(0); W32(0); W32(1000); W32(MovieDuration);
  W32($10000); W16(256); Zero(10); Matrix; Zero(24); W32(TrackCount+1); EndBox;
- For T:=1 To TrackCount Do WriteMPTrack(T); EndBox;
+ For T:=1 To TrackCount Do WriteMPTrack(T);
+ If HasAlbum Then Begin
+  StartBox('udta'); StartBox('meta'); W32(0);
+  StartBox('hdlr'); W32(0); W32(0); WTag('mdir'); WTag('appl'); Zero(8); W8(0); EndBox;
+  StartBox('ilst'); StartBox(#169+'alb'); StartBox('data'); W32(1); W32(0);
+  If AlbumUTF8Size>0 Then WriteBytes(AlbumUTF8,AlbumUTF8Size);
+  EndBox; EndBox; EndBox; EndBox; EndBox;
+ End;
+ EndBox;
 End;
 
 Function ChunkTag(T: Integer): String;
@@ -8180,7 +8196,13 @@ Begin
   End;
   EndBox;
  End;
- EndBox; StartBox('LIST'); Movi:=OutPos; WTag('movi');
+ EndBox;
+ If HasAlbum Then Begin
+  StartBox('LIST'); WTag('INFO'); StartBox('IPRD');
+  If AlbumUTF8Size>0 Then WriteBytes(AlbumUTF8,AlbumUTF8Size); W8(0);
+  EndBox; EndBox;
+ End;
+ StartBox('LIST'); Movi:=OutPos; WTag('movi');
  For T:=1 To TrackCount Do Tracks^[T].Cursor:=Tracks^[T].First;
  Repeat
  Pick:=0; Best:=1E100;
@@ -8560,13 +8582,130 @@ Begin
  CloseRead; CloseWrite;
 End;
 
+{ Rewrite only container tags; compressed MP3 packets and WAV chunks are copied. }
+Procedure WriteAudioAlbum(Const Source,Target: String);
+Var B: Array[0..4095] Of Byte; H: Array[0..9] Of Byte;
+ Size,At,N,Limit,EndAt,TagEnd,Kept,OutSize,InfoSize,Part,PartSize: LongInt;
+ Version,J,Code: Integer; Name,Kind: String[4];
+Function TagAt(P: LongInt): String;
+Var T: String[4];
+Begin T:='    '; ReadAt(P,T[1],4); TagAt:=T; End;
+Function GetSize(P: LongInt; Little,Sync: Boolean): LongInt;
+Var V: Array[0..3] Of Byte; K: Integer; R: Double;
+Begin
+ ReadAt(P,V,4); R:=0;
+ If Little Then For K:=3 DownTo 0 Do R:=R*256+V[K]
+ Else For K:=0 To 3 Do Begin
+  If Sync Then Begin If V[K]>127 Then Fail('Taille ID3 incorrecte.'); R:=R*128+V[K]; End
+  Else R:=R*256+V[K];
+ End;
+ If R>2147483647.0 Then Fail('Metadonnees trop volumineuses.'); GetSize:=Trunc(R);
+End;
+Procedure PutSize(V: LongInt; Little,Sync: Boolean);
+Var A: Array[0..3] Of Byte; K,Base: Integer;
+Begin
+ Base:=256; If Sync Then Base:=128;
+ If Little Then For K:=0 To 3 Do Begin A[K]:=V Mod Base; V:=V Div Base; End
+ Else For K:=3 DownTo 0 Do Begin A[K]:=V Mod Base; V:=V Div Base; End;
+ WriteBytes(A,4);
+End;
+Procedure PutTag(T: String);
+Begin WriteBytes(T[1],Length(T)); End;
+Procedure PutByte(V: Byte);
+Begin WriteBytes(V,1); End;
+Procedure CopyRange(P,Count: LongInt);
+Var Take: Word;
+Begin
+ While Count>0 Do Begin
+  Take:=4096; If Count<Take Then Take:=Count;
+  ReadAt(P,B,Take); WriteBytes(B,Take); Inc(P,Take); Dec(Count,Take);
+ End;
+End;
+Begin
+ OpenRead(Source); Size:=InputSize; OpenWrite(Target);
+ If OutputFormat='mp3' Then Begin
+  Version:=4; TagEnd:=0; Kept:=0;
+  If Size>=10 Then Begin
+   ReadAt(0,H,10);
+   If (H[0]=73) And (H[1]=68) And (H[2]=51) Then Begin
+    Version:=H[3];
+    If ((Version<>3) And (Version<>4)) Or (H[4]<>0) Or (H[5]<>0) Then
+     Fail('-album: copie ID3v2.3/v2.4 sans flags requise.');
+    N:=GetSize(6,False,True); If N>Size-10 Then Fail('ID3 tronque.'); TagEnd:=10+N;
+   End;
+  End;
+  At:=10;
+  While At<TagEnd Do Begin
+   ReadAt(At,H,1); If H[0]=0 Then Break;
+   If TagEnd-At<10 Then Fail('Trame ID3 tronquee.');
+   Name:=TagAt(At); N:=GetSize(At+4,False,Version=4);
+   If N>TagEnd-At-10 Then Fail('Trame ID3 hors etiquette.');
+   If Name<>'TALB' Then Inc(Kept,10+N); Inc(At,10+N);
+  End;
+  N:=3+LongInt(AlbumWideSize)*2;
+  If Kept>268435455-10-N Then Fail('ID3 trop volumineux.');
+  PutTag('ID3'); PutByte(Version); PutByte(0); PutByte(0); PutSize(Kept+10+N,False,True);
+  PutTag('TALB'); PutSize(N,False,Version=4); PutByte(0); PutByte(0);
+  PutByte(1); PutByte(255); PutByte(254);
+  For J:=0 To AlbumWideSize-1 Do Begin PutByte(AlbumWide[J] And 255); PutByte(AlbumWide[J] Shr 8); End;
+  At:=10;
+  While At<TagEnd Do Begin
+   ReadAt(At,H,1); If H[0]=0 Then Break;
+   Name:=TagAt(At); N:=GetSize(At+4,False,Version=4);
+   If Name<>'TALB' Then CopyRange(At,N+10); Inc(At,N+10);
+  End;
+  CopyRange(TagEnd,Size-TagEnd);
+ End Else Begin
+  If (Size<12) Or (TagAt(0)<>'RIFF') Or (TagAt(8)<>'WAVE') Then Fail('WAV RIFF requis.');
+  Limit:=GetSize(4,True,False);
+  If Limit<>Size-8 Then Fail('Taille RIFF WAV incoherente.');
+  CopyRange(0,12); At:=12;
+  While At<Size Do Begin
+   If Size-At<8 Then Fail('Bloc WAV tronque.');
+   Name:=TagAt(At); N:=GetSize(At+4,True,False);
+   If N>Size-At-8 Then Fail('Bloc WAV hors fichier.');
+   EndAt:=At+8+N; If Odd(N) Then Inc(EndAt);
+   If EndAt>Size Then Fail('Bourrage WAV absent.');
+   Kind:=''; If (Name='LIST') And (N>=4) Then Kind:=TagAt(At+8);
+   If Kind='INFO' Then Begin
+    Part:=At+12; InfoSize:=4;
+    While Part<At+8+N Do Begin
+     If At+8+N-Part<8 Then Fail('INFO WAV tronque.');
+     PartSize:=GetSize(Part+4,True,False);
+     If PartSize>At+N-Part Then Fail('INFO WAV hors bloc.');
+     If Odd(PartSize) Then Inc(PartSize);
+     If PartSize>At+N-Part Then Fail('INFO WAV sans bourrage.');
+     If TagAt(Part)<>'IPRD' Then Inc(InfoSize,8+PartSize); Inc(Part,8+PartSize);
+    End;
+    PutTag('LIST'); PutSize(InfoSize,True,False); PutTag('INFO'); Part:=At+12;
+    While Part<At+8+N Do Begin
+     PartSize:=GetSize(Part+4,True,False); If Odd(PartSize) Then Inc(PartSize);
+     If TagAt(Part)<>'IPRD' Then CopyRange(Part,8+PartSize); Inc(Part,8+PartSize);
+    End;
+   End Else CopyRange(At,EndAt-At);
+   At:=EndAt;
+  End;
+  N:=AlbumUTF8Size+1; PartSize:=N; If Odd(PartSize) Then Inc(PartSize);
+  PutTag('LIST'); PutSize(12+PartSize,True,False); PutTag('INFO'); PutTag('IPRD'); PutSize(N,True,False);
+  If AlbumUTF8Size>0 Then WriteBytes(AlbumUTF8,AlbumUTF8Size); PutByte(0); If Odd(N) Then PutByte(0);
+  {$I-}OutSize:=FilePos(ActiveOutput); Code:=IOResult;{$I+}
+  If (Code<>0) Or (OutSize<12) Then Fail('Taille sortie WAV incorrecte.');
+  {$I-}Seek(ActiveOutput,4); Code:=IOResult;{$I+}
+  If Code<>0 Then Fail('Position taille WAV impossible.'); PutSize(OutSize-8,True,False);
+ End;
+ CloseRead; CloseWrite;
+End;
+
 Procedure Commit(Const Stage: String);
 Var
  F: File;
- Backup: String;
+ Backup,Ready: String;
  Code,RestoreCode: Integer;
 Begin
- Backup:='';
+ Backup:=''; Ready:=Stage;
+ If HasAlbum And ((OutputFormat='mp3') Or (OutputFormat='wav')) Then Begin
+  Temps[4]:=NewTemporary; WriteAudioAlbum(Stage,Temps[4]); Ready:=Temps[4];
+ End;
  If IsDirectory(OutputPath) Then Fail('La sortie designe un dossier.');
  If Exists(OutputPath) Then Begin
   If Not Overwrite Then Fail('Sortie existante (utiliser -y pour la remplacer): '+
@@ -8575,13 +8714,18 @@ Begin
   {$I-}Rename(F,Backup); Code:=IOResult;{$I+}
   If Code<>0 Then Fail('Sauvegarde de la sortie existante impossible.');
  End;
- Assign(F,Stage); {$I-}Rename(F,OutputPath); Code:=IOResult;{$I+}
+ Assign(F,Ready); {$I-}Rename(F,OutputPath); Code:=IOResult;{$I+}
  If Code<>0 Then Begin
   If Backup<>'' Then Begin
    Assign(F,Backup); {$I-}Rename(F,OutputPath); RestoreCode:=IOResult;{$I+}
    If RestoreCode<>0 Then WriteLn('Ancienne sortie conservee ici: ',Backup);
   End;
   Fail('Installation du fichier de sortie impossible.');
+ End;
+ If Ready<>Stage Then Begin
+  Assign(F,Stage); {$I-}Erase(F); Code:=IOResult;{$I+}
+  If Code<>0 Then WriteLn('Temporaire a supprimer: ',Stage);
+  Temps[4]:='';
  End;
  If Backup<>'' Then Begin
   Assign(F,Backup); {$I-}Erase(F); Code:=IOResult;{$I+}
@@ -8646,6 +8790,7 @@ Procedure Help;Begin
  WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn;
  WriteLn(' /?                             Affiche l''aide de cette commande.');
+ WriteLn(' -album NOM                     Nom de l''album (MP3, WAV, AVI, MP4).');
  WriteLn(' -aspect N:D|DECIMAL             Ratio affichage (4:3, 16:9); sorties MP4, AVI, Y4M.');
  WriteLn(' -an                            Ne pas '+#130+'crire les pistes audio (sortie vid'+#130+'o uniquement).');
  WriteLn('                                AVI B-frames H264/MPEG4; Montages MP4 elst 32/64 bits '+#133+' vitesse 1.');
@@ -8677,6 +8822,39 @@ Function NextArgument: String;Begin
  NextArgument:=ParamStr(I);
 End;
 
+Procedure PrepareAlbum;
+Const OEM850: Array[128..255] Of Word=(
+ 199,252,233,226,228,224,229,231,234,235,232,239,238,236,196,197,
+ 201,230,198,244,246,242,251,249,255,214,220,248,163,216,215,402,
+ 225,237,243,250,241,209,170,186,191,174,172,189,188,161,171,187,
+ 9617,9618,9619,9474,9508,193,194,192,169,9571,9553,9559,9565,162,165,9488,
+ 9492,9524,9516,9500,9472,9532,227,195,9562,9556,9577,9574,9568,9552,9580,164,
+ 240,208,202,203,200,305,205,206,207,9496,9484,9608,9604,166,204,9600,
+ 211,223,212,210,245,213,181,254,222,218,219,217,253,221,175,180,
+ 173,177,8215,190,182,167,247,184,176,168,183,185,179,178,9632,160);
+Var J,N: Integer; U: Word;
+Begin
+ AlbumWideSize:=Length(AlbumName); AlbumUTF8Size:=0;
+ {$IFDEF MSWINDOWS}
+ If AlbumWideSize>0 Then Begin
+  AlbumWideSize:=MultiByteToWideChar(0,0,@AlbumName[1],Length(AlbumName),@AlbumWide,255);
+  If AlbumWideSize=0 Then Fail('Conversion du nom album impossible.');
+ End;
+ {$ELSE}
+ For J:=0 To AlbumWideSize-1 Do Begin
+  N:=Ord(AlbumName[J+1]); If N<128 Then AlbumWide[J]:=N Else AlbumWide[J]:=OEM850[N];
+ End;
+ {$ENDIF}
+ For J:=0 To AlbumWideSize-1 Do Begin
+  U:=AlbumWide[J]; N:=AlbumUTF8Size;
+  If U<128 Then Begin AlbumUTF8[N]:=U; Inc(N); End Else
+  If U<2048 Then Begin AlbumUTF8[N]:=$C0 Or (U Shr 6); AlbumUTF8[N+1]:=$80 Or (U And 63); Inc(N,2); End Else
+  Begin AlbumUTF8[N]:=$E0 Or (U Shr 12); AlbumUTF8[N+1]:=$80 Or ((U Shr 6) And 63);
+   AlbumUTF8[N+2]:=$80 Or (U And 63); Inc(N,3); End;
+  AlbumUTF8Size:=N;
+ End;
+End;
+
 Procedure ParseAspect(S: String);
 Var K,C,Dots,Digits: Integer; N,D,G,R: LongInt; Decimal: Boolean;
 Begin
@@ -8705,6 +8883,7 @@ Begin
 End;
 
 BEGIN
+ HasAlbum:=False; AlbumName:=''; AlbumWideSize:=0; AlbumUTF8Size:=0;
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
  AspectNum:=0; AspectDen:=1;
@@ -8712,7 +8891,7 @@ BEGIN
  {$IFDEF MSWINDOWS}
   NetSession:=Nil; NetRequest:=Nil;
  {$ENDIF}
- For J:=0 To 3 Do Temps[J]:='';
+ For J:=0 To 4 Do Temps[J]:='';
  InputPath:=''; OutputPath:=''; InputFormat:=''; OutputFormat:='';
  AudioCodec:=''; PendingFormat:=''; RequestedRate:=0; RequestedChannels:=0; RequestedBitRateK:=320;
  Overwrite:=False; NoOverwrite:=False; HideBanner:=False; HasBitrate:=False;
@@ -8751,6 +8930,9 @@ BEGIN
   If Argument='-n' Then NoOverwrite:=True Else
   If Argument='-hide_banner' Then HideBanner:=True Else
   If Argument='-vn' Then NoVideo:=True Else
+  If Argument='-album' Then Begin
+   AlbumName:=NextArgument; HasAlbum:=True; PrepareAlbum;
+  End Else
   If Argument='-an' Then NoAudio:=True Else
   If Argument='-aspect' Then Begin
    ParseAspect(NextArgument);
@@ -8870,6 +9052,9 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If HasAlbum And (OutputFormat<>'mp3') And (OutputFormat<>'wav') And
+  (OutputFormat<>'avi') And (OutputFormat<>'mp4') Then
+  Fail('-album: sorties MP3, WAV, AVI et MP4 uniquement.');
  If AspectNum>0 Then Begin
   If NoVideo Then Fail('-aspect incompatible avec -vn.');
   If (OutputFormat<>'mp4') And (OutputFormat<>'avi') And (OutputFormat<>'yuv4mpegpipe') Then
@@ -8946,7 +9131,7 @@ BEGIN
   If (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or NoVideo Then   Fail(
   'HLS copy conserve toutes les pistes: conversion et -vn non pris en charge.');
   Temps[2]:=NewTemporary;
-  If NoAudio Or (AspectNum>0) Then Begin
+  If NoAudio Or (AspectNum>0) Or HasAlbum Then Begin
    Temps[3]:=NewTemporary; AssembleHLS(Intermediate,Temps[3]);
    RemuxVideo(Temps[3],Temps[2],'mp4','mp4');
   End Else AssembleHLS(Intermediate,Temps[2]);
@@ -8958,7 +9143,7 @@ BEGIN
   If Not (((InputFormat='mp4') And (OutputFormat='avi')) Or
   ((InputFormat='avi') And (OutputFormat='mp4')) Or
   ((InputFormat='webm') And (OutputFormat='mp4')) Or
-  ((NoAudio Or (AspectNum>0)) And (InputFormat=OutputFormat) And ((InputFormat='mp4') Or (InputFormat='avi')))) Then   Fail(
+  ((NoAudio Or (AspectNum>0) Or HasAlbum) And (InputFormat=OutputFormat) And ((InputFormat='mp4') Or (InputFormat='avi')))) Then   Fail(
   'Conversions video: MP4 vers AVI, AVI vers MP4, WebM vers MP4.');
   If (AudioCodec<>'') And ((AudioCodec<>'copy') Or Not AllStreams) Then   Fail(
   'Video: utiliser -c copy; aucun reencodage video implemente.');
