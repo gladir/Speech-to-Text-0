@@ -71,7 +71,7 @@ Type
   Factors, Intensity: Array[0..39] Of Integer;
  End;
  THeader = Record
-  Version, Channels, Mode, Extension, FrequencyIndex, BandIndex: Integer;
+  Version, Layer, Channels, Mode, Extension, FrequencyIndex, BandIndex: Integer;
   FrameSize, SideSize, SideOffset, Granules: Integer;
   Rate, BitRate: LongInt;
   Protected: Boolean;
@@ -633,6 +633,8 @@ Const
  Rates: Array[0..2] Of LongInt = (44100,48000,32000);
  BR1: Array[0..14] Of Integer = (0,32,40,48,56,64,80,96,112,128,160,192,224,256,320);
  BR2: Array[0..14] Of Integer = (0,8,16,24,32,40,48,56,64,80,96,112,128,144,160);
+ L1BR: Array[0..14] Of Integer = (0,32,64,96,128,160,192,224,256,288,320,352,384,416,448);
+ L1LSF: Array[0..14] Of Integer = (0,32,48,56,64,80,96,112,128,144,160,176,192,224,256);
 Var
  Index, Layer: Integer;
 Begin
@@ -641,7 +643,8 @@ Begin
  Header.Version := (Frame[1] Shr 3) And 3;
  If Header.Version = 1 Then Fail('Version MPEG reservee.');
  Layer := (Frame[1] Shr 1) And 3;
- If Layer <> 1 Then Fail('Seul MPEG Layer III (MP3) est accepte.');
+ Header.Layer:=Layer;
+ If (Layer<>1) And (Layer<>3) Then Fail('MPEG Layer I (MP1) ou III (MP3) requis.');
  Index := Frame[2] Shr 4;
  If Index = 0 Then Fail('MP3 free-format non pris en charge.');
  If Index = 15 Then Fail('Debit MP3 invalide.');
@@ -670,6 +673,12 @@ Begin
                        Else Header.SideSize := 8 * Header.Channels + 1;
  Header.FrameSize := (72 * Header.Granules * Header.BitRate) Div Header.Rate + ((
  Frame[2] Shr 1) And 1);
+ If Layer=3 Then Begin
+  If Header.Version=3 Then Header.BitRate:=LongInt(L1BR[Index])*1000
+  Else Header.BitRate:=LongInt(L1LSF[Index])*1000;
+  Header.FrameSize:=((12*Header.BitRate) Div Header.Rate+((Frame[2] Shr 1) And 1))*4;
+  Header.SideSize:=0;
+ End;
  If (Header.FrameSize > MaxFrame) Or (Header.FrameSize <= Header.SideOffset +
  Header.SideSize) Then  Fail('Taille de trame MP3 incorrecte.');
 End;
@@ -1025,11 +1034,12 @@ End;
 
 Procedure Synthesize(G, C: Integer);
 Var
- T, I, J, P, Offset: Integer;
+ T, I, J, P, Offset, Slots: Integer;
  Sum: Double;
  Sample: LongInt;
 Begin
- For T := 0 To 17 Do Begin
+ Slots:=18; If Header.Layer=3 Then Slots:=12;
+ For T := 0 To Slots-1 Do Begin
   For I := 1023 Downto 64 Do D^.V[C,I] := D^.V[C,I - 64];
   For I := 0 To 63 Do Begin
    Sum := 0;
@@ -1081,11 +1091,63 @@ Begin
  For I := 18 To 35 Do Transform^.Window[3,I] := Transform^.Window[0,I];
 End;
 
+{ Layer I subband allocation, inverse quantization and shared synthesis. }
+Procedure DecodeLayerI;
+Var
+ B: TBits;
+ Alloc,SF: Array[0..1,0..31] Of Integer;
+ Factors: Array[0..63] Of Double;
+ Bound,C,SB,T,N,Value,I,Feedback,Count: Integer;
+ CRC,Expected: Word;
+ Sample: Double;
+Begin
+ FillChar(Alloc,SizeOf(Alloc),0); FillChar(SF,SizeOf(SF),0);
+ StartBits(B,@Frame,Header.SideOffset*8,Header.FrameSize*8);
+ Bound:=32; If Header.Mode=1 Then Bound:=(Header.Extension+1)*4;
+ For SB:=0 To 31 Do Begin
+  For C:=0 To Header.Channels-1 Do Begin
+   If (SB>=Bound) And (C=1) Then Alloc[C,SB]:=Alloc[0,SB]
+   Else Alloc[C,SB]:=ReadBits(B,4);
+   If Alloc[C,SB]=15 Then Fail('MP1: allocation de bits reservee.');
+  End;
+ End;
+ If B.Failed Then Fail('MP1: allocations tronquees.');
+ If Header.Protected Then Begin
+  CRC:=$FFFF; Expected:=Word(Frame[4])*256+Frame[5];
+  For I:=16 To B.Position-1 Do If (I<32) Or (I>=48) Then Begin
+   Feedback:=((CRC Shr 15) Xor (Frame[I Div 8] Shr (7-I Mod 8))) And 1;
+   CRC:=(LongInt(CRC)*2) And $FFFF; If Feedback<>0 Then CRC:=CRC Xor $8005;
+  End;
+  If CRC<>Expected Then Fail('MP1: CRC incorrect.');
+ End;
+ For I:=0 To 63 Do Factors[I]:=2*Exp(-I*Ln(2)/3);
+ For SB:=0 To 31 Do For C:=0 To Header.Channels-1 Do
+  If Alloc[C,SB]<>0 Then SF[C,SB]:=ReadBits(B,6);
+ For T:=0 To 11 Do For SB:=0 To 31 Do Begin
+  Value:=0;
+  For C:=0 To Header.Channels-1 Do Begin
+   N:=Alloc[C,SB]; Sample:=0;
+   If N<>0 Then Begin
+    Inc(N);
+    If (C=0) Or (SB<Bound) Then Value:=ReadBits(B,N);
+    Sample:=(2.0*Value+2-(LongInt(1) Shl N))/((LongInt(1) Shl N)-1)*Factors[SF[C,SB]];
+   End;
+   D^.X[C,SB*18+T]:=Sample;
+  End;
+ End;
+ If B.Failed Then Fail('MP1: echantillons tronques.');
+ For C:=0 To Header.Channels-1 Do Synthesize(0,C);
+ Count:=384*Header.Channels*2;
+ If Written>MaxWaveData-Count Then Fail('Sortie WAV depassant 2 Go.');
+ WriteBytes(D^.PCM,Count); Inc(Written,Count);
+End;
+
 Procedure DecodeFrame;
 Var
  Back, Offset, Count, Keep, OldSize, G, C, Limit, WholeLimit: Integer;
  B: TBits;
 Begin
+ If Header.Layer=3 Then Begin DecodeLayerI; Exit; End;
  CheckCRC; ReadSideInfo(Back);
  If Back > D^.ReservoirSize Then Fail('Reservoir MP3 incomplet; debut de flux manquant.');
  Offset := Header.SideOffset + Header.SideSize; Count := Header.FrameSize - Offset;
@@ -1180,13 +1242,14 @@ Begin
   ReadAt(InputPosition, Frame, 4); ParseHeader;
   If Frames > 0 Then   If (Header.Rate <> FirstHeader.Rate) Or (Header.Channels <>
   FirstHeader.Channels) Or
-  (Header.Version <> FirstHeader.Version) Then Fail(
+  (Header.Version <> FirstHeader.Version) Or (Header.Layer<>FirstHeader.Layer) Then Fail(
   'Changement de format au milieu du MP3.');
   If Header.FrameSize <= Remaining Then Begin
    ReadAt(InputPosition, Frame, Header.FrameSize);
    ReadNextFrame := True; Exit;
   End;
  End;
+ If (Frames>0) And (FirstHeader.Layer=3) Then Fail('MP1: derniere trame tronquee.');
  If Frames = 0 Then Fail('Derniere trame MP3 tronquee; aucune trame complete.');
  WriteLn('MP32WAV: avertissement: derniere trame MP3 incomplete ignoree (',
  Remaining, ' octets restants). Les ', Frames, ' trames completes sont conservees.');
@@ -3432,11 +3495,25 @@ Function Probe(Const Name: String): String;
 Var
  B: Array[0..1083] Of Byte;
  N,J: Integer;
- Size: LongInt;
+ Size,StartPos,TagSize: LongInt;
  Tag: String[4];
 Begin
- OpenRead(Name); Size:=InputSize; N:=1084; If Size<N Then N:=Size;
- FillChar(B,SizeOf(B),0); ReadAt(0,B,N); CloseRead;
+ OpenRead(Name); Size:=InputSize; StartPos:=0;
+ Repeat
+  N:=1084; If Size-StartPos<N Then N:=Size-StartPos;
+  FillChar(B,SizeOf(B),0); ReadAt(StartPos,B,N);
+  If N<10 Then Break;
+  If (B[0]<>73) Or (B[1]<>68) Or (B[2]<>51) Then Break;
+  If (B[3]<2) Or (B[3]>4) Or (B[4]=255) Then Fail('Version ID3v2 invalide.');
+  TagSize:=0;
+  For J:=6 To 9 Do Begin
+   If B[J]>127 Then Fail('Taille ID3v2 invalide.'); TagSize:=TagSize*128+B[J];
+  End;
+  Inc(TagSize,10); If (B[3]=4) And ((B[5] And 16)<>0) Then Inc(TagSize,10);
+  If TagSize>Size-StartPos Then Fail('Etiquette ID3v2 tronquee.');
+  Inc(StartPos,TagSize);
+ Until False;
+ CloseRead;
  Probe:='';
  If N>=5 Then If (B[0]=0) And (B[1]=0) And (B[2]=1) And
   ((B[3]=$B0) Or (B[3]=$B5) Or (B[3]<=$2F)) Then Begin
@@ -3480,6 +3557,9 @@ Begin
  End;
  If N>=26 Then If (B[0]=67) And (B[1]=114) And (B[2]=101) And (B[19]=$1A) Then Begin
   Probe:='voc'; Exit;
+ End;
+ If N>=4 Then If (B[0]=$FF) And ((B[1] And $E6)=$E6) Then Begin
+  Probe:='mp1'; Exit;
  End;
  If N>=4 Then If ((B[0]=73) And (B[1]=68) And (B[2]=51)) Or
  ((B[0]=$FF) And ((B[1] And $E6)=$E2)) Then Begin
@@ -7905,6 +7985,7 @@ Begin
  WriteLn('  E image2          Une image PNG/GIF; pas de sequence');
  WriteLn(' D  libopenmpt      MOD 4 canaux, moteur Pascal interne (alias: mod)');
  WriteLn(' DE m4v             raw MPEG-4 video format (MPEG-4 Part 2)');
+ WriteLn(' D  mp1             MPEG audio Layer I');
  WriteLn(' DE mp3             MPEG Layer III; encodage MPEG-1 CBR 32..320 kbit/s');
  WriteLn(' DE mp4             MP4 H264/MPEG4, AAC/MP3, VP9/Opus; copie de flux');
  WriteLn(' DE mpeg            MPEG-1 System format (copie PES / muxage MP3)');
@@ -7928,7 +8009,7 @@ Procedure Help;Begin
  WriteLn;
  WriteLn('Syntaxe: FFMPEG [-y|-n] [-f FORMAT] -i ENTREE [options] SORTIE');
  WriteLn;
- WriteLn('Entrees: WAV PCM, MP3, AIFF PCM, VOC PCM, MOD 4 canaux, ASF/WMA2.');
+ WriteLn('Entrees: WAV PCM, MP1/MP3, AIFF PCM, VOC PCM, MOD 4 canaux, ASF/WMA2.');
  WriteLn('WMA2: 44100/48000 Hz, mono/stereo, blocs fixes, sans reservoir/bruit.');
  WriteLn('WMV2 video et encodage FLV1 non encore implementes.');
  WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 32..320 kbit/s (CBR).');
@@ -7986,20 +8067,23 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.8; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.9; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
    ShowFormats; Halt(0);
   End
   Else If Argument='-codecs' Then Begin
-   WriteLn(' E png (RGB24, sans compression)');
-   WriteLn(' E gif (palette RGB 3/3/2, LZW, une image)');
-   WriteLn('D  h264 (premiere IDR CAVLC 8 bits 4:2:0 progressive)');
-   WriteLn('D  wmav2 (44100/48000 Hz, VLC, blocs fixes, sans reservoir/bruit)');
-   WriteLn('DE pcm_s16le');
-   WriteLn('D  pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
-   WriteLn('DE mp3 (encodeur Pascal simple, CBR 32..320 kbit/s)');
+   WriteLn('Codecs:');
+   WriteLn(' D = decodage, E = encodage, A = audio, V = video');
+   WriteLn('D A    mp1             MP1 (MPEG audio layer 1)');
+   WriteLn(' EV    png             PNG (RGB24, sans compression)');
+   WriteLn(' EV    gif             GIF (palette RGB 3/3/2, LZW, une image)');
+   WriteLn('D V    h264            H264 (premiere IDR CAVLC 8 bits 4:2:0 progressive)');
+   WriteLn('D A    wmav2           WMA2 (44100/48000 Hz, VLC, blocs fixes, sans reservoir/bruit)');
+   WriteLn('DEA    pcm_s16le       PCM signe 16 bits little-endian');
+   WriteLn('D A    pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
+   WriteLn('DEA    mp3             MP3 (decodeur Layer III; encodeur MPEG-1 CBR 32..320k)');
    WriteLn('Copie seulement: h264, mpeg4, vp9, aac, opus (voir limites).'); Halt(0);
   End
   Else If Argument='-y' Then Overwrite:=True Else
@@ -8209,7 +8293,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.8 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.9 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
@@ -8221,7 +8305,7 @@ BEGIN
     Temps[3]:=NewTemporary; DemuxASF(InputPath,Temps[3]);
     DecodeWMA2Spool(Temps[3],Temps[0]);
    End Else
-   If InputFormat='mp3' Then DecodeMP3(InputPath,Temps[0]) Else
+   If (InputFormat='mp3') Or (InputFormat='mp1') Then DecodeMP3(InputPath,Temps[0]) Else
    If InputFormat='aiff' Then DecodeAIFF(InputPath,Temps[0]) Else
    If InputFormat='voc' Then DecodeVOC(InputPath,Temps[0]) Else
    If InputFormat='libopenmpt' Then DecodeMOD(InputPath,Temps[0])
