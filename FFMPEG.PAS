@@ -1,10 +1,27 @@
-{ FFMPEG Pascal: sous-ensemble audio autonome, pas le binaire FFmpeg original.
+{ FFMPEG Pascal: audio natif et copie HLS fMP4, pas le binaire FFmpeg original.
   Conventions CLI et conteneurs consultees dans C:/SOURCE/ffmpeg (8.0.git).
   Moteurs proceduraux du projet integres ci-dessous. Voir FFMPEG.md. }
 Program FFMPEG;
 {$IFDEF FPC}{$MODE TP}{$ENDIF}
 {$IFNDEF FPC}{$N+}{$E+}{$M 32768,0,655360}{$ENDIF}
 Uses DOS;
+
+{$IFDEF MSWINDOWS}
+{ API du systeme declaree directement, sans unite Windows/WinInet. }
+Function InternetOpenA(Agent: PChar; Access: LongWord; Proxy,Bypass: PChar;
+ Flags: LongWord): Pointer; stdcall; external 'wininet.dll';
+Function InternetOpenUrlA(Session: Pointer; URL,Headers: PChar;
+ HeaderLength,Flags: LongWord; Context: PtrUInt): Pointer; stdcall; external 'wininet.dll';
+Function InternetReadFile(Request: Pointer; Buffer: Pointer; Count: LongWord;
+ var Actual: LongWord): LongBool; stdcall; external 'wininet.dll';
+Function InternetCloseHandle(Handle: Pointer): LongBool; stdcall; external 'wininet.dll';
+Function HttpQueryInfoA(Request: Pointer; Info: LongWord; Buffer: Pointer;
+ var Size,Index: LongWord): LongBool; stdcall; external 'wininet.dll';
+Function InternetSetOptionA(Handle: Pointer; Option: LongWord; Buffer: Pointer;
+ Size: LongWord): LongBool; stdcall; external 'wininet.dll';
+Function InternetQueryOptionA(Handle: Pointer; Option: LongWord; Buffer: Pointer;
+ var Size: LongWord): LongBool; stdcall; external 'wininet.dll';
+{$ENDIF}
 
 
 { Moteur integre depuis MP32WAV.PAS }
@@ -3178,6 +3195,13 @@ Var
  Overwrite,NoOverwrite,HideBanner,HasBitrate: Boolean;
  ActiveInput,ActiveOutput: File;
  InputActive,OutputActive: Boolean;
+ HLSBase: string;
+ LastDownloadURL: string;
+ HLSList: Text;
+ HLSListOpen,AllStreams,NoVideo: Boolean;
+ {$IFDEF MSWINDOWS}
+ NetSession,NetRequest: Pointer;
+ {$ENDIF}
 
 Function Exists(const Name: string): Boolean;
 Var F: File; A: Word;
@@ -3190,6 +3214,11 @@ Begin Assign(F,Name); GetFAttr(F,A); IsDirectory:=(DosError=0) and ((A and Direc
 Procedure Cleanup;
 Var J,Code: Integer; F: File;
 Begin
+ {$IFDEF MSWINDOWS}
+ if NetRequest<>nil Then Begin InternetCloseHandle(NetRequest); NetRequest:=nil; End;
+ if NetSession<>nil Then Begin InternetCloseHandle(NetSession); NetSession:=nil; End;
+ {$ENDIF}
+ if HLSListOpen Then Begin {$I-}Close(HLSList); Code:=IOResult;{$I+} HLSListOpen:=False; End;
  if InputActive Then Begin {$I-}Close(ActiveInput); Code := IOResult;{$I+} InputActive := False; End;
  if OutputActive Then Begin {$I-}Close(ActiveOutput); Code := IOResult;{$I+} OutputActive := False; End;
  for J := 0 to 3 do if Temps[J]<>'' Then if Exists(Temps[J]) Then Begin
@@ -3219,6 +3248,7 @@ Function FormatName(S: string): string;
 Begin
  S:=Lower(S); if (S='aif') or (S='aifc') Then S:='aiff';
  if S='mod' Then S:='libopenmpt';
+ if S='m3u8' Then S:='hls';
  FormatName:=S;
 End;
 
@@ -3293,6 +3323,8 @@ Begin
  OpenRead(Name); Size:=InputSize; N:=1084; if Size<N Then N:=Size;
  FillChar(B,SizeOf(B),0); ReadAt(0,B,N); CloseRead;
  Probe:='';
+ if N>=7 Then if (B[0]=35) and (B[1]=69) and (B[2]=88) and
+  (B[3]=84) and (B[4]=77) and (B[5]=51) and (B[6]=85) Then Begin Probe:='hls'; Exit; End;
  if N>=12 Then Begin
   if (B[0]=82) and (B[1]=73) and (B[2]=70) and (B[3]=70) and
      (B[8]=87) and (B[9]=65) and (B[10]=86) and (B[11]=69) Then Begin Probe:='wav'; Exit; End;
@@ -3317,6 +3349,292 @@ Begin
   ReadAt(Position,B,N); WriteBytes(B,N); Inc(Position,N); Dec(Remaining,N);
  End;
  CloseRead; CloseWrite;
+End;
+
+Function IsHTTP(const S: string): Boolean;
+Begin IsHTTP:=(Copy(Lower(S),1,7)='http://') or (Copy(Lower(S),1,8)='https://'); End;
+
+Function JoinPath(const A,B: string): string;
+Begin
+ if Length(A)+Length(B)>255 Then Fail('Chemin ou URL HLS trop long (255 caracteres maximum).');
+ JoinPath:=A+B;
+End;
+
+Function ResolveHLS(const Base,URI: string): string;
+Var J,K: Integer; Root: string;
+Begin
+ if URI='' Then Fail('URI HLS vide.');
+ if IsHTTP(URI) Then Begin ResolveHLS:=URI; Exit; End;
+ if Pos('://',URI)>0 Then Fail('Protocole HLS non pris en charge.');
+ if IsHTTP(Base) Then Begin
+  J:=Pos('://',Base)+3; K:=J;
+  while (K<=Length(Base)) and not (Base[K] in ['/','?','#']) do Inc(K);
+  Root:=Copy(Base,1,K-1);
+  if Copy(URI,1,2)='//' Then ResolveHLS:=JoinPath(Copy(Base,1,J-1),Copy(URI,3,255))
+  else if URI[1]='/' Then ResolveHLS:=JoinPath(Root,URI)
+  else Begin
+   J:=Length(Base); K:=Pos('?',Base); if K>0 Then J:=K-1;
+   K:=Pos('#',Base); if (K>0) and (K<=J) Then J:=K-1;
+   while (J>0) and (Base[J]<>'/') do Dec(J);
+   if J<Length(Root) Then ResolveHLS:=JoinPath(Root+'/',URI)
+   else ResolveHLS:=JoinPath(Copy(Base,1,J),URI);
+  End;
+ End else Begin
+  if (URI[1]='/') or (URI[1]='\') or (Pos(':',URI)>0) Then Begin
+   if not Exists(URI) Then Fail('Chemin HLS absolu introuvable; fournir -hls_base_url URL_ORIGINE.');
+   ResolveHLS:=URI;
+  End else Begin
+   J:=Length(Base); while (J>0) and not (Base[J] in ['/','\',':']) do Dec(J);
+   ResolveHLS:=JoinPath(Copy(Base,1,J),URI);
+  End;
+ End;
+End;
+
+Procedure DownloadHLS(const URL,Target: string);
+{$IFDEF MSWINDOWS}
+Var Address: array[0..255] of Char; B: array[0..8191] of Byte;
+ Count,Size,Index,Status,Timeout,ContentLength: LongWord; Total,J: LongInt;
+ HasLength: Boolean;
+{$ENDIF}
+Begin
+ {$IFDEF MSWINDOWS}
+ FillChar(Address,SizeOf(Address),0); Move(URL[1],Address,Length(URL));
+ NetSession:=InternetOpenA('FFMPEG-Pascal',0,nil,nil,0);
+ if NetSession=nil Then Fail('Initialisation WinINet impossible.');
+ Timeout:=30000;
+ InternetSetOptionA(NetSession,2,@Timeout,SizeOf(Timeout));
+ InternetSetOptionA(NetSession,6,@Timeout,SizeOf(Timeout));
+ { Reload, no cache write, no UI. Verification TLS standard conservee. }
+ NetRequest:=InternetOpenUrlA(NetSession,@Address[0],nil,0,$84000200,0);
+ if NetRequest=nil Then Fail('Telechargement HLS impossible: '+URL);
+ Size:=SizeOf(Status); Index:=0; Status:=0;
+ if not HttpQueryInfoA(NetRequest,$20000013,@Status,Size,Index) Then Fail('Statut HTTP indisponible.');
+ if Status<>200 Then Begin WriteLn('HTTP ',Status); Fail('Reponse HTTP refusee: '+URL); End;
+ Size:=SizeOf(Address); FillChar(Address,SizeOf(Address),0);
+ if not InternetQueryOptionA(NetRequest,34,@Address[0],Size) Then
+  Fail('URL finale HTTP indisponible ou trop longue.');
+ LastDownloadURL:=''; J:=0;
+ while (J<255) and (Address[J]<>#0) do Begin
+  LastDownloadURL:=LastDownloadURL+Address[J]; Inc(J);
+ End;
+ if Address[J]<>#0 Then Fail('URL finale HTTP trop longue.');
+ Size:=SizeOf(ContentLength); Index:=0;
+ HasLength:=HttpQueryInfoA(NetRequest,$20000005,@ContentLength,Size,Index);
+ if HasLength Then if ContentLength>2147480000 Then Fail('Ressource HTTP superieure a 2 Go.');
+ OpenWrite(Target); Total:=0;
+ repeat
+  Count:=0;
+  if not InternetReadFile(NetRequest,@B[0],SizeOf(B),Count) Then Fail('Lecture HTTP interrompue.');
+  if Count>0 Then Begin
+   if Total>2147480000-LongInt(Count) Then Fail('Ressource HLS superieure a 2 Go.');
+   Inc(Total,Count); WriteBytes(B,Count);
+  End;
+ until Count=0;
+ if HasLength Then if LongWord(Total)<>ContentLength Then Fail('Reponse HTTP tronquee.');
+ CloseWrite;
+ InternetCloseHandle(NetRequest); NetRequest:=nil;
+ InternetCloseHandle(NetSession); NetSession:=nil;
+ {$ELSE}
+ Fail('HTTP/HTTPS exige Windows; sous DOS fournir des segments HLS locaux.');
+ {$ENDIF}
+End;
+
+{ Assemble le profil HLS fMP4 a offsets relatifs au moof. Les octets des
+  codecs sont conserves. Pas de conversion MPEG-TS ni de dechiffrement. }
+Procedure AssembleHLS(const Playlist,Target: string);
+Var Line,Base,MapURI,URI,LocalName: string;
+ Code,J,K,Segments: Integer; EndList,HaveMap,Pending: Boolean;
+ Buffer: array[0..4095] of Byte;
+ Total: LongInt;
+ TrackIDs: array[0..15] of LongInt;
+ TrackCount: Integer;
+
+Function BE32(At: Integer): LongInt;
+Begin
+ if Buffer[At]>=128 Then Fail('Champ MP4 hors limite 2 Go.');
+ BE32:=LongInt(Buffer[At])*16777216+LongInt(Buffer[At+1])*65536+
+  LongInt(Buffer[At+2])*256+Buffer[At+3];
+End;
+
+Procedure CheckInit(Start,Limit: LongInt; Depth: Integer);
+Var P,N,ID: LongInt; Tag: string[4]; A: Integer;
+Begin
+ if Depth>8 Then Fail('Initialisation MP4 trop imbriquee.');
+ P:=Start;
+ while P<Limit do Begin
+  if Limit-P<8 Then Fail('Initialisation MP4 tronquee.');
+  ReadAt(P,Buffer,8); N:=BE32(0); Tag:='';
+  for A:=4 to 7 do Tag:=Tag+Chr(Buffer[A]);
+  if (N<8) or (N>Limit-P) Then Fail('Boite initialisation MP4 invalide.');
+  if (Tag='moov') or (Tag='mvex') or (Tag='trak') or (Tag='mdia') or
+   (Tag='minf') or (Tag='stbl') Then CheckInit(P+8,P+N,Depth+1)
+  else if Tag='stsd' Then Begin
+   if N<16 Then Fail('stsd MP4 tronque.');
+   CheckInit(P+16,P+N,Depth+1);
+  End else if (Tag='encv') or (Tag='enca') or (Tag='pssh') Then
+   Fail('MP4 chiffre non pris en charge.')
+  else if Tag='trex' Then Begin
+   if (N<>32) or (TrackCount=16) Then Fail('trex MP4 invalide ou trop de pistes.');
+   ReadAt(P+12,Buffer,4); ID:=BE32(0);
+   if ID=0 Then Fail('Identifiant de piste MP4 nul.');
+   for A:=0 to TrackCount-1 do if TrackIDs[A]=ID Then Fail('Piste MP4 dupliquee.');
+   TrackIDs[TrackCount]:=ID; Inc(TrackCount);
+  End;
+  Inc(P,N);
+ End;
+End;
+
+{ Controle les boites, les offsets relogeables et refuse les pistes chiffrees. }
+Procedure Boxes(Start,Limit: LongInt; Depth: Integer; var Found: Boolean);
+Var P,N,Flags: LongInt; Tag: string[4]; A: Integer; Child: Boolean;
+ HasTime,HasRun,Known: Boolean;
+Begin
+ P:=Start; HasTime:=False; HasRun:=False;
+ while P<Limit do Begin
+  if Limit-P<8 Then Fail('Entete de boite MP4 tronquee.');
+  ReadAt(P,Buffer,8); N:=BE32(0); Tag:='';
+  for A:=4 to 7 do Tag:=Tag+Chr(Buffer[A]);
+  if (N<8) or (N>Limit-P) Then Fail('Taille de boite MP4 invalide ou etendue non prise en charge.');
+  if (Tag='senc') or (Tag='saiz') or (Tag='saio') or (Tag='pssh') Then Fail('MP4 chiffre non pris en charge.');
+  if (Tag='moof') or (Tag='traf') Then Begin
+   if Depth>=2 Then Fail('Imbrication MP4 invalide.');
+   Child:=False; Boxes(P+8,P+N,Depth+1,Child);
+   if not Child Then Fail('Fragment MP4 sans traf/tfhd valide.');
+   Found:=True;
+  End;
+  if Tag='tfhd' Then Begin
+   if (Depth<>2) or (N<16) Then Fail('tfhd MP4 invalide.');
+   ReadAt(P+8,Buffer,8); Flags:=BE32(0);
+   if ((Flags and 1)<>0) or ((Flags and $20000)=0) Then
+    Fail('Fragment MP4 exigeant une reecriture des offsets: non pris en charge.');
+   Known:=False;
+   for A:=0 to TrackCount-1 do if TrackIDs[A]=BE32(4) Then Known:=True;
+   if not Known Then Fail('Piste du fragment absente de initialisation MP4.');
+   Found:=True;
+  End;
+  if Tag='tfdt' Then Begin
+   if (Depth<>2) or (N<16) Then Fail('tfdt MP4 invalide.');
+   HasTime:=True;
+  End;
+  if Tag='trun' Then Begin
+   if (Depth<>2) or (N<16) Then Fail('trun MP4 invalide.');
+   HasRun:=True;
+  End;
+  Inc(P,N);
+ End;
+ if Depth=2 Then if not HasTime or not HasRun Then Fail('traf MP4 sans tfdt/trun.');
+End;
+
+Procedure AppendResource(const Resource: string; Init: Boolean);
+Var P,N,Size,Remaining: LongInt; Amount: Word; Tag: string[4];
+ A: Integer; HasFTyp,HasMoov,HasMoof,HasMdat,Valid: Boolean; F: File;
+Begin
+ URI:=ResolveHLS(Base,Resource); LocalName:=URI;
+ if IsHTTP(URI) Then Begin
+  Temps[1]:=NewTemporary; DownloadHLS(URI,Temps[1]); LocalName:=Temps[1];
+ End;
+ OpenRead(LocalName); Size:=InputSize;
+ if Size>2147480000-Total Then Fail('Sortie MP4 superieure a 2 Go.');
+ P:=0; HasFTyp:=False; HasMoov:=False; HasMoof:=False; HasMdat:=False;
+ while P<Size do Begin
+  if Size-P<8 Then Fail('Segment MP4 tronque.');
+  ReadAt(P,Buffer,8); N:=BE32(0); Tag:='';
+  for A:=4 to 7 do Tag:=Tag+Chr(Buffer[A]);
+  if (N<8) or (N>Size-P) Then Fail('Segment non MP4 ou boite tronquee (MPEG-TS non pris en charge).');
+  if Tag='ftyp' Then HasFTyp:=True
+  else if Tag='moov' Then Begin
+   if not Init or HasMoov Then Fail('moov inattendu ou duplique.');
+   CheckInit(P,P+N,0); HasMoov:=True;
+  End
+  else if Tag='moof' Then Begin
+   Valid:=False; Boxes(P,P+N,0,Valid); HasMoof:=True;
+  End else if Tag='mdat' Then Begin
+   if not HasMoof Then Fail('mdat avant moof non pris en charge.');
+   HasMdat:=True;
+  End else if (Tag<>'styp') and (Tag<>'sidx') and (Tag<>'free') and (Tag<>'emsg') Then
+   Fail('Boite MP4 non prise en charge: '+Tag);
+  Inc(P,N);
+ End;
+ if Init Then Begin
+  if not HasFTyp or not HasMoov or HasMoof or HasMdat or (TrackCount=0) Then Fail('Initialisation MP4 ftyp/moov/mvex/trex requise.');
+ End else if not HasMoof or not HasMdat or HasMoov or HasFTyp Then Fail('Segment MP4 moof/mdat requis.');
+ if Total=0 Then OpenWrite(Target)
+ else Begin
+  Assign(ActiveOutput,Target);
+  {$I-}Reset(ActiveOutput,1); Code:=IOResult;{$I+}
+  if Code<>0 Then Fail('Reouverture MP4 impossible.'); OutputActive:=True;
+  {$I-}Seek(ActiveOutput,Total); Code:=IOResult;{$I+}
+  if Code<>0 Then Fail('Position sortie MP4 incorrecte.');
+ End;
+ P:=0; Remaining:=Size;
+ while Remaining>0 do Begin
+  Amount:=4096; if Remaining<Amount Then Amount:=Remaining;
+  ReadAt(P,Buffer,Amount); WriteBytes(Buffer,Amount);
+  Inc(P,Amount); Dec(Remaining,Amount);
+ End;
+ Inc(Total,Size); CloseRead; CloseWrite;
+ if Temps[1]<>'' Then Begin
+  Assign(F,Temps[1]); {$I-}Erase(F); Code:=IOResult;{$I+}
+  if Code<>0 Then Fail('Suppression temporaire HLS impossible.'); Temps[1]:='';
+ End;
+End;
+
+Procedure ReadLine;
+Var Ch: Char; Finished: Boolean;
+Begin
+ Line:=''; Finished:=False;
+ while not Finished do Begin
+  {$I-}Finished:=Eof(HLSList); Code:=IOResult;{$I+}
+  if Code<>0 Then Fail('Lecture liste HLS impossible.');
+  if Finished Then Exit;
+  {$I-}Read(HLSList,Ch); Code:=IOResult;{$I+}
+  if Code<>0 Then Fail('Lecture liste HLS impossible.');
+  if Ch=#10 Then Finished:=True
+  else if Ch<>#13 Then Begin
+   if Length(Line)=255 Then Fail('Ligne HLS trop longue (255 caracteres maximum).');
+   Line:=Line+Ch;
+  End;
+ End;
+End;
+
+Begin
+ Base:=InputPath; if HLSBase<>'' Then Base:=HLSBase;
+ Assign(HLSList,Playlist); {$I-}Reset(HLSList); Code:=IOResult;{$I+}
+ if Code<>0 Then Fail('Ouverture liste HLS impossible.'); HLSListOpen:=True;
+ ReadLine; if Line<> '#EXTM3U' Then Fail('Signature #EXTM3U requise.');
+ Total:=0; Segments:=0; TrackCount:=0; EndList:=False; HaveMap:=False; Pending:=False;
+ while not Eof(HLSList) do Begin
+  ReadLine;
+  if Line<>'' Then Begin
+   if EndList Then Fail('Donnees apres EXT-X-ENDLIST.');
+   if Copy(Line,1,11)='#EXT-X-MAP:' Then Begin
+    if HaveMap Then Fail('Changement de fichier initialisation non pris en charge.');
+    if Copy(Line,12,5)<>'URI="' Then Fail('EXT-X-MAP exige URI entre guillemets, sans BYTERANGE.');
+    J:=17; K:=J; while (K<=Length(Line)) and (Line[K]<>'"') do Inc(K);
+    if K<>Length(Line) Then Fail('Attributs EXT-X-MAP non pris en charge.');
+    MapURI:=Copy(Line,J,K-J); AppendResource(MapURI,True); HaveMap:=True;
+   End else if Copy(Line,1,8)='#EXTINF:' Then Begin
+    if Pending Then Fail('URI de segment HLS manquante.'); Pending:=True;
+   End else if Line='#EXT-X-ENDLIST' Then Begin
+    if Pending Then Fail('Dernier segment HLS manquant.'); EndList:=True;
+   End else if Line[1]<>'#' Then Begin
+    if not HaveMap Then Fail('HLS fMP4 avec EXT-X-MAP requis; MPEG-TS non implemente.');
+    if not Pending Then Fail('Segment HLS sans EXTINF.');
+    if Segments=32767 Then Fail('Trop de segments HLS.');
+    AppendResource(Line,False); Inc(Segments); Pending:=False;
+    if not HideBanner Then WriteLn('Segment HLS ',Segments,' assemble.');
+   End else if (Copy(Line,1,7)='#EXT-X-') and
+    (Pos('#EXT-X-VERSION:',Line)<>1) and
+    (Pos('#EXT-X-MEDIA-SEQUENCE:',Line)<>1) and
+    (Pos('#EXT-X-TARGETDURATION:',Line)<>1) and
+    (Pos('#EXT-X-PLAYLIST-TYPE:',Line)<>1) and
+    (Line<>'#EXT-X-INDEPENDENT-SEGMENTS') and (Line<>'#EXT-X-KEY:METHOD=NONE') Then
+    Fail('Directive HLS non prise en charge (chiffrement/master/discontinuite/plage): '+Line);
+  End;
+ End;
+ if not EndList or (Segments=0) Then Fail('Liste HLS VOD complete avec ENDLIST et segments requise.');
+ {$I-}Close(HLSList); Code:=IOResult;{$I+} HLSListOpen:=False;
+ if Code<>0 Then Fail('Fermeture liste HLS impossible.');
 End;
 
 Procedure NormalizeWave(const Source,Target: string; ForMP3: Boolean);
@@ -3449,17 +3767,19 @@ End;
 
 Procedure Help;
 Begin
- WriteLn('FFMPEG Pascal 1.0 - sous-ensemble audio natif, pas FFmpeg 8.0');
+ WriteLn('FFMPEG Pascal 1.1 - audio natif et copie HLS fMP4, pas FFmpeg 8.0');
  WriteLn('Usage: ffmpeg [-y|-n] [-f FORMAT] -i ENTREE [options] SORTIE');
  WriteLn('Entrees: WAV PCM, MP3, AIFF PCM, VOC PCM, MOD 4 canaux.');
  WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 320 kbit/s.');
+ WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
+ WriteLn('-hls_base_url URL_ORIGINE: resout les URI d''une liste locale.');
  WriteLn('-c:a pcm_s16le|mp3|copy   (-acodec et -codec:a acceptes)');
  WriteLn('-ar HZ   frequence de sortie 4000..192000 (-ar apres -i)');
  WriteLn('-ac 1|2  canaux de sortie (-ac apres -i)');
  WriteLn('-b:a 320k   debit MP3 fixe; -vn; -hide_banner; -y; -n');
  WriteLn('-f wav|mp3|aiff|voc|libopenmpt avant -i; -f wav|mp3 avant sortie');
  WriteLn('-h, --help, /?, -version, -formats, -codecs');
- WriteLn('Une entree et une sortie locales. Pas de video, reseau, filtres ou pipes.');
+ WriteLn('HLS local; HTTP/HTTPS sous Windows. Pas de MPEG-TS, DRM ou filtres video.');
  WriteLn('Voir FFMPEG.md pour les limites et les sources FFmpeg consultees.');
 End;
 
@@ -3474,6 +3794,8 @@ End;
 
 Begin
  InputActive:=False; OutputActive:=False;
+ HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
+ {$IFDEF MSWINDOWS}NetSession:=nil; NetRequest:=nil;{$ENDIF}
  for J:=0 to 3 do Temps[J]:='';
  InputPath:=''; OutputPath:=''; InputFormat:=''; OutputFormat:='';
  AudioCodec:=''; PendingFormat:=''; RequestedRate:=0; RequestedChannels:=0;
@@ -3484,10 +3806,11 @@ Begin
   Argument:=ParamStr(I);
   if (Argument='-h') or (Argument='--help') or (Argument='/?') or (Argument='-help') Then Begin Help; Halt(0); End
   else if Argument='-version' Then Begin
-   WriteLn('FFMPEG Pascal 1.0; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.'); Halt(0);
+   WriteLn('FFMPEG Pascal 1.1; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.'); Halt(0);
   End
   else if Argument='-formats' Then Begin
    WriteLn(' D = demuxage, E = muxage'); WriteLn(' DE wav'); WriteLn(' DE mp3');
+   WriteLn(' D  hls (fMP4 VOD)'); WriteLn('  E mp4 (copie de fragments HLS)');
    WriteLn(' D  aiff'); WriteLn(' D  voc'); WriteLn(' D  libopenmpt (nom compatible, moteur MOD Pascal interne)'); Halt(0);
   End
   else if Argument='-codecs' Then Begin
@@ -3497,14 +3820,19 @@ Begin
   else if Argument='-y' Then Overwrite:=True
   else if Argument='-n' Then NoOverwrite:=True
   else if Argument='-hide_banner' Then HideBanner:=True
-  else if Argument='-vn' Then Begin End
+  else if Argument='-vn' Then NoVideo:=True
+  else if Argument='-hls_base_url' Then Begin
+   HLSBase:=NextArgument;
+   if not IsHTTP(HLSBase) Then Fail('-hls_base_url exige une URL HTTP/HTTPS.');
+  End
   else if Argument='-f' Then PendingFormat:=FormatName(NextArgument)
   else if Argument='-i' Then Begin
    if InputPath<>'' Then Fail('Une seule entree est prise en charge.');
    InputPath:=NextArgument; InputFormat:=PendingFormat; PendingFormat:='';
   End
-  else if (Argument='-c:a') or (Argument='-codec:a') or (Argument='-acodec') Then Begin
+  else if (Argument='-c') or (Argument='-codec') or (Argument='-c:a') or (Argument='-codec:a') or (Argument='-acodec') Then Begin
    if InputPath='' Then Fail('Selection du codec de sortie attendue apres -i.');
+   AllStreams:=(Argument='-c') or (Argument='-codec');
    AudioCodec:=Lower(NextArgument);
   End
   else if (Argument='-ar') or (Argument='-ac') Then Begin
@@ -3536,15 +3864,30 @@ Begin
  if ParamCount=0 Then Begin Help; Halt(1); End;
  if (InputPath='') or (OutputPath='') Then Fail('Une entree -i et une sortie sont requises.');
  if Overwrite and NoOverwrite Then Fail('-y et -n sont incompatibles.');
- if (InputPath='-') or (Pos('://',InputPath)>0) Then Fail('Seuls les fichiers locaux sont pris en charge.');
+ if (InputPath='-') or ((Pos('://',InputPath)>0) and not IsHTTP(InputPath)) Then Fail('Entree locale ou HLS HTTP/HTTPS requise.');
  if Lower(FExpand(InputPath))=Lower(FExpand(OutputPath)) Then Fail('Entree et sortie doivent etre differentes.');
  if IsDirectory(OutputPath) Then Fail('La sortie designe un dossier.');
  if Exists(OutputPath) and not Overwrite Then Fail('Sortie existante (utiliser -y): '+OutputPath);
- Detected:=Probe(InputPath);
+ Intermediate:=InputPath;
+ if IsHTTP(InputPath) Then Begin
+  Temps[0]:=NewTemporary; DownloadHLS(InputPath,Temps[0]); Intermediate:=Temps[0];
+  if HLSBase='' Then HLSBase:=LastDownloadURL;
+ End;
+ Detected:=Probe(Intermediate);
  if InputFormat='' Then InputFormat:=Detected
  else if InputFormat<>Detected Then Fail('Format impose incompatible avec la signature du fichier.');
  if InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  if OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ if InputFormat='hls' Then Begin
+  if (OutputFormat<>'mp4') or (AudioCodec<>'copy') or not AllStreams Then
+   Fail('HLS exige -c copy et une sortie MP4.');
+  if (RequestedRate<>0) or (RequestedChannels<>0) or HasBitrate or NoVideo Then
+   Fail('HLS copy conserve toutes les pistes: conversion et -vn non pris en charge.');
+  Temps[2]:=NewTemporary; AssembleHLS(Intermediate,Temps[2]);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('MP4 fragmente cree: ',OutputPath); Halt(0);
+ End;
+ if IsHTTP(InputPath) Then Fail('Entree reseau reservee aux listes HLS.');
+ if HLSBase<>'' Then Fail('-hls_base_url exige une entree HLS.');
  if (OutputFormat<>'wav') and (OutputFormat<>'mp3') Then Fail('Seules les sorties WAV et MP3 sont implementees.');
  if AudioCodec='' Then if OutputFormat='wav' Then AudioCodec:='pcm_s16le' else AudioCodec:='mp3';
  if (AudioCodec<>'copy') and not (((OutputFormat='wav') and (AudioCodec='pcm_s16le')) or
@@ -3552,7 +3895,7 @@ Begin
  if HasBitrate and ((OutputFormat<>'mp3') or (AudioCodec='copy')) Then Fail('-b:a exige un encodage MP3.');
  if (AudioCodec='copy') and ((RequestedRate<>0) or (RequestedChannels<>0) or (InputFormat<>OutputFormat)) Then
   Fail('-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- if not HideBanner Then WriteLn('FFMPEG Pascal 1.0 - moteur audio natif du projet');
+ if not HideBanner Then WriteLn('FFMPEG Pascal 1.1 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  if AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
  else Begin
