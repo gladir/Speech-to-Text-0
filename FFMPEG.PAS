@@ -3318,6 +3318,7 @@ Var
  HLSList: Text;
  HLSListOpen,AllStreams,NoVideo,NoAudio: Boolean;
  VideoCodec: String;
+ AspectNum,AspectDen: LongInt;
  VideoFrames,ImageWidth,ImageHeight: Integer;
  {$IFDEF MSWINDOWS}
   NetSession,NetRequest: Pointer;
@@ -5900,7 +5901,7 @@ Type
   ConfigSize,NALBytes: Integer;
   First,Last,Cursor: PSample;
   Stsz,Stsc,Stco,Stts,Ctts,Stss,Entry,EditAt,AVIStep,HeaderStart,StartDelay,
-  DShowAlign: LongInt;
+  DShowAlign,SARNum,SARDen: LongInt;
  End;
  TTracks=Array[1..MaxTracks] Of TTrack;
  PTracks=^TTracks;
@@ -5923,7 +5924,7 @@ Var
  Level: Integer;
  LE: Boolean;
  I,Pick: Integer;
- P,Moov,Movi,RiffEnd,MovieScale: LongInt;
+ P,Moov,Movi,RiffEnd,MovieScale,AspectWidth,AspectHeight: LongInt;
  S,NextSample: PSample;
  Clock,Best: Double;
 
@@ -5976,6 +5977,12 @@ Var
 Begin
  V:='';
  For A:=0 To 3 Do V:=V+Chr(ByteAt(At+A)); Tag:=V;
+End;
+
+Function RatioGCD(A,B: LongInt): LongInt;
+Var R: LongInt;
+Begin
+ While B<>0 Do Begin R:=A Mod B; A:=B; B:=R; End; RatioGCD:=A;
 End;
 
 Function Ticks(Value: Double): LongInt;Begin
@@ -6112,6 +6119,11 @@ Begin
    MPBox(C,E,D,F); Name:=Tag(C+4);
    If (Name='avcC') Or (Name='vpcC') Or (Name='dOps') Then ConfigFrom(T,D,F-D) Else
    If Name='esds' Then Descriptors(T,D+4,F,0) Else
+   If (Name='pasp') And Video Then Begin
+    If F-D<>8 Then Fail('pasp MP4 invalide.');
+    SARNum:=Number(D,False); SARDen:=Number(D+4,False);
+    If (SARNum<=0) Or (SARDen<=0) Then Fail('pasp MP4 invalide.');
+   End Else
    If (Name='sinf') Then Fail('Piste chiffree non prise en charge.');
    C:=F;
   End;
@@ -7731,6 +7743,10 @@ Begin
   If (Width>4096) Or (Height>4096) Then Fail('FFV1: dimensions maximales 4096.');
   Str(Width,A); Str(Height,B); Str(InputScale,C); Str(DefaultDuration,D);
   Line:='YUV4MPEG2 W'+A+' H'+B+' F'+C+':'+D+' Ip A1:1 C420jpeg'+#10;
+  If AspectNum>0 Then Begin
+   Str(SARNum,A); Str(SARDen,B);
+   Line:=Copy(Line,1,Pos(' A1:1',Line))+'A'+A+':'+B+' C420jpeg'+#10;
+  End;
   WriteBytes(Line[1],Length(Line)); V:=First;
   While V<>Nil Do Begin
    Line:='FRAME'+#10; WriteBytes(Line[1],Length(Line));
@@ -7808,7 +7824,9 @@ Begin
  With Tracks^[T] Do Begin
   StartBox('trak'); StartBox('tkhd'); W32(7); W32(0); W32(0); W32(T); W32(0);
   W32(Ticks((Duration-Skip+StartDelay)*1000.0/Scale)); Zero(8); W16(0); W16(0);
-  If Video Then W16(0) Else W16(256); W16(0); Matrix; W32(Width Shl 16);
+  If Video Then W16(0) Else W16(256); W16(0); Matrix;
+  If Video And (AspectNum>0) Then W32(Ticks(Height*65536.0*AspectNum/AspectDen))
+  Else W32(Width Shl 16);
   W32(Height Shl 16); EndBox;
   If (Skip>0) Or (StartDelay>0) Then Begin
    StartBox('edts'); StartBox('elst'); W32(0);
@@ -7845,6 +7863,9 @@ Begin
                    Else StartBox('dOps');
    WriteBytes(Config,ConfigSize); EndBox;
   End Else ESD(T);
+  If Video And (SARNum>0) Then Begin
+   StartBox('pasp'); W32(SARNum); W32(SARDen); EndBox;
+  End;
   EndBox; EndBox;
   StartBox('stts'); W32(0); W32(Count); V:=First;
   While V<>Nil Do Begin
@@ -7974,6 +7995,10 @@ Begin
     Inc(At,EntrySize);
    End;
    If Not HaveMedia Then Fail('Montage MP4 sans intervalle media.');
+   If OutKind='mp4' Then Begin
+    Skip:=Media; StartDelay:=Lead; Duration:=Ticks(Media*1.0+Length);
+    Continue;
+   End;
    Offset:=Ticks(Lead*1.0-Media); EndValue:=Media*1.0+Length;
    FirstKeep:=Nil; LastKeep:=Nil; V:=First;
    While V<>Nil Do Begin
@@ -8028,6 +8053,7 @@ Begin
   End;
   If First^.Time*1.0/Scale<FirstDTS Then FirstDTS:=First^.Time*1.0/Scale;
  End;
+ If OutKind='mp4' Then Exit;
  { Un decalage commun conserve l'alignement des pistes lorsque le decodeur
    video a besoin de paquets avant la premiere presentation. }
  Shift:=-FirstDTS;
@@ -8144,7 +8170,15 @@ Begin
     W16(ConfigSize); WriteBytes(Config,ConfigSize);
    End Else W16(0);
   End;
-  EndBox; EndBox;
+  EndBox;
+  If Video And (AspectNum>0) Then Begin
+   If (AspectNum>65535) Or (AspectDen>65535) Then Fail('AVI: ratio limite a 65535:65535.');
+   StartBox('vprp'); W32(0); W32(0); W32(Ticks(Scale*1.0*Count/Duration));
+   W32(Width); W32(Height); W16(AspectDen); W16(AspectNum);
+   W32(Width); W32(Height); W32(1);
+   W32(Height); W32(Width); W32(Height); W32(Width); Zero(16); EndBox;
+  End;
+  EndBox;
  End;
  EndBox; StartBox('LIST'); Movi:=OutPos; WTag('movi');
  For T:=1 To TrackCount Do Tracks^[T].Cursor:=Tracks^[T].First;
@@ -8354,7 +8388,21 @@ Begin
  If InKind='m4v' Then ReadM4V Else
  If InKind='mp4' Then ReadMP4 Else If InKind='avi' Then ReadAVI Else If InKind=
  'webm' Then ReadWebM Else Fail('Conteneur video inconnu.');
- RemoveAudioTracks; PrepareTracks; If InKind='mp4' Then ApplyMPEdits; OpenWrite(Target);
+ RemoveAudioTracks; PrepareTracks;
+ If AspectNum>0 Then Begin
+  I:=0;
+  For Pick:=1 To TrackCount Do With Tracks^[Pick] Do
+  If Video Then Begin
+   Inc(I);
+   SARNum:=AspectNum; SARDen:=AspectDen;
+   P:=RatioGCD(SARNum,Width); SARNum:=SARNum Div P; AspectWidth:=Width Div P;
+   P:=RatioGCD(SARDen,Height); SARDen:=SARDen Div P; AspectHeight:=Height Div P;
+   SARDen:=Ticks(SARDen*1.0*AspectWidth); SARNum:=Ticks(SARNum*1.0*AspectHeight);
+   P:=RatioGCD(SARNum,SARDen); SARNum:=SARNum Div P; SARDen:=SARDen Div P;
+  End;
+  If I=0 Then Fail('-aspect: aucune piste video.');
+ End;
+ If InKind='mp4' Then ApplyMPEdits; OpenWrite(Target);
  If OutKind='flv' Then WriteFLV1 Else
  If OutKind='yuv4mpegpipe' Then WriteY4M Else
  If OutKind='m4v' Then WriteM4V Else If OutKind='avi' Then WriteAVI Else WriteMP4;
@@ -8598,6 +8646,7 @@ Procedure Help;Begin
  WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn;
  WriteLn(' /?                             Affiche l''aide de cette commande.');
+ WriteLn(' -aspect N:D|DECIMAL             Ratio affichage (4:3, 16:9); sorties MP4, AVI, Y4M.');
  WriteLn(' -an                            Ne pas '+#130+'crire les pistes audio (sortie vid'+#130+'o uniquement).');
  WriteLn('                                AVI B-frames H264/MPEG4; Montages MP4 elst 32/64 bits '+#133+' vitesse 1.');
  WriteLn('                                AVI: retards arrondis au paquet; preroll audio conserve si n'+#130+'cessaire.');
@@ -8628,9 +8677,37 @@ Function NextArgument: String;Begin
  NextArgument:=ParamStr(I);
 End;
 
+Procedure ParseAspect(S: String);
+Var K,C,Dots,Digits: Integer; N,D,G,R: LongInt; Decimal: Boolean;
+Begin
+ N:=0; D:=1; Dots:=0; Digits:=0; Decimal:=False;
+ K:=Pos(':',S);
+ If K>0 Then Begin
+  For C:=1 To Length(S) Do If (C<>K) And Not (S[C] In ['0'..'9']) Then
+   Fail('-aspect: N:D positif attendu.');
+  Val(Copy(S,1,K-1),N,C); If C<>0 Then Fail('-aspect: ratio invalide.');
+  Val(Copy(S,K+1,Length(S)),D,C); If C<>0 Then Fail('-aspect: ratio invalide.');
+ End Else Begin
+  For K:=1 To Length(S) Do
+   If S[K]='.' Then Begin Inc(Dots); Decimal:=True; End Else
+   If S[K] In ['0'..'9'] Then Begin
+    Inc(Digits);
+    If (N>100000000) Or (Decimal And (D>=1000000)) Then Fail('-aspect: precision maximale 6 decimales.');
+    N:=N*10+Ord(S[K])-48; If Decimal Then D:=D*10;
+   End Else Fail('-aspect: nombre positif ou N:D attendu.');
+  If (Dots>1) Or (Digits=0) Then Fail('-aspect: ratio invalide.');
+ End;
+ If (N<=0) Or (D<=0) Or (N>1000000000) Or (D>1000000) Then Fail('-aspect: ratio positif hors limites.');
+ G:=N; R:=D; While R<>0 Do Begin
+  AspectNum:=G Mod R; G:=R; R:=AspectNum;
+ End;
+ AspectNum:=N Div G; AspectDen:=D Div G;
+End;
+
 BEGIN
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
+ AspectNum:=0; AspectDen:=1;
  NoAudio:=False; VideoCodec:=''; VideoFrames:=0; ImageWidth:=0; ImageHeight:=0;
  {$IFDEF MSWINDOWS}
   NetSession:=Nil; NetRequest:=Nil;
@@ -8675,6 +8752,9 @@ BEGIN
   If Argument='-hide_banner' Then HideBanner:=True Else
   If Argument='-vn' Then NoVideo:=True Else
   If Argument='-an' Then NoAudio:=True Else
+  If Argument='-aspect' Then Begin
+   ParseAspect(NextArgument);
+  End Else
   If Argument='-4mv' Then Begin
    Fail('-4mv exige un encodeur MPEG-4 Part 2 avec mouvements 8x8; non implemente.');
   End Else
@@ -8790,6 +8870,11 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If AspectNum>0 Then Begin
+  If NoVideo Then Fail('-aspect incompatible avec -vn.');
+  If (OutputFormat<>'mp4') And (OutputFormat<>'avi') And (OutputFormat<>'yuv4mpegpipe') Then
+   Fail('-aspect: sorties MP4, AVI et Y4M uniquement.');
+ End;
  If (VideoCodec='ffv1') Or (VideoCodec='flv') Or (InputFormat='yuv4mpegpipe') Or (OutputFormat='yuv4mpegpipe') Then Begin
   If IsHTTP(InputPath) Or (HLSBase<>'') Or NoVideo Or (AudioCodec<>'') Or
    (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
@@ -8861,7 +8946,7 @@ BEGIN
   If (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or NoVideo Then   Fail(
   'HLS copy conserve toutes les pistes: conversion et -vn non pris en charge.');
   Temps[2]:=NewTemporary;
-  If NoAudio Then Begin
+  If NoAudio Or (AspectNum>0) Then Begin
    Temps[3]:=NewTemporary; AssembleHLS(Intermediate,Temps[3]);
    RemuxVideo(Temps[3],Temps[2],'mp4','mp4');
   End Else AssembleHLS(Intermediate,Temps[2]);
@@ -8873,7 +8958,7 @@ BEGIN
   If Not (((InputFormat='mp4') And (OutputFormat='avi')) Or
   ((InputFormat='avi') And (OutputFormat='mp4')) Or
   ((InputFormat='webm') And (OutputFormat='mp4')) Or
-  (NoAudio And (InputFormat=OutputFormat) And ((InputFormat='mp4') Or (InputFormat='avi')))) Then   Fail(
+  ((NoAudio Or (AspectNum>0)) And (InputFormat=OutputFormat) And ((InputFormat='mp4') Or (InputFormat='avi')))) Then   Fail(
   'Conversions video: MP4 vers AVI, AVI vers MP4, WebM vers MP4.');
   If (AudioCodec<>'') And ((AudioCodec<>'copy') Or Not AllStreams) Then   Fail(
   'Video: utiliser -c copy; aucun reencodage video implemente.');
