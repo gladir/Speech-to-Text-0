@@ -3529,6 +3529,9 @@ Begin
   (B[4]=77) And (B[5]=80) And (B[6]=69) And (B[7]=71) And (B[8]=50) Then Begin
   Probe:='yuv4mpegpipe'; Exit;
  End;
+ If N>=4 Then If (B[0]=0) And (B[1]=0) And (B[2]=1) And (B[3]=$B3) Then Begin
+  Probe:='mpeg1video'; Exit;
+ End;
  If N>=5 Then If (B[0]=0) And (B[1]=0) And (B[2]=1) And
   ((B[3]=$B0) Or (B[3]=$B5) Or (B[3]<=$2F)) Then Begin
   Probe:='m4v'; Exit;
@@ -8582,6 +8585,494 @@ Begin
  CloseRead; CloseWrite;
 End;
 
+{ MPEG-1 video: intra encoder and I/P/B decoder. Tables and syntax adapted
+  from FFmpeg mpeg12data.c/mpeg12.c/mpeg12dec.c (LGPL-2.1-or-later). }
+Procedure MPEG1Video(Const Source,Target: String; Encoding: Boolean);
+Const
+ DefaultMatrix: Array[0..63] Of Integer=(
+ 8,16,19,22,26,27,29,34,
+ 16,16,22,24,27,29,34,37,
+ 19,22,26,27,29,34,34,38,
+ 22,22,26,27,29,34,37,40,
+ 22,26,27,29,32,35,40,48,
+ 26,27,29,32,35,40,48,58,
+ 26,27,29,34,38,46,56,69,
+ 27,29,35,38,46,56,69,83);
+ DCLCode: Array[0..11] Of Integer=(
+ 4,0,1,5,6,14,30,62,
+ 126,254,510,511);
+ DCLBits: Array[0..11] Of Integer=(
+ 3,2,2,3,3,4,5,6,
+ 7,8,9,9);
+ DCCCode: Array[0..11] Of Integer=(
+ 0,1,2,6,14,30,62,126,
+ 254,510,1022,1023);
+ DCCBits: Array[0..11] Of Integer=(
+ 2,2,2,3,4,5,6,7,
+ 8,9,10,10);
+ AC: Array[0..112,0..1] Of Integer=(
+ (3,2),(4,4),(5,5),(6,7),(38,8),(33,8),(10,10),(29,12),
+ (24,12),(19,12),(16,12),(26,13),(25,13),(24,13),(23,13),(31,14),
+ (30,14),(29,14),(28,14),(27,14),(26,14),(25,14),(24,14),(23,14),
+ (22,14),(21,14),(20,14),(19,14),(18,14),(17,14),(16,14),(24,15),
+ (23,15),(22,15),(21,15),(20,15),(19,15),(18,15),(17,15),(16,15),
+ (3,3),(6,6),(37,8),(12,10),(27,12),(22,13),(21,13),(31,15),
+ (30,15),(29,15),(28,15),(27,15),(26,15),(25,15),(19,16),(18,16),
+ (17,16),(16,16),(5,4),(4,7),(11,10),(20,12),(20,13),(7,5),
+ (36,8),(28,12),(19,13),(6,5),(15,10),(18,12),(7,6),(9,10),
+ (18,13),(5,6),(30,12),(20,16),(4,6),(21,12),(7,7),(17,12),
+ (5,7),(17,13),(39,8),(16,13),(35,8),(26,16),(34,8),(25,16),
+ (32,8),(24,16),(14,10),(23,16),(13,10),(22,16),(8,10),(21,16),
+ (31,12),(26,12),(25,12),(23,12),(22,12),(31,13),(30,13),(29,13),
+ (28,13),(27,13),(31,16),(30,16),(29,16),(28,16),(27,16),(1,6),
+ (2,2));
+ Runs: Array[0..110] Of Integer=(
+ 0,0,0,0,0,0,0,0,
+ 0,0,0,0,0,0,0,0,
+ 0,0,0,0,0,0,0,0,
+ 0,0,0,0,0,0,0,0,
+ 0,0,0,0,0,0,0,0,
+ 1,1,1,1,1,1,1,1,
+ 1,1,1,1,1,1,1,1,
+ 1,1,2,2,2,2,2,3,
+ 3,3,3,4,4,4,5,5,
+ 5,6,6,6,7,7,8,8,
+ 9,9,10,10,11,11,12,12,
+ 13,13,14,14,15,15,16,16,
+ 17,18,19,20,21,22,23,24,
+ 25,26,27,28,29,30,31);
+ Levels: Array[0..110] Of Integer=(
+ 1,2,3,4,5,6,7,8,
+ 9,10,11,12,13,14,15,16,
+ 17,18,19,20,21,22,23,24,
+ 25,26,27,28,29,30,31,32,
+ 33,34,35,36,37,38,39,40,
+ 1,2,3,4,5,6,7,8,
+ 9,10,11,12,13,14,15,16,
+ 17,18,1,2,3,4,5,1,
+ 2,3,4,1,2,3,1,2,
+ 3,1,2,3,1,2,1,2,
+ 1,2,1,2,1,2,1,2,
+ 1,2,1,2,1,2,1,2,
+ 1,1,1,1,1,1,1,1,
+ 1,1,1,1,1,1,1);
+ MBA: Array[0..35,0..1] Of Integer=(
+ (1,1),(3,3),(2,3),(3,4),(2,4),(3,5),(2,5),(7,7),
+ (6,7),(11,8),(10,8),(9,8),(8,8),(7,8),(6,8),(23,10),
+ (22,10),(21,10),(20,10),(19,10),(18,10),(35,11),(34,11),(33,11),
+ (32,11),(31,11),(30,11),(29,11),(28,11),(27,11),(26,11),(25,11),
+ (24,11),(8,11),(15,11),(0,8));
+ CBP: Array[0..63,0..1] Of Integer=(
+ (1,9),(11,5),(9,5),(13,6),(13,4),(23,7),(19,7),(31,8),
+ (12,4),(22,7),(18,7),(30,8),(19,5),(27,8),(23,8),(19,8),
+ (11,4),(21,7),(17,7),(29,8),(17,5),(25,8),(21,8),(17,8),
+ (15,6),(15,8),(13,8),(3,9),(15,5),(11,8),(7,8),(7,9),
+ (10,4),(20,7),(16,7),(28,8),(14,6),(14,8),(12,8),(2,9),
+ (16,5),(24,8),(20,8),(16,8),(14,5),(10,8),(6,8),(6,9),
+ (18,5),(26,8),(22,8),(18,8),(13,5),(9,8),(5,8),(5,9),
+ (12,5),(8,8),(4,8),(4,9),(7,3),(10,5),(8,5),(12,6));
+ MV: Array[0..16,0..1] Of Integer=(
+ (1,1),(1,2),(1,3),(1,4),(3,6),(5,7),(4,7),(3,7),
+ (11,9),(10,9),(9,9),(17,10),(16,10),(15,10),(14,10),(13,10),
+ (12,10));
+ PT: Array[0..6,0..1] Of Integer=(
+ (3,5),(1,2),(1,3),(1,1),(1,6),(1,5),(2,5));
+ BT: Array[0..10,0..1] Of Integer=(
+ (3,5),(2,3),(3,3),(2,4),(3,4),(2,2),(3,2),(1,6),
+ (2,6),(3,6),(2,5));
+
+ Scan: Array[0..63] Of Byte=(0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,
+ 12,19,26,33,40,48,41,34,27,20,13,6,7,14,21,28,35,42,49,56,
+ 57,50,43,36,29,22,15,23,30,37,44,51,58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63);
+ Rates: Array[1..8,0..1] Of LongInt=((24000,1001),(24,1),(25,1),(30000,1001),(30,1),(50,1),(60000,1001),(60,1));
+ PixelRatio: Array[1..14] Of Integer=(10000,6735,7031,7615,8055,8437,8935,9157,9815,10255,10695,10950,11575,12015);
+ PFlags: Array[0..6] Of Byte=(1,2,8,10,17,18,26);
+ BFlags: Array[0..10] Of Byte=(1,4,6,8,10,12,14,17,22,26,30);
+Type
+ TRow=Array[0..639] Of Byte; PRow=^TRow;
+ TFrames=Array[0..2,0..2,0..479] Of PRow; PFrames=^TFrames;
+Var
+ Frames:PFrames;
+ Cache:Array[0..4095] Of Byte; CacheAt,CacheSize:LongInt;
+ W,H,MBW,MBH,Plane,BX,BY,MBX,MBY,Cur,Past,Future,Refs:Integer;
+ CW,CH,Widths,Heights,LastDC:Array[0..2] Of Integer;
+ Matrix:Array[0..1,0..63] Of Integer;
+ Coeff:Array[0..63] Of Integer;
+ Seen:Array[0..1199] Of Boolean;
+ C,Temp:Array[0..7,0..7] Of Double;
+ Motion:Array[0..1,0..1] Of Integer;
+ FCode,FullPel:Array[0..1] Of Integer;
+ QP,PicType,MBFlags,LastFlags,RateCode:Integer;
+ At,Limit,EndAt,ReadPos,ByteEnd,Num,Den,PictureCount,FrameCount,Unused,SARNum,SARDen,Factor,LW,LH:LongInt;
+ BitOffset,WriteCount:Integer; WriteByte:Byte;
+ Sequence,Pending,Allocated,HeaderWritten,FirstInSlice:Boolean;
+ J,N,X,Y,P,B,Code,Increment,MBIndex,StoredW,StoredH,StoredRate,AspectCode,StoredAspect:Integer;
+ Line,Token,AString,BString,CString,DString:String;
+Function GCD(A,B:LongInt):LongInt;
+Var R:LongInt;
+Begin While B<>0 Do Begin R:=A Mod B; A:=B; B:=R; End; GCD:=A; End;
+Function Clip(V,Hi:Integer):Integer;
+Begin If V<0 Then V:=0 Else If V>Hi Then V:=Hi; Clip:=V; End;
+Function AtByte(P:LongInt):Byte;
+Begin
+ If (P<0) Or (P>=Limit) Then Fail('MPEG1: lecture hors fichier.');
+ If (CacheAt<0) Or (P<CacheAt) Or (P>=CacheAt+CacheSize) Then Begin
+  CacheAt:=P; CacheSize:=4096; If CacheSize>Limit-P Then CacheSize:=Limit-P; ReadAt(P,Cache,CacheSize);
+ End; AtByte:=Cache[P-CacheAt];
+End;
+Function GetBits(N:Integer):LongInt;
+Var I:Integer; V:LongInt;
+Begin
+ V:=0; For I:=1 To N Do Begin
+  If ReadPos>=ByteEnd Then Fail('MPEG1: flux tronque.');
+  V:=V*2+((AtByte(ReadPos) Shr (7-BitOffset)) And 1); Inc(BitOffset);
+  If BitOffset=8 Then Begin BitOffset:=0; Inc(ReadPos); End;
+ End; GetBits:=V;
+End;
+Function Peek(N:Integer):LongInt;
+Var P:LongInt; B:Integer;
+Begin P:=ReadPos; B:=BitOffset; Peek:=GetBits(N); ReadPos:=P; BitOffset:=B; End;
+Procedure PutBits(N:Integer; V:LongInt);
+Var I:Integer;
+Begin For I:=N-1 DownTo 0 Do Begin
+ WriteByte:=((LongInt(WriteByte) Shl 1) Or ((V Shr I) And 1)) And 255; Inc(WriteCount);
+ If WriteCount=8 Then Begin WriteBytes(WriteByte,1); WriteCount:=0; WriteByte:=0; End;
+End; End;
+Procedure Align;
+Begin If WriteCount<>0 Then PutBits(8-WriteCount,0); End;
+Procedure StartCode(N:Integer);
+Begin Align; PutBits(24,1); PutBits(8,N); End;
+Function NextCode(P:LongInt):LongInt;
+Begin
+ While P+3<Limit Do Begin
+  If (AtByte(P)=0) And (AtByte(P+1)=0) And (AtByte(P+2)=1) Then Begin NextCode:=P; Exit; End;
+  Inc(P);
+ End; NextCode:=Limit;
+End;
+Function VLC(Kind:Integer):Integer;
+Var L,I,N,A,B:Integer; Value:LongInt;
+Begin
+ Value:=0; VLC:=-1;
+ For L:=1 To 16 Do Begin
+  Value:=Value*2+GetBits(1);
+  Case Kind Of 0,1:N:=12; 2:N:=113; 3:N:=36; 4:N:=64; 5:N:=17; 6:N:=7; Else N:=11; End;
+  For I:=0 To N-1 Do Begin
+   Case Kind Of
+   0:Begin A:=DCLCode[I]; B:=DCLBits[I]; End;
+   1:Begin A:=DCCCode[I]; B:=DCCBits[I]; End;
+   2:Begin A:=AC[I,0]; B:=AC[I,1]; End;
+   3:Begin A:=MBA[I,0]; B:=MBA[I,1]; End;
+   4:Begin A:=CBP[I,0]; B:=CBP[I,1]; End;
+   5:Begin A:=MV[I,0]; B:=MV[I,1]; End;
+   6:Begin A:=PT[I,0]; B:=PT[I,1]; End;
+   Else Begin A:=BT[I,0]; B:=BT[I,1]; End;
+   End;
+   If (L=B) And (Value=A) Then Begin VLC:=I; Exit; End;
+  End;
+ End; Fail('MPEG1: code VLC incorrect.');
+End;
+Procedure Geometry(B:Integer);
+Begin
+ Plane:=0; BX:=MBX*16+(B And 1)*8; BY:=MBY*16+((B Shr 1) And 1)*8;
+ If B>=4 Then Begin Plane:=B-3; BX:=MBX*8; BY:=MBY*8; End;
+End;
+Procedure Allocate;
+Var F,P,Y:Integer;
+Begin
+ If (W<2) Or (H<2) Or Odd(W) Or Odd(H) Or (W>640) Or (H>480) Then Fail('MPEG1: dimensions paires 2..640 x 2..480 requises.');
+ MBW:=(W+15) Div 16; MBH:=(H+15) Div 16;
+ CW[0]:=W; CH[0]:=H; Widths[0]:=MBW*16; Heights[0]:=MBH*16;
+ For P:=1 To 2 Do Begin CW[P]:=W Div 2; CH[P]:=H Div 2; Widths[P]:=MBW*8; Heights[P]:=MBH*8; End;
+ {$IFNDEF FPC}
+ If MemAvail<SizeOf(TFrames)+LongInt(Widths[0])*Heights[0]*5 Then Fail('MPEG1: memoire DOS insuffisante.');
+ {$ENDIF}
+ New(Frames); FillChar(Frames^,SizeOf(Frames^),0);
+ For F:=0 To 2 Do For P:=0 To 2 Do For Y:=0 To Heights[P]-1 Do Begin
+  GetMem(Frames^[F,P,Y],Widths[P]); FillChar(Frames^[F,P,Y]^,Widths[P],0);
+ End; Allocated:=True;
+End;
+Procedure Emit(F:Integer);
+Var P,Y:Integer;
+Begin
+ Line:='FRAME'+#10; WriteBytes(Line[1],Length(Line));
+ For P:=0 To 2 Do For Y:=0 To CH[P]-1 Do WriteBytes(Frames^[F,P,Y]^,CW[P]);
+ Inc(PictureCount);
+End;
+Procedure FinishPicture;
+Var J,T:Integer;
+Begin
+ If Not Pending Then Exit;
+ For J:=0 To MBW*MBH-1 Do If Not Seen[J] Then Fail('MPEG1: image incomplete.');
+ If PicType=3 Then Emit(Cur) Else Begin
+  If Refs>0 Then Emit(Future);
+  T:=Past; Past:=Future; Future:=Cur; Cur:=T; If Refs<2 Then Inc(Refs);
+ End; Pending:=False;
+End;
+Procedure IDCTBlock(Intra:Boolean);
+Var X,Y,U,V:Integer; Sum:Double;
+Begin
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+  Sum:=0; For U:=0 To 7 Do Sum:=Sum+C[U,X]*Coeff[Y*8+U]; Temp[Y,X]:=Sum;
+ End;
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+  Sum:=0; For U:=0 To 7 Do Sum:=Sum+C[U,Y]*Temp[U,X]; V:=Round(Sum);
+  If Not Intra Then Inc(V,Frames^[Cur,Plane,BY+Y]^[BX+X]);
+  Frames^[Cur,Plane,BY+Y]^[BX+X]:=Clip(V,255);
+ End;
+End;
+Procedure DecodeBlock(B:Integer; Intra:Boolean);
+Var I,N,V,Run,Index,SignedValue,Kind:Integer; Q:LongInt;
+Begin
+ Geometry(B); FillChar(Coeff,SizeOf(Coeff),0); I:=-1;
+ If Intra Then Begin
+  Kind:=0; If Plane>0 Then Kind:=1; N:=VLC(Kind); V:=GetBits(N);
+  If (N>0) And (V<(LongInt(1) Shl (N-1))) Then V:=V-((LongInt(1) Shl N)-1);
+  Inc(LastDC[Plane],V); If (LastDC[Plane]<0) Or (LastDC[Plane]>255) Then Fail('MPEG1: DC incorrect.');
+  Coeff[0]:=LastDC[Plane]*Matrix[0,0]; I:=0;
+ End Else If Peek(1)=1 Then Begin
+  V:=GetBits(1); SignedValue:=GetBits(1); V:=(3*LongInt(QP)*Matrix[1,0]) Div 32;
+  V:=(V-1) Or 1; If SignedValue<>0 Then V:=-V; Coeff[0]:=V; I:=0;
+ End;
+ Repeat
+  N:=VLC(2); If N=112 Then Break;
+  If N=111 Then Begin
+   Run:=GetBits(6); V:=GetBits(8); If V>=128 Then Dec(V,256);
+   If V= -128 Then V:=GetBits(8)-256 Else If V=0 Then V:=GetBits(8);
+   If V=0 Then Fail('MPEG1: coefficient escape nul.');
+  End Else Begin Run:=Runs[N]; V:=Levels[N]; If GetBits(1)<>0 Then V:=-V; End;
+  Inc(I,Run+1); If I>63 Then Fail('MPEG1: coefficient hors bloc.'); Index:=Scan[I];
+  If Intra Then Q:=LongInt(Abs(V))*QP*Matrix[0,Index] Div 16
+  Else Q:=(LongInt(Abs(V))*2+1)*QP*Matrix[1,Index] Div 32;
+  Q:=(Q-1) Or 1; If V<0 Then Q:=-Q;
+  If Q< -2048 Then Q:=-2048 Else If Q>2047 Then Q:=2047; Coeff[Index]:=Q;
+ Until False;
+ IDCTBlock(Intra);
+End;
+Function FloorHalf(V:Integer):Integer;
+Begin If V<0 Then FloorHalf:=-((-V+1) Div 2) Else FloorHalf:=V Div 2; End;
+Function RefPixel(F,P,X,Y,DX,DY:Integer):Integer;
+Var IX,IY,A,B,C,D:Integer;
+Begin
+ IX:=X+FloorHalf(DX); IY:=Y+FloorHalf(DY);
+ A:=Frames^[F,P,Clip(IY,Heights[P]-1)]^[Clip(IX,Widths[P]-1)];
+ B:=Frames^[F,P,Clip(IY,Heights[P]-1)]^[Clip(IX+1,Widths[P]-1)];
+ C:=Frames^[F,P,Clip(IY+1,Heights[P]-1)]^[Clip(IX,Widths[P]-1)];
+ D:=Frames^[F,P,Clip(IY+1,Heights[P]-1)]^[Clip(IX+1,Widths[P]-1)];
+ If Odd(DY) Then Begin If Odd(DX) Then RefPixel:=(A+B+C+D+2) Div 4 Else RefPixel:=(A+C+1) Div 2; End
+ Else If Odd(DX) Then RefPixel:=(A+B+1) Div 2 Else RefPixel:=A;
+End;
+Procedure Predict(Flags:Integer);
+Var P,X,Y,S,DX,DY,DX2,DY2,F,N:Integer;
+Begin
+ If (Refs=0) Or ((PicType=3) And (Refs<2)) Then Fail('MPEG1: references I/P absentes.');
+ For P:=0 To 2 Do Begin
+  S:=16; If P>0 Then S:=8;
+  DX:=Motion[0,0] Shl FullPel[0]; DY:=Motion[0,1] Shl FullPel[0];
+  DX2:=Motion[1,0] Shl FullPel[1]; DY2:=Motion[1,1] Shl FullPel[1];
+  If P>0 Then Begin DX:=DX Div 2; DY:=DY Div 2; DX2:=DX2 Div 2; DY2:=DY2 Div 2; End;
+  F:=Past; If PicType=2 Then F:=Future;
+  For Y:=MBY*S To MBY*S+S-1 Do For X:=MBX*S To MBX*S+S-1 Do Begin
+   N:=0;
+   If (Flags And 8)<>0 Then N:=RefPixel(F,P,X,Y,DX,DY);
+   If (Flags And 4)<>0 Then Begin
+    If (Flags And 8)<>0 Then N:=(N+RefPixel(Future,P,X,Y,DX2,DY2)+1) Div 2
+    Else N:=RefPixel(Future,P,X,Y,DX2,DY2);
+   End;
+   Frames^[Cur,P,Y]^[X]:=N;
+  End;
+ End;
+End;
+Function DecodeMotion(Dir,Axis:Integer):Integer;
+Var N,S,V,R,Span:Integer;
+Begin
+ N:=VLC(5); V:=Motion[Dir,Axis];
+ If N<>0 Then Begin
+  S:=GetBits(1); R:=FCode[Dir]-1; N:=((N-1) Shl R)+GetBits(R)+1;
+  If S<>0 Then N:=-N; Inc(V,N); Span:=16 Shl R;
+  If V< -Span Then Inc(V,2*Span) Else If V>=Span Then Dec(V,2*Span);
+ End; DecodeMotion:=V;
+End;
+Procedure DecodeMB(Index,Flags:Integer; Skip:Boolean);
+Var Dir,Axis,B,Pattern:Integer;
+Begin
+ If (Index<0) Or (Index>=MBW*MBH) Or Seen[Index] Then Fail('MPEG1: adresse macrobloc incorrecte.');
+ Seen[Index]:=True; MBX:=Index Mod MBW; MBY:=Index Div MBW;
+ If (Flags And 16)<>0 Then Begin QP:=GetBits(5)*2; If QP=0 Then Fail('MPEG1: quantificateur nul.'); End;
+ If (Flags And 1)<>0 Then Begin
+  FillChar(Motion,SizeOf(Motion),0); For B:=0 To 5 Do DecodeBlock(B,True);
+ End Else Begin
+  For B:=0 To 2 Do LastDC[B]:=128;
+  If Not Skip Then Begin
+   If (PicType=2) And (Flags And 8=0) Then Begin Motion[0,0]:=0; Motion[0,1]:=0; End;
+   For Dir:=0 To 1 Do If ((Dir=0) And (Flags And 8<>0)) Or ((Dir=1) And (Flags And 4<>0)) Then
+    For Axis:=0 To 1 Do Motion[Dir,Axis]:=DecodeMotion(Dir,Axis);
+  End;
+  If PicType=2 Then Flags:=Flags Or 8;
+  Predict(Flags); Pattern:=0;
+  If Not Skip And (Flags And 2<>0) Then Pattern:=VLC(4);
+  For B:=0 To 5 Do If (Pattern And (1 Shl (5-B)))<>0 Then DecodeBlock(B,False);
+ End;
+End;
+Procedure EncodeBlock(B:Integer);
+Var X,Y,U,I,N,D,Size,Run:Integer; Sum:Double;
+Begin
+ Geometry(B);
+ For Y:=0 To 7 Do For U:=0 To 7 Do Begin
+  Sum:=0; For X:=0 To 7 Do Sum:=Sum+C[U,X]*Frames^[Cur,Plane,BY+Y]^[BX+X]; Temp[Y,U]:=Sum;
+ End;
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+  Sum:=0; For U:=0 To 7 Do Sum:=Sum+C[Y,U]*Temp[U,X];
+  If (X=0) And (Y=0) Then N:=Clip(Round(Sum/8),255) Else Begin
+   N:=Round(Abs(Sum)*8/(QP*Matrix[0,Y*8+X])); If N>255 Then N:=255; If Sum<0 Then N:=-N;
+  End; Coeff[Y*8+X]:=N;
+ End;
+ D:=Coeff[0]-LastDC[Plane]; LastDC[Plane]:=Coeff[0]; Size:=0; N:=Abs(D);
+ While N>0 Do Begin Inc(Size); N:=N Shr 1; End;
+ If Plane=0 Then PutBits(DCLBits[Size],DCLCode[Size]) Else PutBits(DCCBits[Size],DCCCode[Size]);
+ N:=D; If D<0 Then N:=D+(LongInt(1) Shl Size)-1; PutBits(Size,N); Run:=0;
+ For I:=1 To 63 Do Begin N:=Coeff[Scan[I]];
+  If N=0 Then Inc(Run) Else Begin
+   PutBits(6,1); PutBits(6,Run);
+   If N>127 Then Begin PutBits(8,0); PutBits(8,N); End Else
+   If N< -127 Then Begin PutBits(8,128); PutBits(8,N And 255); End Else PutBits(8,N And 255);
+   Run:=0;
+  End;
+ End; PutBits(2,2);
+End;
+Function ReadLine:String;
+Var S:String; B:Byte;
+Begin
+ S:=''; Repeat If At>=Limit Then Fail('MPEG1: ligne Y4M tronquee.'); B:=AtByte(At); Inc(At);
+ If B=10 Then Break; If Length(S)=254 Then Fail('MPEG1: ligne Y4M trop longue.'); S:=S+Chr(B);
+ Until False; ReadLine:=S;
+End;
+Begin
+ OpenRead(Source); Limit:=InputSize; CacheAt:=-1; At:=0; Allocated:=False;
+ W:=0; H:=0; RateCode:=0; AspectCode:=0; Num:=0; Den:=0; FrameCount:=0; Sequence:=False; Pending:=False; HeaderWritten:=False;
+ Cur:=2; Past:=0; Future:=1; Refs:=0; PictureCount:=0; WriteByte:=0; WriteCount:=0;
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin C[Y,X]:=Cos((2*X+1)*Y*3.141592653589793/16)/2;
+  If Y=0 Then C[Y,X]:=C[Y,X]/Sqrt(2); End;
+ For J:=0 To 63 Do Begin Matrix[0,J]:=DefaultMatrix[J]; Matrix[1,J]:=16; End;
+ If Encoding Then Begin
+  Line:=ReadLine; If Copy(Line,1,9)<>'YUV4MPEG2' Then Fail('MPEG1: entree Y4M requise.'); Delete(Line,1,9);
+  While Line<>'' Do Begin
+   If Line[1]=' ' Then Delete(Line,1,1) Else Begin
+    J:=Pos(' ',Line); If J=0 Then J:=Length(Line)+1; Token:=Copy(Line,1,J-1); Delete(Line,1,J);
+    Case Token[1] Of
+    'W','H':Begin Val(Copy(Token,2,255),N,Code); If Code<>0 Then Fail('Dimensions Y4M incorrectes.'); If Token[1]='W' Then W:=N Else H:=N; End;
+    'F':Begin J:=Pos(':',Token); If J<3 Then Fail('Cadence Y4M incorrecte.');
+     Val(Copy(Token,2,J-2),Num,Code); If (Code<>0) Or (Num<1) Or (Num>60000) Then Fail('Cadence MPEG1 incorrecte.');
+     Val(Copy(Token,J+1,255),Den,Code); If (Code<>0) Or (Den<1) Or (Den>1001) Then Fail('Cadence MPEG1 incorrecte.'); End;
+    'I':If Token<>'Ip' Then Fail('MPEG1: Y4M progressif requis.');
+    'C':If (Token<>'C420') And (Token<>'C420jpeg') Then Fail('MPEG1: YUV420 8 bits requis.');
+    'A':If (Token<>'A1:1') And (Token<>'A0:0') Then Fail('MPEG1: pixels carres requis.');
+    Else Fail('MPEG1: parametre Y4M inconnu.'); End;
+   End;
+  End;
+  RateCode:=0; For J:=1 To 8 Do If Num*Rates[J,1]=Den*Rates[J,0] Then RateCode:=J;
+  If RateCode=0 Then Fail('MPEG1: cadence standard 23.976/24/25/29.97/30/50/59.94/60 requise.');
+  Allocate; OpenWrite(Target); StartCode($B3); PutBits(12,W); PutBits(12,H); PutBits(4,1); PutBits(4,RateCode);
+  PutBits(18,$3FFFF); PutBits(1,1); PutBits(10,20); PutBits(1,0); PutBits(1,0); PutBits(1,0); QP:=4;
+  While At<Limit Do Begin
+   Line:=ReadLine; If Line<>'FRAME' Then Fail('MPEG1: marqueur FRAME simple requis.');
+   If LongInt(W)*H*3 Div 2>Limit-At Then Fail('MPEG1: image Y4M tronquee.');
+   For P:=0 To 2 Do Begin
+    For Y:=0 To CH[P]-1 Do Begin
+     ReadAt(At,Frames^[Cur,P,Y]^,CW[P]); Inc(At,CW[P]);
+     For X:=CW[P] To Widths[P]-1 Do Frames^[Cur,P,Y]^[X]:=Frames^[Cur,P,Y]^[CW[P]-1];
+    End;
+    For Y:=CH[P] To Heights[P]-1 Do Move(Frames^[Cur,P,CH[P]-1]^,Frames^[Cur,P,Y]^,Widths[P]);
+   End;
+   StartCode(0); PutBits(10,FrameCount Mod 1024); PutBits(3,1); PutBits(16,65535); PutBits(1,0);
+   For MBY:=0 To MBH-1 Do Begin
+    StartCode(MBY+1); PutBits(5,QP); PutBits(1,0); For P:=0 To 2 Do LastDC[P]:=128;
+    For MBX:=0 To MBW-1 Do Begin PutBits(1,1); PutBits(1,1); For B:=0 To 5 Do EncodeBlock(B); End;
+   End;
+   Inc(FrameCount);
+  End;
+  If FrameCount=0 Then Fail('MPEG1: aucune image.'); StartCode($B7);
+ End Else Begin
+  OpenWrite(Target); At:=NextCode(0);
+  While At<Limit Do Begin
+   Code:=AtByte(At+3); EndAt:=NextCode(At+4); ReadPos:=At+4; BitOffset:=0; ByteEnd:=EndAt;
+   If (Code=0) Or (Code=$B3) Or (Code=$B7) Or (Code=$B8) Then FinishPicture;
+   Case Code Of
+   $B3:Begin
+    StoredW:=W; StoredH:=H; StoredRate:=RateCode; StoredAspect:=AspectCode; W:=GetBits(12); H:=GetBits(12); AspectCode:=GetBits(4);
+    If (AspectCode<1) Or (AspectCode>14) Then Fail('MPEG1: ratio de pixels incorrect.'); RateCode:=GetBits(4);
+    If (RateCode<1) Or (RateCode>8) Then Fail('MPEG1: cadence incorrecte.');
+    If Allocated And ((W<>StoredW) Or (H<>StoredH) Or (RateCode<>StoredRate) Or (AspectCode<>StoredAspect)) Then Fail('MPEG1: changement de format non pris en charge.');
+    Unused:=GetBits(18); If GetBits(1)<>1 Then Fail('MPEG1: marqueur sequence absent.'); N:=GetBits(10); N:=GetBits(1);
+    For J:=0 To 63 Do Begin Matrix[0,J]:=DefaultMatrix[J]; Matrix[1,J]:=16; End;
+    For P:=0 To 1 Do If GetBits(1)<>0 Then For J:=0 To 63 Do Begin N:=GetBits(8);
+     If N=0 Then Fail('MPEG1: matrice nulle.'); Matrix[P,Scan[J]]:=N; End;
+    If Matrix[0,0]<>8 Then Fail('MPEG1: coefficient DC de matrice intra egal a 8 requis.');
+    If Not Allocated Then Allocate; Sequence:=True;
+    If Not HeaderWritten Then Begin
+     Str(W,AString); Str(H,BString); Str(Rates[RateCode,0],CString); Str(Rates[RateCode,1],DString);
+     Line:='YUV4MPEG2 W'+AString+' H'+BString+' F'+CString+':'+DString+' Ip A';
+     SARNum:=10000; SARDen:=PixelRatio[AspectCode];
+     If AspectNum>0 Then Begin
+      SARNum:=AspectNum; SARDen:=AspectDen;
+      Factor:=GCD(SARNum,W); SARNum:=SARNum Div Factor; LW:=W Div Factor;
+      Factor:=GCD(SARDen,H); SARDen:=SARDen Div Factor; LH:=H Div Factor;
+      If (SARNum*1.0*LH>2147483647.0) Or (SARDen*1.0*LW>2147483647.0) Then Fail('MPEG1: ratio trop grand.');
+      SARNum:=SARNum*LH; SARDen:=SARDen*LW;
+     End;
+     Factor:=GCD(SARNum,SARDen); Str(SARNum Div Factor,AString); Str(SARDen Div Factor,BString);
+     Line:=Line+AString+':'+BString+' C420jpeg'+#10;
+     WriteBytes(Line[1],Length(Line)); HeaderWritten:=True;
+    End;
+   End;
+   0:Begin
+    If Not Sequence Then Fail('MPEG1: sequence absente.'); N:=GetBits(10); PicType:=GetBits(3);
+    If (PicType<1) Or (PicType>3) Then Fail('MPEG1: type image non pris en charge.'); Unused:=GetBits(16);
+    FillChar(FullPel,SizeOf(FullPel),0); FillChar(FCode,SizeOf(FCode),0);
+    For P:=0 To 1 Do If (PicType=3) Or ((PicType=2) And (P=0)) Then Begin
+     FullPel[P]:=GetBits(1); FCode[P]:=GetBits(3); If FCode[P]=0 Then Fail('MPEG1: f_code nul.'); End;
+    While GetBits(1)<>0 Do N:=GetBits(8);
+    FillChar(Seen,SizeOf(Seen),0); Pending:=True;
+   End;
+   1..$AF:Begin
+    If Not Pending Then Fail('MPEG1: slice sans image.');
+    If Code>MBH Then Fail('MPEG1: slice hors image.'); MBIndex:=(Code-1)*MBW-1;
+    QP:=GetBits(5)*2; If QP=0 Then Fail('MPEG1: quantificateur nul.'); While GetBits(1)<>0 Do N:=GetBits(8);
+    FillChar(Motion,SizeOf(Motion),0); For P:=0 To 2 Do LastDC[P]:=128; LastFlags:=0; FirstInSlice:=True;
+    While ReadPos<ByteEnd Do Begin
+     If (ByteEnd-ReadPos<=2) Then Begin
+      N:=(ByteEnd-ReadPos)*8-BitOffset; If Peek(N)=0 Then Break;
+     End;
+     Increment:=0;
+     Repeat N:=VLC(3); If N=33 Then Inc(Increment,33); Until (N<>33) And (N<>34);
+     If N=35 Then Fail('MPEG1: fin de slice incorrecte.'); Inc(Increment,N+1);
+     If FirstInSlice Then Inc(MBIndex,Increment-1) Else
+     For J:=1 To Increment-1 Do Begin
+      Inc(MBIndex);
+      If PicType=2 Then Begin FillChar(Motion,SizeOf(Motion),0); DecodeMB(MBIndex,8,True); End
+      Else If (PicType=3) And (LastFlags And 12<>0) Then DecodeMB(MBIndex,LastFlags And 12,True)
+      Else Fail('MPEG1: macrobloc saute sans reference.');
+     End;
+     Inc(MBIndex);
+     If PicType=1 Then Begin
+      If GetBits(1)<>0 Then MBFlags:=1 Else Begin If GetBits(1)<>1 Then Fail('MPEG1: macrobloc I incorrect.'); MBFlags:=17; End;
+     End Else If PicType=2 Then MBFlags:=PFlags[VLC(6)] Else MBFlags:=BFlags[VLC(7)];
+     DecodeMB(MBIndex,MBFlags,False); LastFlags:=MBFlags; FirstInSlice:=False;
+    End;
+   End;
+   $B5:Fail('MPEG2/extensions non pris en charge par le decodeur MPEG1.');
+   $B2,$B8,$B7:;
+   Else Fail('MPEG1: code depart non pris en charge.');
+   End;
+   At:=EndAt;
+  End;
+  FinishPicture; If Refs>0 Then Emit(Future);
+  If PictureCount=0 Then Fail('MPEG1: aucune image decodee.');
+ End;
+ CloseRead; CloseWrite;
+ If Allocated Then Begin For J:=0 To 2 Do For P:=0 To 2 Do For Y:=0 To Heights[P]-1 Do FreeMem(Frames^[J,P,Y],Widths[P]); Dispose(Frames); End;
+End;
+
+
 { Native bounded MPEG-4 Part 2 encoder. Y4M 420, I/P, integer-pel SAD,
   optional INTER4V, H.263 quantization QP=4, ESC3 coefficient coding.
   Syntax references: FFmpeg mpeg4videoenc.c, h263.c and h263data.c (LGPL). }
@@ -9025,7 +9516,7 @@ Begin
  WriteLn(' DE mp3             MPEG Layer III; encodage MPEG-1 CBR 32..320 kbit/s');
  WriteLn(' DE mp4             MP4 H264/MPEG4, AAC/MP3, VP9/Opus; copie de flux');
  WriteLn(' DE mpeg            MPEG-1 System format (copie PES / muxage MP3)');
- WriteLn('  E mpeg1video      raw MPEG-1 video (copie depuis MPEG System; alias: m1v)');
+ WriteLn(' DE mpeg1video      raw MPEG-1 video (encodage intra; decodage I/P/B; alias: m1v)');
  WriteLn('  E mpeg2video      raw MPEG-2 video (copie depuis MPEG System; alias: m2v)');
  WriteLn('  E mp2             Flux Layer II extrait de MPEG System');
  WriteLn('  E png             PNG RGB24, une image');
@@ -9062,6 +9553,7 @@ Procedure Help;Begin
  WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn;
  WriteLn(' /?                             Affiche l''aide de cette commande.');
+ WriteLn(' -c:v mpeg1video                 Y4M vers M1V (intra); M1V/MPEG1 vers Y4M.');
  WriteLn(' -4mv                           MPEG4: quatre vecteurs 8x8 par macrobloc P.');
  WriteLn(' -c:v mpeg4                      Y4M 420 vers M4V/AVI/MP4, images I/P, QP=4.');
  WriteLn(' -ac 1|2                        Canaux de sortie (-ac apr'+#138+'s -i)');
@@ -9198,6 +9690,7 @@ BEGIN
    WriteLn('D A    pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
    WriteLn(' EV    png             PNG (RGB24, sans compression)');
    WriteLn('D A    wmav2           WMA2 (44100/48000 Hz, VLC, blocs fixes, sans reservoir/bruit)');
+   WriteLn('DEV    mpeg1video      MPEG-1 video (encodeur intra; decodeur I/P/B)');
    WriteLn(' EV    mpeg4           MPEG-4 Part 2 (Y4M, I/P, option -4mv)');
    WriteLn('Copie seulement: h264, vp9, aac, opus (voir limites).'); Halt(0);
   End
@@ -9219,8 +9712,8 @@ BEGIN
    If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
    VideoCodec:=Lower(NextArgument);
    If (VideoCodec<>'png') And (VideoCodec<>'gif') And (VideoCodec<>'copy') And
-    (VideoCodec<>'ffv1') And (VideoCodec<>'flv') And (VideoCodec<>'mpeg4') And (VideoCodec<>'rawvideo') Then
-    Fail('Codec video: png/gif, copy, ffv1, flv, mpeg4 (Y4M), rawvideo.');
+    (VideoCodec<>'ffv1') And (VideoCodec<>'flv') And (VideoCodec<>'mpeg4') And (VideoCodec<>'mpeg1video') And (VideoCodec<>'rawvideo') Then
+    Fail('Codec video: png/gif, copy, ffv1, flv, mpeg4, mpeg1video, rawvideo.');
   End Else If (Argument='-vframes') Or (Argument='-frames:v') Then Begin
    If InputPath='' Then Fail('Nombre d''images attendu apres -i.');
    Value:=NextArgument; Val(Value,Number,Code);
@@ -9334,6 +9827,32 @@ BEGIN
   If NoVideo Then Fail('-aspect incompatible avec -vn.');
   If (OutputFormat<>'mp4') And (OutputFormat<>'avi') And (OutputFormat<>'yuv4mpegpipe') Then
    Fail('-aspect: sorties MP4, AVI et Y4M uniquement.');
+ End;
+ If (VideoCodec='mpeg1video') Or (InputFormat='mpeg1video') Or
+  ((InputFormat='yuv4mpegpipe') And (OutputFormat='mpeg1video')) Or
+  ((InputFormat='mpeg') And (OutputFormat='yuv4mpegpipe')) Then Begin
+  If FourMV Or NoVideo Or IsHTTP(InputPath) Or (HLSBase<>'') Or (RequestedRate<>0) Or
+   (RequestedChannels<>0) Or HasBitrate Or (VideoFrames<>0) Or (ImageWidth<>0) Then
+   Fail('MPEG1 natif: video locale sans filtres, -4mv ni conversion audio requise.');
+  Temps[2]:=NewTemporary;
+  If (InputFormat='mpeg1video') And (OutputFormat='mpeg1video') And
+   ((AudioCodec='') Or (AudioCodec='copy')) And ((VideoCodec='') Or (VideoCodec='copy')) And
+   ((AudioCodec='copy') Or (VideoCodec='copy')) Then CopyFile(Intermediate,Temps[2]) Else Begin
+   If AudioCodec<>'' Then Fail('MPEG1 natif: options audio non prises en charge.');
+   If InputFormat='yuv4mpegpipe' Then Begin
+    If (OutputFormat<>'mpeg1video') Or ((VideoCodec<>'') And (VideoCodec<>'mpeg1video')) Then
+     Fail('MPEG1: encodage Y4M vers M1V uniquement.');
+    MPEG1Video(Intermediate,Temps[2],True);
+   End Else Begin
+    If (OutputFormat<>'yuv4mpegpipe') Or ((VideoCodec<>'') And (VideoCodec<>'rawvideo')) Then
+     Fail('MPEG1: decodage M1V/MPEG1 System vers Y4M uniquement.');
+    If InputFormat='mpeg' Then Begin
+     Temps[3]:=NewTemporary; MPEGSystem(Intermediate,Temps[3],'mpeg','mpeg1video'); Intermediate:=Temps[3];
+    End Else If InputFormat<>'mpeg1video' Then Fail('MPEG1: entree non prise en charge.');
+    MPEG1Video(Intermediate,Temps[2],False);
+   End;
+  End;
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('Video MPEG1 creee: ',OutputPath); Halt(0);
  End;
  If FourMV And (VideoCodec='') Then VideoCodec:='mpeg4';
  If FourMV And (VideoCodec<>'mpeg4') Then Fail('-4mv exige un encodage MPEG-4 Part 2, pas une copie.');
