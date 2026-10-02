@@ -1,5 +1,5 @@
 # Speech-to-Text-0
-Suite de commande écrit en Turbo Pascal/Free Pascal pour la compréhension du son (Speech-to-Text)
+Suite de commandes écritent en Turbo Pascal/Free Pascal pour la compréhension du son (Speech-to-Text).
 
 <h3>Liste des fichiers</h3>
 
@@ -76,6 +76,6 @@ Par exemple, si vous voulez compiler PLAYMP3.PAS, vous devrez tapez la commande 
 
 <h2>Licence</h2>
 <ul>
- <li>Le code source est publié sous la licence <a href="https://github.com/gladir/GEOPHYSIX/blob/main/LICENSE">MIT</a>.</li>
- <li>Le paquet original est publié sous la licence <a href="https://github.com/gladir/GEOPHYSIX/blob/main/LICENSE">MIT</a>.</li>
+ <li>Le code source est publié sous la licence <a href="https://github.com/gladir/Speech-to-Text-0/blob/main/LICENSE">MIT</a>.</li>
+ <li>Le paquet original est publié sous la licence <a href="https://github.com/gladir/Speech-to-Text-0/blob/main/LICENSE">MIT</a>.</li>
 </ul>
