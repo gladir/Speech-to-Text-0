@@ -5233,7 +5233,8 @@ Var
  First: Array[0..3] Of Byte;
  P,Limit,Finish,Start,Payload,N,Frames,ClockValue,Remainder,Rate,FrameRate: LongInt;
  ID,V,K,Selected,FirstCount,Layer,BR,RI,FrameLength,BitPos: Integer;
- HavePack,HaveMedia,ExtractAudio,ExtractVideo: Boolean;
+ HavePack,HaveMedia,ExtractAudio,ExtractVideo,ScanVideo: Boolean;
+ VideoPrefix: LongInt;
 
  Procedure Bad(Const S: String);
  Begin Fail('MPEG System: '+S); End;
@@ -5252,12 +5253,18 @@ Var
  Begin BE16:=LongInt(At(Position))*256+At(Position+1); End;
 
  Procedure CopyRange(Position,Count: LongInt);
- Var Take: Word;
+ Var Take,J: Word;
  Begin
   Bound(Position,Count,Limit);
   While Count>0 Do Begin
    Take:=4096; If Count<Take Then Take:=Count;
-   ReadAt(Position,B,Take); WriteBytes(B,Take); Inc(Position,Take); Dec(Count,Take);
+   ReadAt(Position,B,Take);
+   If ScanVideo Then For J:=0 To Take-1 Do Begin
+    If (VideoPrefix=1) And (B[J]=$B5) Then
+     Bad('Extension MPEG-2 incompatible avec raw MPEG-1 video.');
+    VideoPrefix:=((VideoPrefix And 65535)*256)+B[J];
+   End;
+   WriteBytes(B,Take); Inc(Position,Take); Dec(Count,Take);
   End;
  End;
 
@@ -5335,6 +5342,7 @@ Var
  End;
 
 Begin
+ ScanVideo:=False; VideoPrefix:=$FFFFFF;
  OpenRead(Source); Limit:=InputSize; OpenWrite(Target);
  If InKind='mp3' Then MuxMP3 Else Begin
   ExtractAudio:=(OutKind='mp3') Or (OutKind='mp2'); ExtractVideo:=OutKind='mpeg1video';
@@ -5381,7 +5389,8 @@ Begin
       While (FirstCount<4) And (Payload+K<Finish) Do Begin
        First[FirstCount]:=At(Payload+K); Inc(FirstCount); Inc(K);
       End;
-      CopyRange(Payload,Finish-Payload); HaveMedia:=True;
+      ScanVideo:=ExtractVideo; CopyRange(Payload,Finish-Payload);
+      ScanVideo:=False; HaveMedia:=True;
      End;
     End Else Bad('Type de paquet non pris en charge (flux prives/MPEG-2).');
     P:=Finish;
@@ -7808,7 +7817,7 @@ Begin
  WriteLn(' DE mp3             MPEG Layer III; encodage MPEG-1 CBR 32..320 kbit/s');
  WriteLn(' DE mp4             MP4 H264/MPEG4, AAC/MP3, VP9/Opus; copie de flux');
  WriteLn(' DE mpeg            MPEG-1 System format (copie PES / muxage MP3)');
- WriteLn('  E mpeg1video      Flux video extrait de MPEG System (alias: m1v)');
+ WriteLn('  E mpeg1video      raw MPEG-1 video (copie depuis MPEG System; alias: m1v)');
  WriteLn('  E mp2             Flux Layer II extrait de MPEG System');
  WriteLn('  E png             PNG RGB24, une image');
  WriteLn('  E rawvideo        Alias de sortie PNG/GIF; pas de pixels bruts');
@@ -7911,8 +7920,8 @@ BEGIN
   If (Argument='-vcodec') Or (Argument='-c:v') Or (Argument='-codec:v') Then Begin
    If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
    VideoCodec:=Lower(NextArgument);
-   If (VideoCodec<>'png') And (VideoCodec<>'gif') Then
-    Fail('Encodage video implemente: png ou gif, une image.');
+   If (VideoCodec<>'png') And (VideoCodec<>'gif') And (VideoCodec<>'copy') Then
+    Fail('Codec video: png/gif (image) ou copy (extraction MPEG-1).');
   End Else If (Argument='-vframes') Or (Argument='-frames:v') Then Begin
    If InputPath='' Then Fail('Nombre d''images attendu apres -i.');
    Value:=NextArgument; Val(Value,Number,Code);
@@ -8021,9 +8030,12 @@ BEGIN
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
  If (InputFormat='mpeg') Or (OutputFormat='mpeg') Then Begin
   If IsHTTP(InputPath) Or (HLSBase<>'') Then Fail('MPEG System: entree locale requise.');
-  If (AudioCodec<>'copy') Or Not AllStreams Then Fail('MPEG System exige -c copy.');
+  If Not (((AudioCodec='copy') And AllStreams) Or
+   ((VideoCodec='copy') And (AudioCodec='') And (InputFormat='mpeg') And
+    (OutputFormat='mpeg1video'))) Then Fail('MPEG System exige -c copy (ou -c:v copy pour mpeg1video).');
   If (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
-   (VideoCodec<>'') Or (VideoFrames<>0) Or (ImageWidth<>0) Then
+   ((VideoCodec<>'') And Not ((VideoCodec='copy') And (OutputFormat='mpeg1video'))) Or
+   (VideoFrames<>0) Or (ImageWidth<>0) Then
    Fail('MPEG System: copie des flux uniquement, sans reencodage ni filtres.');
   If NoAudio And NoVideo Then Fail('Aucune piste selectionnee (-an et -vn).');
   If InputFormat='mpeg' Then Begin
