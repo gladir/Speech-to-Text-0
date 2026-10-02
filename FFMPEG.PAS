@@ -3,7 +3,7 @@
  @version: 1.00
  @website(https://www.gladir.com/speech-to-text-0)
  @abstract(Target: Free Pascal 3.2
- @description: FFMPEG Pascal: audio natif et copie HLS fMP4, pas le binaire FFmpeg original. }
+ @description: FFMPEG Pascal: audio, HLS, conteneurs video et FLV H264 vers PNG natifs. }
 
 Program FFMPEG;
 
@@ -3245,7 +3245,9 @@ Var
  HLSBase: String;
  LastDownloadURL: String;
  HLSList: Text;
- HLSListOpen,AllStreams,NoVideo: Boolean;
+ HLSListOpen,AllStreams,NoVideo,NoAudio: Boolean;
+ VideoCodec: String;
+ VideoFrames,ImageWidth,ImageHeight: Integer;
  {$IFDEF MSWINDOWS}
   NetSession,NetRequest: Pointer;
  {$ENDIF}
@@ -3424,6 +3426,9 @@ Begin
  OpenRead(Name); Size:=InputSize; N:=1084; If Size<N Then N:=Size;
  FillChar(B,SizeOf(B),0); ReadAt(0,B,N); CloseRead;
  Probe:='';
+ If N>=9 Then If (B[0]=70) And (B[1]=76) And (B[2]=86) Then Begin
+  Probe:='flv'; Exit;
+ End;
  If N>=12 Then Begin
   If (B[4]=102) And (B[5]=116) And (B[6]=121) And (B[7]=112) Then Begin
    Probe:='mp4'; Exit;
@@ -3464,6 +3469,913 @@ Begin
   'libopenmpt';
  End;
 End;
+
+{ Native first-picture decoder: FLV AVC / H.264 progressive 8-bit 4:2:0
+  I slices, CAVLC, 4x4 transforms. No OS codec or external executable.
+  CAVLC/deblocking tables adapted from FFmpeg h264_cavlc.c, h264data.c,
+  h264_loopfilter.c, Copyright (c) 2003 Michael Niedermayer.
+  Prediction/IDCT/deblocking reference: FFmpeg h264pred_template.c,
+  h264idct_template.c, h264dsp_template.c, Copyright (c) 2003-2011 and
+  2004-2011 Michael Niedermayer. These FFmpeg-derived portions are
+  LGPL-2.1-or-later, without warranty. See THIRD_PARTY_NOTICES.md and
+  licenses/FFmpeg-LGPL-2.1.txt. No C library is linked. }
+Procedure ExtractFLVPicture(Const Source,Target: String; OutW,OutH: Integer);
+Const
+ ChromaTokenLen: Array[0..19] Of Byte=(2,0,0,0,6,1,0,0,6,6,3,0,6,7,7,6,6,8,8,7);
+ ChromaTokenBits: Array[0..19] Of Byte=(1,0,0,0,7,1,0,0,4,6,1,0,3,3,2,5,2,3,2,0);
+ TokenLen: Array[0..3,0..67] Of Byte=(
+  (1,0,0,0,6,2,0,0,8,6,3,0,9,8,7,5,10,9,8,6,11,10,9,7,13,11,10,8,13,13,11,9,13,13,13,10,14,14,13,11,14,14,14,13,15,15,14,14,15,15,15,14,16,15,15,15,16,16,16,15,16,16,16,16,16,16,16,16),
+  (2,0,0,0,6,2,0,0,6,5,3,0,7,6,6,4,8,6,6,4,8,7,7,5,9,8,8,6,11,9,9,6,11,11,11,7,12,11,11,9,12,12,12,11,12,12,12,11,13,13,13,12,13,13,13,13,13,14,13,13,14,14,14,13,14,14,14,14),
+  (4,0,0,0,6,4,0,0,6,5,4,0,6,5,5,4,7,5,5,4,7,5,5,4,7,6,6,4,7,6,6,4,8,7,7,5,8,8,7,6,9,8,8,7,9,9,8,8,9,9,9,8,10,9,9,9,10,10,10,10,10,10,10,10,10,10,10,10),
+  (6,0,0,0,6,6,0,0,6,6,6,0,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6));
+ TokenBits: Array[0..3,0..67] Of Byte=(
+  (1,0,0,0,5,1,0,0,7,4,1,0,7,6,5,3,7,6,5,3,7,6,5,4,15,6,5,4,11,14,5,4,8,10,13,4,15,14,9,4,11,10,13,12,15,14,9,12,11,10,13,8,15,1,9,12,11,14,13,8,7,10,9,12,4,6,5,8),
+  (3,0,0,0,11,2,0,0,7,7,3,0,7,10,9,5,7,6,5,4,4,6,5,6,7,6,5,8,15,6,5,4,11,14,13,4,15,10,9,4,11,14,13,12,8,10,9,8,15,14,13,12,11,10,9,12,7,11,6,8,9,8,10,1,7,6,5,4),
+  (15,0,0,0,15,14,0,0,11,15,13,0,8,12,14,12,15,10,11,11,11,8,9,10,9,14,13,9,8,10,9,8,15,14,13,13,11,14,10,12,15,10,13,12,11,14,9,12,8,10,13,8,13,7,9,12,9,12,11,10,5,8,7,6,1,4,3,2),
+  (3,0,0,0,0,1,0,0,4,5,6,0,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63));
+ ZerosLen: Array[0..15,0..15] Of Byte=(
+  (1,3,3,4,4,5,5,6,6,7,7,8,8,9,9,9),
+  (3,3,3,3,3,4,4,4,4,5,5,6,6,6,6,0),
+  (4,3,3,3,4,4,3,3,4,5,5,6,5,6,0,0),
+  (5,3,4,4,3,3,3,4,3,4,5,5,5,0,0,0),
+  (4,4,4,3,3,3,3,3,4,5,4,5,0,0,0,0),
+  (6,5,3,3,3,3,3,3,4,3,6,0,0,0,0,0),
+  (6,5,3,3,3,2,3,4,3,6,0,0,0,0,0,0),
+  (6,4,5,3,2,2,3,3,6,0,0,0,0,0,0,0),
+  (6,6,4,2,2,3,2,5,0,0,0,0,0,0,0,0),
+  (5,5,3,2,2,2,4,0,0,0,0,0,0,0,0,0),
+  (4,4,3,3,1,3,0,0,0,0,0,0,0,0,0,0),
+  (4,4,2,1,3,0,0,0,0,0,0,0,0,0,0,0),
+  (3,3,1,2,0,0,0,0,0,0,0,0,0,0,0,0),
+  (2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0));
+ ZerosBits: Array[0..15,0..15] Of Byte=(
+  (1,3,2,3,2,3,2,3,2,3,2,3,2,3,2,1),
+  (7,6,5,4,3,5,4,3,2,3,2,3,2,1,0,0),
+  (5,7,6,5,4,3,4,3,2,3,2,1,1,0,0,0),
+  (3,7,5,4,6,5,4,3,3,2,2,1,0,0,0,0),
+  (5,4,3,7,6,5,4,3,2,1,1,0,0,0,0,0),
+  (1,1,7,6,5,4,3,2,1,1,0,0,0,0,0,0),
+  (1,1,5,4,3,3,2,1,1,0,0,0,0,0,0,0),
+  (1,1,1,3,3,2,2,1,0,0,0,0,0,0,0,0),
+  (1,0,1,3,2,1,1,1,0,0,0,0,0,0,0,0),
+  (1,0,1,3,2,1,1,0,0,0,0,0,0,0,0,0),
+  (0,1,1,2,1,3,0,0,0,0,0,0,0,0,0,0),
+  (0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0),
+  (0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0),
+  (0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0));
+ ChromaZerosLen: Array[0..2,0..3] Of Byte=(
+  (1,2,3,3),
+  (1,2,2,0),
+  (1,1,0,0));
+ ChromaZerosBits: Array[0..2,0..3] Of Byte=(
+  (1,1,1,0),
+  (1,1,0,0),
+  (1,0,0,0));
+ RunLen: Array[0..6,0..15] Of Byte=(
+  (1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (1,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0),
+  (2,2,2,3,3,0,0,0,0,0,0,0,0,0,0,0),
+  (2,2,3,3,3,3,0,0,0,0,0,0,0,0,0,0),
+  (2,3,3,3,3,3,3,0,0,0,0,0,0,0,0,0),
+  (3,3,3,3,3,3,3,4,5,6,7,8,9,10,11,0));
+ RunBits: Array[0..6,0..15] Of Byte=(
+  (1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (3,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0),
+  (3,2,1,1,0,0,0,0,0,0,0,0,0,0,0,0),
+  (3,2,3,2,1,0,0,0,0,0,0,0,0,0,0,0),
+  (3,0,1,3,2,5,4,0,0,0,0,0,0,0,0,0),
+  (7,6,5,4,3,2,1,1,1,1,1,1,1,1,1,0));
+ IntraCBP: Array[0..47] Of Byte=(47,31,15,0,23,27,29,30,7,11,13,14,39,43,45,46,16,3,5,10,12,19,21,26,28,35,37,42,44,1,2,4,8,17,18,20,24,6,9,22,25,32,33,34,36,40,38,41);
+ Dequant4: Array[0..5,0..2] Of Byte=(
+  (10,13,16),
+  (11,14,18),
+  (13,16,20),
+  (14,18,23),
+  (16,20,25),
+  (18,23,29));
+ AlphaTable: Array[0..51] Of Byte=(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,5,6,7,8,9,10,12,13,15,17,20,22,25,28,32,36,40,45,50,56,63,71,80,90,101,113,127,144,162,182,203,226,255,255);
+ BetaTable: Array[0..51] Of Byte=(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,3,3,3,3,4,4,4,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13,14,14,15,15,16,16,17,17,18,18);
+ TC3Table: Array[0..51] Of Byte=(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,2,2,2,2,3,3,3,4,4,4,5,6,6,7,8,9,10,11,13,14,16,18,20,23,25);
+
+ Scan: Array[0..15] Of Byte=(0,1,4,8,5,2,3,6,9,12,13,10,7,11,14,15);
+ BX: Array[0..15] Of Byte=(0,1,0,1,2,3,2,3,0,1,0,1,2,3,2,3);
+ BY: Array[0..15] Of Byte=(0,0,1,1,0,0,1,1,2,2,3,3,2,2,3,3);
+ CQ: Array[0..51] Of Byte=(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+  16,17,18,19,20,21,22,23,24,25,26,27,28,29,29,30,31,32,32,33,
+  34,34,35,35,36,36,37,37,37,38,38,38,39,39,39,39);
+Type
+ TRow=Array[0..8191] Of Byte;
+ PRow=^TRow;
+ TPlane=Array[0..4095] Of PRow;
+ PPlane=^TPlane;
+ TMB=Record
+  NC: Array[0..23] Of Byte;
+  Mode: Array[0..15] Of ShortInt;
+  QP,Deblock: Byte;
+  Alpha,Beta: ShortInt;
+  Slice: Integer;
+ End;
+ TMBRow=Array[0..511] Of TMB;
+ PMBRow=^TMBRow;
+ TCoeff=Array[0..15] Of LongInt;
+ TSmall=Array[0..271] Of Byte;
+ PSmall=^TSmall;
+ TPNGBuffer=Array[0..16383] Of Byte;
+ PPNGBuffer=^TPNGBuffer;
+Var
+ Planes: Array[0..2] Of PPlane;
+ MB: Array[0..255] Of PMBRow;
+ Cache: Array[0..4095] Of Byte;
+ CacheAt,CacheLen,FileEnd,NalPos,NalEnd: LongInt;
+ BitsLeft,BitByte,ZeroCount: Integer;
+ W,H,VisibleW,VisibleH,CropX,CropY,MBW,MBH: Integer;
+ SPSID,PPSID,FrameBits,POCType,POCBits,InitialQP,ChromaOffset: Integer;
+ BottomPOC,DeblockPresent,Redundant,FullRange: Boolean;
+ Matrix: Integer;
+ HaveSPS,HavePPS: Boolean;
+ MX,MY,SliceID,QP,FilterID,AlphaOffset,BetaOffset: Integer;
+ DecodedMB: LongInt;
+ PNGBuffer: PPNGBuffer;
+ PNGCount: Integer;
+ CRC,AdlerA,AdlerB: LongInt;
+ TagAt,TagSize,TagEnd,P,N,NalLength: LongInt;
+ K,J,Count,NALBytes,NalKind,FrameKind: Integer;
+
+ Procedure ReleasePicture;
+ Var C,Y,Width,Height: Integer;
+ Begin
+  For C:=0 To 2 Do If Planes[C]<>Nil Then Begin
+   Width:=W; Height:=H;
+   If C<>0 Then Begin Width:=W Div 2; Height:=H Div 2; End;
+   For Y:=0 To Height-1 Do If Planes[C]^[Y]<>Nil Then
+    FreeMem(Planes[C]^[Y],Width);
+   Dispose(Planes[C]); Planes[C]:=Nil;
+  End;
+  For Y:=0 To 255 Do If MB[Y]<>Nil Then Begin
+   FreeMem(MB[Y],MBW*SizeOf(TMB)); MB[Y]:=Nil;
+  End;
+  If PNGBuffer<>Nil Then Begin Dispose(PNGBuffer); PNGBuffer:=Nil; End;
+ End;
+
+ Procedure Bad(Const S: String);
+ Begin
+  ReleasePicture; Fail('Image FLV/H264: '+S);
+ End;
+
+ Function Clip(V,Lo,Hi: LongInt): LongInt;
+ Begin
+  If V<Lo Then Clip:=Lo Else If V>Hi Then Clip:=Hi Else Clip:=V;
+ End;
+
+ Function ASR(V: LongInt; Shift: Integer): LongInt;
+ Var D: LongInt;
+ Begin
+  D:=LongInt(1) Shl Shift;
+  If V>=0 Then ASR:=V Div D Else ASR:=-((-V+D-1) Div D);
+ End;
+
+ Function At(Pos: LongInt): Byte;
+ Begin
+  If (Pos<0) Or (Pos>=FileEnd) Then Bad('Fichier tronque.');
+  If (Pos<CacheAt) Or (Pos>=CacheAt+CacheLen) Then Begin
+   CacheAt:=Pos; CacheLen:=4096;
+   If FileEnd-Pos<CacheLen Then CacheLen:=FileEnd-Pos;
+   ReadAt(Pos,Cache,CacheLen);
+  End;
+  At:=Cache[Pos-CacheAt];
+ End;
+
+ Function BE(Pos: LongInt; Bytes: Integer): LongInt;
+ Var I: Integer; V: LongInt;
+ Begin
+  V:=0;
+  For I:=0 To Bytes-1 Do Begin
+   If V>8388607 Then Bad('Longueur superieure a 2 Go.');
+   V:=V*256+At(Pos+I);
+  End;
+  BE:=V;
+ End;
+
+ Function RBSPByte: Integer;
+ Var V: Integer;
+ Begin
+  If NalPos>=NalEnd Then Bad('NAL tronquee.');
+  V:=At(NalPos); Inc(NalPos);
+  If (ZeroCount=2) And (V=3) Then Begin
+   If NalPos>=NalEnd Then Bad('Echappement RBSP tronque.');
+   V:=At(NalPos); Inc(NalPos);
+   If V>3 Then Bad('Echappement RBSP invalide.');
+   ZeroCount:=0;
+  End;
+  If V=0 Then Inc(ZeroCount) Else ZeroCount:=0;
+  RBSPByte:=V;
+ End;
+
+ Function Bits(Count: Integer): LongInt;
+ Var V: LongInt; I: Integer;
+ Begin
+  V:=0;
+  For I:=1 To Count Do Begin
+   If BitsLeft=0 Then Begin BitByte:=RBSPByte; BitsLeft:=8; End;
+   Dec(BitsLeft); V:=V*2+((BitByte Shr BitsLeft) And 1);
+  End;
+  Bits:=V;
+ End;
+
+ Function UE(Limit: LongInt): LongInt;
+ Var N: Integer; V: LongInt;
+ Begin
+  N:=0;
+  While Bits(1)=0 Do Begin Inc(N); If N>24 Then Bad('Code Golomb trop long.'); End;
+  V:=(LongInt(1) Shl N)-1+Bits(N);
+  If V>Limit Then Bad('Valeur Golomb hors limites.'); UE:=V;
+ End;
+
+ Function SE(Limit: LongInt): LongInt;
+ Var V: LongInt;
+ Begin
+  V:=UE(2*Limit); If Odd(V) Then SE:=(V+1) Div 2 Else SE:=-(V Div 2);
+ End;
+
+ Procedure StartNAL(Pos,Size: LongInt);
+ Begin
+  If (Size<2) Or (Pos<0) Or (Size>FileEnd-Pos) Then Bad('Taille NAL invalide.');
+  If (At(Pos) And $80)<>0 Then Bad('En-tete NAL invalide.');
+  NalPos:=Pos+1; NalEnd:=Pos+Size; BitsLeft:=0; ZeroCount:=0;
+ End;
+
+ Function MoreData: Boolean;
+ Begin
+  If NalPos<NalEnd Then MoreData:=Not ((BitsLeft=0) And (NalPos=NalEnd-1) And (At(NalPos)=$80)) Else
+   If BitsLeft=0 Then MoreData:=False Else
+    MoreData:=(BitByte And ((1 Shl BitsLeft)-1))<>(1 Shl (BitsLeft-1));
+ End;
+
+ Procedure TrailingBits;
+ Begin
+  If Bits(1)<>1 Then Bad('Bit final RBSP absent.');
+  While BitsLeft>0 Do If Bits(1)<>0 Then Bad('Alignement RBSP incorrect.');
+  If NalPos<>NalEnd Then Bad('Octets inattendus apres la tranche.');
+ End;
+
+ Procedure ReadSPS;
+ Var Profile,Ignored,L,R,T,B: Integer;
+ Begin
+  If DecodedMB<>0 Then Bad('Changement SPS pendant une image.');
+  Profile:=Bits(8); Ignored:=Bits(8); Ignored:=Bits(8);
+  If Not (Profile In [66,77,88]) Then Bad(
+   'Profil non implemente: seuls Baseline/Main/Extended avec CAVLC 8 bits 4:2:0.');
+  SPSID:=UE(31); FrameBits:=UE(12)+4; POCType:=UE(2);
+  If POCType=0 Then POCBits:=UE(12)+4;
+  If POCType=1 Then Bad('POC de type 1 non implemente pour extraction.');
+  Ignored:=UE(16); Ignored:=Bits(1);
+  MBW:=UE(511)+1; MBH:=UE(255)+1; W:=MBW*16; H:=MBH*16;
+  If Bits(1)=0 Then Bad('Video entrelacee non implementee.');
+  Ignored:=Bits(1); L:=0; R:=0; T:=0; B:=0;
+  If Bits(1)<>0 Then Begin L:=UE(4095); R:=UE(4095); T:=UE(2047); B:=UE(2047); End;
+  CropX:=L*2; CropY:=T*2; VisibleW:=W-2*(L+R); VisibleH:=H-2*(T+B);
+  If (VisibleW<=0) Or (VisibleH<=0) Then Bad('Recadrage SPS invalide.');
+  FullRange:=False; Matrix:=2;
+  If Bits(1)<>0 Then Begin
+   If Bits(1)<>0 Then Begin
+    Ignored:=Bits(8);
+    If Ignored=255 Then Begin Ignored:=Bits(16); Ignored:=Bits(16); End;
+   End;
+   If Bits(1)<>0 Then Ignored:=Bits(1);
+   If Bits(1)<>0 Then Begin
+    Ignored:=Bits(3); FullRange:=Bits(1)<>0;
+    If Bits(1)<>0 Then Begin Ignored:=Bits(8); Ignored:=Bits(8); Matrix:=Bits(8); End;
+   End;
+  End;
+  If Not (Matrix In [1,2,5,6]) Then Bad('Matrice couleur non implementee.');
+  HaveSPS:=True;
+ End;
+
+ Procedure ReadPPS;
+ Var Ignored: Integer;
+ Begin
+  If Not HaveSPS Then Bad('SPS absent avant PPS.');
+  If DecodedMB<>0 Then Bad('Changement PPS pendant une image.');
+  PPSID:=UE(255);
+  If UE(31)<>SPSID Then Bad('Plusieurs SPS actifs non implementes.');
+  If Bits(1)<>0 Then Bad('CABAC non implemente; CAVLC requis.');
+  BottomPOC:=Bits(1)<>0;
+  If UE(7)<>0 Then Bad('Groupes de tranches FMO non implementes.');
+  Ignored:=UE(31); Ignored:=UE(31); Ignored:=Bits(1); Ignored:=Bits(2);
+  InitialQP:=26+SE(26); Ignored:=SE(26); ChromaOffset:=SE(12);
+  DeblockPresent:=Bits(1)<>0; Ignored:=Bits(1); Redundant:=Bits(1)<>0;
+  If MoreData Then Begin
+   If Bits(1)<>0 Then Bad('Transformee 8x8 non implementee.');
+   If Bits(1)<>0 Then Bad('Matrices de quantification personnalisees non implementees.');
+   If SE(12)<>ChromaOffset Then Bad('Decalages Cb/Cr differents non implementes.');
+  End;
+  TrailingBits; HavePPS:=True;
+ End;
+
+ Procedure AllocatePicture;
+ Var C,Y,Width,Height: Integer; Ptr: Pointer;
+  Procedure Alloc(Var P: Pointer; Size: Word);
+  Begin
+   {$IFNDEF FPC}
+   If MaxAvail<Size Then Bad('Memoire DOS insuffisante pour cette resolution.');
+   {$ENDIF}
+   GetMem(P,Size); If P=Nil Then Bad('Memoire insuffisante.'); FillChar(P^,Size,0);
+  End;
+ Begin
+  For C:=0 To 2 Do Begin
+   Alloc(Ptr,SizeOf(TPlane)); Planes[C]:=Ptr;
+   Width:=W; Height:=H;
+   If C<>0 Then Begin Width:=W Div 2; Height:=H Div 2; End;
+   For Y:=0 To Height-1 Do Begin Alloc(Ptr,Width); Planes[C]^[Y]:=Ptr; End;
+  End;
+  For Y:=0 To MBH-1 Do Begin Alloc(Ptr,MBW*SizeOf(TMB)); MB[Y]:=Ptr; End;
+ End;
+
+ Function VLC(Var Lengths,Codes; Count: Integer): Integer;
+ Var L,C: PSmall; V: LongInt; I,N: Integer;
+ Begin
+  L:=@Lengths; C:=@Codes; V:=0;
+  For N:=1 To 16 Do Begin
+   V:=V*2+Bits(1);
+   For I:=0 To Count-1 Do If (L^[I]=N) And (C^[I]=V) Then Begin VLC:=I; Exit; End;
+  End;
+  Bad('Code CAVLC invalide.'); VLC:=0;
+ End;
+
+ Function Residual(Var Coeff: TCoeff; NC,MaxCoeff: Integer): Integer;
+ Var Tok,Total,Ones,I,Suffix,Prefix,SuffixSize,Zeros,Run,Index,TableNo: Integer;
+  Code,Lev: LongInt; Levels: TCoeff;
+ Begin
+  FillChar(Coeff,SizeOf(Coeff),0);
+  If MaxCoeff=4 Then Tok:=VLC(ChromaTokenLen,ChromaTokenBits,20) Else Begin
+   If NC<2 Then TableNo:=0 Else If NC<4 Then TableNo:=1 Else
+    If NC<8 Then TableNo:=2 Else TableNo:=3;
+   Tok:=VLC(TokenLen[TableNo],TokenBits[TableNo],68);
+  End;
+  Total:=Tok Div 4; Ones:=Tok Mod 4; Residual:=Total;
+  If Total>MaxCoeff Then Bad('Trop de coefficients CAVLC.');
+  If Total=0 Then Exit;
+  For I:=0 To Ones-1 Do Levels[I]:=1-2*Bits(1);
+  Suffix:=0; If (Total>10) And (Ones<3) Then Suffix:=1;
+  For I:=Ones To Total-1 Do Begin
+   Prefix:=0;
+   While Bits(1)=0 Do Begin Inc(Prefix); If Prefix>23 Then Bad('Niveau CAVLC invalide.'); End;
+   SuffixSize:=Suffix;
+   If (Prefix=14) And (Suffix=0) Then SuffixSize:=4;
+   If Prefix>=15 Then SuffixSize:=Prefix-3;
+   If Prefix<15 Then Code:=LongInt(Prefix) Shl Suffix Else Code:=LongInt(15) Shl Suffix;
+   Code:=Code+Bits(SuffixSize);
+   If (Prefix>=15) And (Suffix=0) Then Inc(Code,15);
+   If Prefix>=16 Then Code:=Code+(LongInt(1) Shl (Prefix-3))-4096;
+   If (I=Ones) And (Ones<3) Then Inc(Code,2);
+   If Odd(Code) Then Lev:=-(Code+1) Div 2 Else Lev:=(Code+2) Div 2;
+   If Abs(Lev)>32767 Then Bad('Coefficient hors profil 8 bits.');
+   Levels[I]:=Lev;
+   If Suffix=0 Then Suffix:=1;
+   If (Suffix<6) And (Abs(Lev)>(LongInt(3) Shl (Suffix-1))) Then Inc(Suffix);
+  End;
+  Zeros:=0;
+  If Total<MaxCoeff Then Begin
+   If MaxCoeff=4 Then Zeros:=VLC(ChromaZerosLen[Total-1],ChromaZerosBits[Total-1],4)
+   Else Zeros:=VLC(ZerosLen[Total-1],ZerosBits[Total-1],16);
+  End;
+  If Zeros+Total>MaxCoeff Then Bad('Zeros CAVLC hors bloc.');
+  Index:=Zeros+Total-1;
+  For I:=0 To Total-1 Do Begin
+   If MaxCoeff=4 Then Coeff[Index]:=Levels[I]
+   Else If MaxCoeff=15 Then Coeff[Scan[Index+1]]:=Levels[I]
+   Else Coeff[Scan[Index]]:=Levels[I];
+   If I<Total-1 Then Begin
+    Run:=0;
+    If Zeros>0 Then Begin
+     TableNo:=Zeros-1; If TableNo>6 Then TableNo:=6;
+     Run:=VLC(RunLen[TableNo],RunBits[TableNo],16);
+     If Run>Zeros Then Bad('Run CAVLC hors bloc.');
+    End;
+    Dec(Zeros,Run); Dec(Index,Run+1);
+   End;
+  End;
+ End;
+
+ Function Available(X,Y,Plane: Integer): Boolean;
+ Var Size,AX,AY: Integer;
+ Begin
+  Available:=False; Size:=16; If Plane<>0 Then Size:=8;
+  If (X<0) Or (Y<0) Or (X>=MBW*Size) Or (Y>=MBH*Size) Then Exit;
+  AX:=X Div Size; AY:=Y Div Size;
+  Available:=MB[AY]^[AX].Slice=SliceID;
+ End;
+
+ Function ContextCount(Plane,X,Y: Integer): Integer;
+ Var Size,Base,L,T,AX,AY: Integer;
+  Function CountAt(PX,PY: Integer): Integer;
+  Begin
+   If Not Available(PX*4,PY*4,Plane) Then CountAt:=-1 Else Begin
+    AX:=PX Div Size; AY:=PY Div Size;
+    CountAt:=MB[AY]^[AX].NC[Base+(PY Mod Size)*Size+PX Mod Size];
+   End;
+  End;
+ Begin
+  Size:=4; Base:=0; If Plane<>0 Then Begin Size:=2; Base:=16+(Plane-1)*4; End;
+  L:=CountAt(X-1,Y); T:=CountAt(X,Y-1);
+  If L<0 Then Begin If T<0 Then ContextCount:=0 Else ContextCount:=T; End
+  Else If T<0 Then ContextCount:=L Else ContextCount:=(L+T+1) Div 2;
+ End;
+
+ Procedure Dequant(Var C: TCoeff; Q: Integer; KeepDC: Boolean);
+ Var I,ClassNo: Integer; Mult: LongInt;
+ Begin
+  For I:=0 To 15 Do If (I<>0) Or Not KeepDC Then Begin
+   ClassNo:=(I And 1)+((I Div 4) And 1);
+   Mult:=LongInt(Dequant4[Q Mod 6,ClassNo]) Shl (Q Div 6);
+   C[I]:=C[I]*Mult;
+  End;
+ End;
+
+ Procedure AddBlock(Plane,X,Y: Integer; Var C: TCoeff);
+ Var T: TCoeff; I,J: Integer; A,B,D,E: LongInt;
+ Begin
+  For I:=0 To 3 Do Begin
+   A:=C[I*4]+C[I*4+2]; B:=C[I*4]-C[I*4+2];
+   D:=ASR(C[I*4+1],1)-C[I*4+3]; E:=C[I*4+1]+ASR(C[I*4+3],1);
+   T[I*4]:=A+E; T[I*4+1]:=B+D; T[I*4+2]:=B-D; T[I*4+3]:=A-E;
+  End;
+  For I:=0 To 3 Do Begin
+   A:=T[I]+T[I+8]; B:=T[I]-T[I+8]; D:=ASR(T[I+4],1)-T[I+12]; E:=T[I+4]+ASR(T[I+12],1);
+   C[I]:=A+E; C[I+4]:=B+D; C[I+8]:=B-D; C[I+12]:=A-E;
+  End;
+  For J:=0 To 3 Do For I:=0 To 3 Do Planes[Plane]^[Y+J]^[X+I]:=
+   Clip(Planes[Plane]^[Y+J]^[X+I]+ASR(C[J*4+I]+32,6),0,255);
+ End;
+
+ Procedure DCTransform(Var C: TCoeff; Q: Integer; Chroma: Boolean);
+ Var T: TCoeff; I: Integer; A,B,D,E,Mult: LongInt;
+ Begin
+  Mult:=LongInt(Dequant4[Q Mod 6,0]) Shl (Q Div 6);
+  If Chroma Then Begin
+   A:=C[0]+C[1]; B:=C[0]-C[1]; D:=C[2]+C[3]; E:=C[2]-C[3];
+   C[0]:=ASR((A+D)*Mult,1); C[1]:=ASR((B+E)*Mult,1);
+   C[2]:=ASR((A-D)*Mult,1); C[3]:=ASR((B-E)*Mult,1);
+  End Else Begin
+   For I:=0 To 3 Do Begin
+    A:=C[I*4]+C[I*4+3]; B:=C[I*4+1]+C[I*4+2];
+    D:=C[I*4+1]-C[I*4+2]; E:=C[I*4]-C[I*4+3];
+    T[I*4]:=A+B; T[I*4+1]:=E+D; T[I*4+2]:=A-B; T[I*4+3]:=E-D;
+   End;
+   For I:=0 To 3 Do Begin
+    A:=T[I]+T[I+12]; B:=T[I+4]+T[I+8]; D:=T[I+4]-T[I+8]; E:=T[I]-T[I+12];
+    C[I]:=ASR((A+B)*Mult+2,2); C[I+4]:=ASR((E+D)*Mult+2,2);
+    C[I+8]:=ASR((A-B)*Mult+2,2); C[I+12]:=ASR((E-D)*Mult+2,2);
+   End;
+  End;
+ End;
+
+ Procedure Predict(Plane,X,Y,Size,Mode: Integer; TopRight: Boolean);
+ Var T,L: Array[-1..31] Of Integer;
+  I,J,A,B,V,Index,S1,Count,Half: Integer;
+  Hor,Vert,Value: LongInt;
+  HaveTop,HaveLeft,HaveCorner: Boolean;
+  Function R(N: Integer): Integer;
+  Begin If N=0 Then R:=T[-1] Else If N>0 Then R:=T[N-1] Else R:=L[-N-1]; End;
+  Function VerticalRight(XX,YY: Integer; Swap: Boolean): Integer;
+  Var Z,K,U,V,W: Integer;
+   Function Edge(N: Integer): Integer;
+   Begin If Swap Then Edge:=R(-N) Else Edge:=R(N); End;
+  Begin
+   Z:=2*XX-YY;
+   If Z>=0 Then Begin
+    K:=XX-(YY Div 2);
+    If Not Odd(Z) Then VerticalRight:=(Edge(K)+Edge(K+1)+1) Div 2
+    Else VerticalRight:=(Edge(K-1)+2*Edge(K)+Edge(K+1)+2) Div 4;
+   End Else If Z=-1 Then VerticalRight:=(Edge(-1)+2*Edge(0)+Edge(1)+2) Div 4
+   Else Begin
+    U:=Edge(Z); V:=Edge(Z+1); W:=Edge(Z+2); VerticalRight:=(U+2*V+W+2) Div 4;
+   End;
+  End;
+ Begin
+  HaveTop:=Available(X,Y-1,Plane); HaveLeft:=Available(X-1,Y,Plane);
+  HaveCorner:=Available(X-1,Y-1,Plane);
+  For I:=-1 To 31 Do Begin T[I]:=128; L[I]:=128; End;
+  If HaveCorner Then Begin T[-1]:=Planes[Plane]^[Y-1]^[X-1]; L[-1]:=T[-1]; End;
+  For I:=0 To Size-1 Do Begin
+   If HaveTop Then T[I]:=Planes[Plane]^[Y-1]^[X+I];
+   If HaveLeft Then L[I]:=Planes[Plane]^[Y+I]^[X-1];
+  End;
+  If Size=4 Then For I:=4 To 7 Do Begin
+   T[I]:=T[3]; L[I]:=L[3];
+   If TopRight And Available(X+I,Y-1,Plane) Then T[I]:=Planes[Plane]^[Y-1]^[X+I];
+  End;
+  If (Mode=0) And Not HaveTop Then Bad('Prediction verticale sans voisin.');
+  If (Mode=1) And Not HaveLeft Then Bad('Prediction horizontale sans voisin.');
+  If Size=4 Then Begin
+   If (Mode In [3,7]) And Not HaveTop Then Bad('Prediction diagonale sans voisin haut.');
+   If (Mode=8) And Not HaveLeft Then Bad('Prediction diagonale sans voisin gauche.');
+   If (Mode In [4,5,6]) And Not (HaveTop And HaveLeft And HaveCorner) Then
+    Bad('Prediction diagonale sans voisins.');
+  End;
+  Value:=128; Hor:=0; Vert:=0; Half:=Size Div 2;
+  If (Size<>4) And (Mode=3) Then Begin
+   If Not (HaveTop And HaveLeft And HaveCorner) Then Bad('Prediction plane sans voisins.');
+   For I:=1 To Half Do Begin
+    Hor:=Hor+LongInt(I)*(T[Half-1+I]-T[Half-1-I]);
+    Vert:=Vert+LongInt(I)*(L[Half-1+I]-L[Half-1-I]);
+   End;
+   If Size=16 Then Begin Hor:=ASR(5*Hor+32,6); Vert:=ASR(5*Vert+32,6); End
+   Else Begin Hor:=ASR(17*Hor+16,5); Vert:=ASR(17*Vert+16,5); End;
+   Value:=16*(T[Size-1]+L[Size-1]);
+  End;
+  For J:=0 To Size-1 Do For I:=0 To Size-1 Do Begin
+   V:=128;
+   Case Mode Of
+    0: V:=T[I];
+    1: V:=L[J];
+    2: Begin
+     S1:=0; Count:=0;
+     If (Plane<>0) And (Size=8) Then Begin
+      { Chroma DC uses four 4x4 quadrants, with one-sided top/right rules. }
+      A:=(I Div 4)*4; B:=(J Div 4)*4;
+      If HaveTop And ((I Div 4=J Div 4) Or (J<4) Or Not HaveLeft) Then Begin
+       For Index:=A To A+3 Do Inc(S1,T[Index]); Inc(Count,4);
+      End;
+      If HaveLeft And ((I Div 4=J Div 4) Or (I<4) Or Not HaveTop) Then Begin
+       For Index:=B To B+3 Do Inc(S1,L[Index]); Inc(Count,4);
+      End;
+     End Else Begin
+      For Index:=0 To Size-1 Do Begin
+       If HaveTop Then Begin Inc(S1,T[Index]); Inc(Count); End;
+       If HaveLeft Then Begin Inc(S1,L[Index]); Inc(Count); End;
+      End;
+     End;
+     If Count<>0 Then V:=(S1+Count Div 2) Div Count;
+    End;
+    3: If Size=4 Then Begin
+     Index:=I+J; A:=Index+2; If A>7 Then A:=7;
+     V:=(T[Index]+2*T[Index+1]+T[A]+2) Div 4;
+    End Else V:=Clip(ASR(Value+Hor*(I-Half+1)+Vert*(J-Half+1)+16,5),0,255);
+    4: Begin Index:=I-J; V:=(R(Index-1)+2*R(Index)+R(Index+1)+2) Div 4; End;
+    5: V:=VerticalRight(I,J,False);
+    6: V:=VerticalRight(J,I,True);
+    7: Begin
+     Index:=I+J Div 2;
+     If Not Odd(J) Then V:=(T[Index]+T[Index+1]+1) Div 2
+     Else V:=(T[Index]+2*T[Index+1]+T[Index+2]+2) Div 4;
+    End;
+    8: Begin
+     Index:=J+I Div 2;
+     If Not Odd(I) Then V:=(L[Index]+L[Index+1]+1) Div 2
+     Else V:=(L[Index]+2*L[Index+1]+L[Index+2]+2) Div 4;
+    End;
+   End;
+   Planes[Plane]^[Y+J]^[X+I]:=V;
+  End;
+ End;
+
+ Procedure DecodeMB;
+ Var Kind,Mode,ChromaMode,CBP,I,C,X,Y,NC,Temp,LM,TM,Pred,Q,Base,Size: Integer;
+  Blocks: Array[0..23] Of TCoeff;
+  DC: TCoeff; Intra16,TR: Boolean;
+  Function NeighbourMode(PX,PY: Integer): Integer;
+  Begin
+   If Not Available(PX*4,PY*4,0) Then NeighbourMode:=-1 Else
+    NeighbourMode:=MB[PY Div 4]^[PX Div 4].Mode[(PY Mod 4)*4+PX Mod 4];
+  End;
+ Begin
+  Kind:=UE(25); MB[MY]^[MX].Slice:=SliceID;
+  FillChar(MB[MY]^[MX].Mode,16,2);
+  FillChar(Blocks,SizeOf(Blocks),0);
+  MB[MY]^[MX].Deblock:=FilterID; MB[MY]^[MX].Alpha:=AlphaOffset; MB[MY]^[MX].Beta:=BetaOffset;
+  If Kind=25 Then Begin
+   While BitsLeft>0 Do If Bits(1)<>0 Then Bad('Alignement PCM incorrect.');
+   For C:=0 To 2 Do Begin
+    Size:=16; If C<>0 Then Size:=8;
+    For Y:=0 To Size-1 Do For X:=0 To Size-1 Do
+     Planes[C]^[MY*Size+Y]^[MX*Size+X]:=Bits(8);
+   End;
+   FillChar(MB[MY]^[MX].NC,24,16); MB[MY]^[MX].QP:=0; Exit;
+  End;
+  Intra16:=Kind<>0; Mode:=0; CBP:=0;
+  If Intra16 Then Begin
+   Mode:=(Kind-1) Mod 4; CBP:=((Kind-1) Div 4 Mod 3)*16;
+   If Kind>=13 Then Inc(CBP,15);
+  End Else For I:=0 To 15 Do Begin
+   X:=MX*4+BX[I]; Y:=MY*4+BY[I];
+   LM:=NeighbourMode(X-1,Y); TM:=NeighbourMode(X,Y-1);
+   Pred:=2; If (LM>=0) And (TM>=0) Then Begin Pred:=LM; If TM<Pred Then Pred:=TM; End;
+   Temp:=Pred;
+   If Bits(1)=0 Then Begin Temp:=Bits(3); If Temp>=Pred Then Inc(Temp); End;
+   MB[MY]^[MX].Mode[BY[I]*4+BX[I]]:=Temp;
+  End;
+  ChromaMode:=UE(3);
+  If Not Intra16 Then CBP:=IntraCBP[UE(47)];
+  If (CBP<>0) Or Intra16 Then Begin Temp:=SE(26); QP:=(QP+Temp+52) Mod 52; End;
+  MB[MY]^[MX].QP:=QP;
+  If Intra16 Then Begin
+   Temp:=Residual(DC,ContextCount(0,MX*4,MY*4),16); DCTransform(DC,QP,False);
+  End;
+  For I:=0 To 15 Do Begin
+   X:=BX[I]; Y:=BY[I]; NC:=0;
+   If (CBP And (1 Shl (I Div 4)))<>0 Then Begin
+    Temp:=16; If Intra16 Then Temp:=15;
+    NC:=Residual(Blocks[I],ContextCount(0,MX*4+X,MY*4+Y),Temp);
+   End;
+   MB[MY]^[MX].NC[Y*4+X]:=NC;
+   Dequant(Blocks[I],QP,Intra16);
+   If Intra16 Then Blocks[I,0]:=DC[Y*4+X];
+  End;
+  Q:=CQ[Clip(QP+ChromaOffset,0,51)];
+  For C:=1 To 2 Do Begin
+   FillChar(DC,SizeOf(DC),0);
+   If (CBP And 48)<>0 Then Begin Temp:=Residual(DC,0,4); DCTransform(DC,Q,True); End;
+   For I:=0 To 3 Do Blocks[16+(C-1)*4+I,0]:=DC[I];
+  End;
+  For C:=1 To 2 Do For I:=0 To 3 Do Begin
+   Base:=16+(C-1)*4+I; Temp:=0;
+   If (CBP And 48)=32 Then Begin
+    Temp:=Residual(DC,ContextCount(C,MX*2+I Mod 2,MY*2+I Div 2),15);
+    For X:=1 To 15 Do Blocks[Base,X]:=DC[X];
+   End;
+   MB[MY]^[MX].NC[Base]:=Temp; Dequant(Blocks[Base],Q,True);
+  End;
+  If Intra16 Then Predict(0,MX*16,MY*16,16,Mode,False);
+  For I:=0 To 15 Do Begin
+   X:=MX*16+BX[I]*4; Y:=MY*16+BY[I]*4;
+   If Not Intra16 Then Begin
+    { Top-right blocks 3/11 are not decoded yet; right MB unavailable below top row. }
+    TR:=(I<>3) And (I<>11) And ((BX[I]<>3) Or (BY[I]=0));
+    Predict(0,X,Y,4,MB[MY]^[MX].Mode[BY[I]*4+BX[I]],TR);
+   End;
+   AddBlock(0,X,Y,Blocks[I]);
+  End;
+  Case ChromaMode Of 0: Mode:=2; 1: Mode:=1; 2: Mode:=0; 3: Mode:=3; End;
+  For C:=1 To 2 Do Begin
+   Predict(C,MX*8,MY*8,8,Mode,False);
+   For I:=0 To 3 Do AddBlock(C,MX*8+(I Mod 2)*4,MY*8+(I Div 2)*4,Blocks[16+(C-1)*4+I]);
+  End;
+ End;
+
+ Procedure ReadSlice;
+ Var First,Ignored: LongInt; SliceType: Integer;
+ Begin
+  If Not HavePPS Then Bad('Configuration AVC absente.');
+  First:=UE(131071);
+  If First<>DecodedMB Then Bad('Tranches manquantes, redondantes ou desordonnees.');
+  SliceType:=UE(9);
+  If SliceType Mod 5<>2 Then Bad('Premiere image: tranche I requise.');
+  If UE(255)<>PPSID Then Bad('PPS de tranche inconnu.');
+  Ignored:=Bits(FrameBits); Ignored:=UE(65535);
+  If POCType=0 Then Begin Ignored:=Bits(POCBits); If BottomPOC Then Ignored:=SE(65535); End;
+  If Redundant Then If UE(127)<>0 Then Bad('Tranche redondante non implementee.');
+  Ignored:=Bits(1); Ignored:=Bits(1);
+  QP:=InitialQP+SE(51); If (QP<0) Or (QP>51) Then Bad('QP de tranche invalide.');
+  FilterID:=0; AlphaOffset:=0; BetaOffset:=0;
+  If DeblockPresent Then Begin
+   FilterID:=UE(2);
+   If FilterID<>1 Then Begin AlphaOffset:=2*SE(6); BetaOffset:=2*SE(6); End;
+  End;
+  If DecodedMB=0 Then AllocatePicture;
+  Inc(SliceID);
+  Repeat
+   If DecodedMB>=LongInt(MBW)*MBH Then Bad('Trop de macroblocs.');
+   MX:=DecodedMB Mod MBW; MY:=DecodedMB Div MBW;
+   DecodeMB; Inc(DecodedMB);
+  Until Not MoreData;
+  TrailingBits;
+ End;
+
+ Procedure DeblockPicture;
+ Var MX,MY,C,Dir,Edge,L,Size,X,Y,DX,DY,Q,OtherQ,IA,IB,A,B,TC,TC0,D,P0,P1,P2,P3,Q0,Q1,Q2,Q3: Integer;
+  Strong,AP,AQ: Boolean;
+  Function Pix(Offset: Integer): Integer;
+  Begin Pix:=Planes[C]^[Y+DY*Offset]^[X+DX*Offset]; End;
+  Procedure Put(Offset,V: Integer);
+  Begin Planes[C]^[Y+DY*Offset]^[X+DX*Offset]:=Clip(V,0,255); End;
+ Begin
+  For MY:=0 To MBH-1 Do For MX:=0 To MBW-1 Do If MB[MY]^[MX].Deblock<>1 Then
+  For Dir:=0 To 1 Do For C:=0 To 2 Do Begin
+   Size:=16; If C<>0 Then Size:=8;
+   DX:=1-Dir; DY:=Dir;
+   For Edge:=0 To Size Div 4-1 Do Begin
+    Strong:=Edge=0; Q:=MB[MY]^[MX].QP;
+    If C<>0 Then Q:=CQ[Clip(Q+ChromaOffset,0,51)];
+    OtherQ:=Q;
+    If Strong Then Begin
+     If ((Dir=0) And (MX=0)) Or ((Dir=1) And (MY=0)) Then Continue;
+     If (MB[MY]^[MX].Deblock=2) And
+      (MB[MY-DY]^[MX-DX].Slice<>MB[MY]^[MX].Slice) Then Continue;
+     OtherQ:=MB[MY-DY]^[MX-DX].QP;
+     If C<>0 Then OtherQ:=CQ[Clip(OtherQ+ChromaOffset,0,51)];
+    End;
+    Q:=(Q+OtherQ+1) Div 2;
+    IA:=Clip(Q+MB[MY]^[MX].Alpha,0,51); IB:=Clip(Q+MB[MY]^[MX].Beta,0,51);
+    A:=AlphaTable[IA]; B:=BetaTable[IB]; TC0:=TC3Table[IA];
+    If (A=0) Or (B=0) Then Continue;
+    For L:=0 To Size-1 Do Begin
+     X:=MX*Size+DX*Edge*4+DY*L; Y:=MY*Size+DY*Edge*4+DX*L;
+     P0:=Pix(-1); P1:=Pix(-2); Q0:=Pix(0); Q1:=Pix(1);
+     If (Abs(P0-Q0)>=A) Or (Abs(P1-P0)>=B) Or (Abs(Q1-Q0)>=B) Then Continue;
+     If Strong Then Begin
+      If (C=0) And (Abs(P0-Q0)<A Div 4+2) Then Begin
+       P2:=Pix(-3); Q2:=Pix(2);
+       If Abs(P2-P0)<B Then Begin
+        P3:=Pix(-4); Put(-1,(P2+2*P1+2*P0+2*Q0+Q1+4) Div 8);
+        Put(-2,(P2+P1+P0+Q0+2) Div 4); Put(-3,(2*P3+3*P2+P1+P0+Q0+4) Div 8);
+       End Else Put(-1,(2*P1+P0+Q1+2) Div 4);
+       If Abs(Q2-Q0)<B Then Begin
+        Q3:=Pix(3); Put(0,(P1+2*P0+2*Q0+2*Q1+Q2+4) Div 8);
+        Put(1,(P0+Q0+Q1+Q2+2) Div 4); Put(2,(2*Q3+3*Q2+Q1+Q0+P0+4) Div 8);
+       End Else Put(0,(2*Q1+Q0+P1+2) Div 4);
+      End Else Begin Put(-1,(2*P1+P0+Q1+2) Div 4); Put(0,(2*Q1+Q0+P1+2) Div 4); End;
+     End Else Begin
+      TC:=TC0;
+      If C=0 Then Begin
+       P2:=Pix(-3); Q2:=Pix(2); AP:=Abs(P2-P0)<B; AQ:=Abs(Q2-Q0)<B;
+       If AP Then Inc(TC); If AQ Then Inc(TC);
+       If AP Then Put(-2,P1+Clip(ASR(P2+(P0+Q0+1) Div 2-2*P1,1),-TC0,TC0));
+       If AQ Then Put(1,Q1+Clip(ASR(Q2+(P0+Q0+1) Div 2-2*Q1,1),-TC0,TC0));
+      End Else Inc(TC);
+      D:=Clip(ASR(4*(Q0-P0)+P1-Q1+4,3),-TC,TC); Put(-1,P0+D); Put(0,Q0-D);
+     End;
+    End;
+   End;
+  End;
+ End;
+
+ Procedure WritePNG;
+ Var Header: Array[0..12] Of Byte; Tiny: Array[0..4] Of Byte;
+  X,Y,C,X0,Y0,X1,Y1: Integer; FX,FY: Double;
+  RGB: Array[0..3,0..2] Of Integer;
+  SX,SY: Double; V: LongInt;
+  Procedure RawByte(B: Byte);
+  Begin WriteBytes(B,1); End;
+  Procedure Raw32(V: LongInt);
+  Var I: Integer;
+  Begin For I:=3 Downto 0 Do RawByte((V Shr (I*8)) And 255); End;
+  Procedure CRCByte(B: Byte);
+  Var I: Integer;
+  Begin
+   CRC:=CRC Xor B;
+   For I:=1 To 8 Do If Odd(CRC) Then CRC:=(CRC Shr 1) Xor LongInt($EDB88320) Else CRC:=CRC Shr 1;
+  End;
+  Procedure Chunk(Const Name: String; Var Data; Size: Integer);
+  Var I: Integer; P: ^TPNGBuffer;
+  Begin
+   Raw32(Size); CRC:=-1;
+   For I:=1 To 4 Do Begin RawByte(Ord(Name[I])); CRCByte(Ord(Name[I])); End;
+   P:=@Data; For I:=0 To Size-1 Do CRCByte(P^[I]);
+   If Size>0 Then WriteBytes(Data,Size);
+   Raw32(Not CRC);
+  End;
+  Procedure Flush(Final: Boolean);
+  Var I: Integer;
+  Begin
+   Tiny[0]:=Ord(Final); Tiny[1]:=PNGCount And 255; Tiny[2]:=PNGCount Shr 8;
+   Tiny[3]:=255-Tiny[1]; Tiny[4]:=255-Tiny[2];
+   Raw32(PNGCount+5); CRC:=-1;
+   RawByte(73); CRCByte(73); RawByte(68); CRCByte(68);
+   RawByte(65); CRCByte(65); RawByte(84); CRCByte(84);
+   For I:=0 To 4 Do CRCByte(Tiny[I]); WriteBytes(Tiny,5);
+   For I:=0 To PNGCount-1 Do CRCByte(PNGBuffer^[I]);
+   If PNGCount>0 Then WriteBytes(PNGBuffer^,PNGCount);
+   Raw32(Not CRC); PNGCount:=0;
+  End;
+  Procedure DataByte(B: Byte);
+  Begin
+   PNGBuffer^[PNGCount]:=B; Inc(PNGCount);
+   AdlerA:=(AdlerA+B) Mod 65521; AdlerB:=(AdlerB+AdlerA) Mod 65521;
+   If PNGCount=16384 Then Flush(False);
+  End;
+  Procedure Pixel(X,Y,Index: Integer);
+  Var L,U,V: LongInt; LR,KR,KB,KGU,KGV: LongInt;
+  Begin
+   Inc(X,CropX); Inc(Y,CropY);
+   L:=Planes[0]^[Y]^[X]; U:=Planes[1]^[Y Div 2]^[X Div 2]-128;
+   V:=Planes[2]^[Y Div 2]^[X Div 2]-128;
+   LR:=256; KR:=359; KB:=454; KGU:=88; KGV:=183;
+   If Matrix=1 Then Begin KR:=403; KB:=475; KGU:=48; KGV:=120; End;
+   If Not FullRange Then Begin
+    Dec(L,16); LR:=298; KR:=409; KB:=516; KGU:=100; KGV:=208;
+    If Matrix=1 Then Begin KR:=459; KB:=541; KGU:=55; KGV:=136; End;
+   End;
+   RGB[Index,0]:=Clip(ASR(LR*L+KR*V+128,8),0,255);
+   RGB[Index,1]:=Clip(ASR(LR*L-KGU*U-KGV*V+128,8),0,255);
+   RGB[Index,2]:=Clip(ASR(LR*L+KB*U+128,8),0,255);
+  End;
+ Begin
+  If OutW=0 Then Begin OutW:=VisibleW; OutH:=VisibleH; End;
+  New(PNGBuffer); PNGCount:=0; AdlerA:=1; AdlerB:=0;
+  OpenWrite(Target);
+  RawByte(137); RawByte(80); RawByte(78); RawByte(71);
+  RawByte(13); RawByte(10); RawByte(26); RawByte(10);
+  FillChar(Header,SizeOf(Header),0);
+  Header[2]:=OutW Shr 8; Header[3]:=OutW And 255;
+  Header[6]:=OutH Shr 8; Header[7]:=OutH And 255; Header[8]:=8; Header[9]:=2;
+  Chunk('IHDR',Header,13); Tiny[0]:=$78; Tiny[1]:=$01; Chunk('IDAT',Tiny,2);
+  For Y:=0 To OutH-1 Do Begin
+   DataByte(0); SY:=(Y+0.5)*VisibleH/OutH-0.5;
+   If SY<0 Then SY:=0; If SY>VisibleH-1 Then SY:=VisibleH-1;
+   Y0:=Trunc(SY); Y1:=Y0+1; If Y1>=VisibleH Then Y1:=Y0; FY:=SY-Y0;
+   For X:=0 To OutW-1 Do Begin
+    SX:=(X+0.5)*VisibleW/OutW-0.5;
+    If SX<0 Then SX:=0; If SX>VisibleW-1 Then SX:=VisibleW-1;
+    X0:=Trunc(SX); X1:=X0+1; If X1>=VisibleW Then X1:=X0; FX:=SX-X0;
+    Pixel(X0,Y0,0); Pixel(X1,Y0,1); Pixel(X0,Y1,2); Pixel(X1,Y1,3);
+    For C:=0 To 2 Do Begin
+     V:=Trunc(((RGB[0,C]*(1-FX)+RGB[1,C]*FX)*(1-FY)+
+              (RGB[2,C]*(1-FX)+RGB[3,C]*FX)*FY)+0.5); DataByte(V);
+    End;
+   End;
+  End;
+  Flush(True); Tiny[0]:=AdlerB Shr 8; Tiny[1]:=AdlerB And 255;
+  Tiny[2]:=AdlerA Shr 8; Tiny[3]:=AdlerA And 255; Chunk('IDAT',Tiny,4);
+  Chunk('IEND',Tiny,0); CloseWrite;
+ End;
+
+Begin
+ FillChar(Planes,SizeOf(Planes),0); FillChar(MB,SizeOf(MB),0); PNGBuffer:=Nil;
+ W:=0; H:=0; MBW:=0; HaveSPS:=False; HavePPS:=False; DecodedMB:=0; SliceID:=0;
+ CacheAt:=-1; CacheLen:=0; NALBytes:=0;
+ OpenRead(Source); FileEnd:=InputSize;
+ If (BE(0,3)<>$464C56) Or (At(3)<>1) Then Bad('Signature/version FLV invalide.');
+ If (At(4) And 1)=0 Then Bad('FLV sans video.');
+ TagAt:=BE(5,4); If (TagAt<9) Or (TagAt>FileEnd-4) Then Bad('En-tete FLV tronque.');
+ If BE(TagAt,4)<>0 Then Bad('Premier PreviousTagSize invalide.'); Inc(TagAt,4);
+ While TagAt<FileEnd Do Begin
+  If FileEnd-TagAt<15 Then Bad('En-tete de tag tronque.');
+  TagSize:=BE(TagAt+1,3);
+  If TagSize>FileEnd-TagAt-15 Then Bad('Tag FLV tronque.');
+  TagEnd:=TagAt+11+TagSize;
+  If BE(TagEnd,4)<>TagSize+11 Then Bad('PreviousTagSize incoherent.');
+  If BE(TagAt+8,3)<>0 Then Bad('Identifiant de flux FLV non nul.');
+  If (At(TagAt) And $20)<>0 Then Bad('Tag FLV chiffre non pris en charge.');
+  If At(TagAt)=9 Then Begin
+   If TagSize<5 Then Bad('Tag video trop court.');
+   P:=TagAt+11; FrameKind:=At(P) Shr 4;
+   If (At(P) And 15)<>7 Then Bad('Seul le codec AVC/H264 FLV est implemente pour PNG.');
+   If At(P+1)=0 Then Begin
+    Inc(P,5); If TagEnd-P<7 Then Bad('Configuration AVC tronquee.');
+    If At(P)<>1 Then Bad('Version AVC invalide.');
+    NALBytes:=(At(P+4) And 3)+1;
+    If NALBytes=3 Then Bad('Longueur AVC reservee.');
+    Count:=At(P+5) And 31; Inc(P,6);
+    If Count<>1 Then Bad('Une configuration SPS unique est requise.');
+    For K:=1 To Count Do Begin
+     N:=BE(P,2); Inc(P,2); If (N<2) Or (N>TagEnd-P) Then Bad('SPS tronque.');
+     If (At(P) And 31)<>7 Then Bad('Type SPS incorrect.');
+     StartNAL(P,N); ReadSPS; Inc(P,N);
+    End;
+    If P>=TagEnd Then Bad('PPS absent.'); Count:=At(P); Inc(P);
+    If Count<>1 Then Bad('Une configuration PPS unique est requise.');
+    For K:=1 To Count Do Begin
+     N:=BE(P,2); Inc(P,2); If (N<2) Or (N>TagEnd-P) Then Bad('PPS tronque.');
+     If (At(P) And 31)<>8 Then Bad('Type PPS incorrect.');
+     StartNAL(P,N); ReadPPS; Inc(P,N);
+    End;
+   End Else If At(P+1)=1 Then Begin
+    If Not HavePPS Then Bad('Configuration AVC absente avant les images.');
+    Inc(P,5);
+    While P<TagEnd Do Begin
+     If TagEnd-P<NALBytes Then Bad('Longueur NAL tronquee.');
+     NalLength:=BE(P,NALBytes); Inc(P,NALBytes);
+     If (NalLength<1) Or (NalLength>TagEnd-P) Then Bad('NAL hors tag FLV.');
+     NalKind:=At(P) And 31;
+     If NalKind In [1,2,3,4] Then Bad('La premiere image doit etre une image IDR autonome.');
+     If NalKind=5 Then Begin
+      If FrameKind<>1 Then Bad('Tag IDR non marque comme image cle.');
+      If (At(P) And $60)=0 Then Bad('IDR non reference invalide.');
+      StartNAL(P,NalLength); ReadSlice;
+     End Else If NalKind=7 Then Begin StartNAL(P,NalLength); ReadSPS; End
+     Else If NalKind=8 Then Begin StartNAL(P,NalLength); ReadPPS; End
+     Else If Not (NalKind In [6,9,10,11,12]) Then Bad('Extension H264 non implementee.');
+     Inc(P,NalLength);
+    End;
+    If DecodedMB<>0 Then Begin
+     If DecodedMB<>LongInt(MBW)*MBH Then Bad('Premiere image incomplete.');
+     CloseRead; DeblockPicture;
+     {$IFDEF TEST_PNG_YUV}
+     OpenWrite(Target);
+     For K:=0 To 2 Do Begin
+      Count:=W; J:=H; If K<>0 Then Begin Count:=W Div 2; J:=H Div 2; End;
+      For N:=0 To J-1 Do WriteBytes(Planes[K]^[N]^,Count);
+     End;
+     CloseWrite;
+     {$ELSE}
+     WritePNG;
+     {$ENDIF}
+     ReleasePicture; Exit;
+    End;
+   End Else If At(P+1)<>2 Then Bad('Type paquet AVC inconnu.');
+  End;
+  TagAt:=TagEnd+4;
+ End;
+ Bad('Aucune premiere image IDR trouvee.');
+End;
+
 
 Procedure CopyFile(Const Source,Target: String);
 Var
@@ -5864,6 +6776,9 @@ Procedure Help;Begin
  WriteLn('Entrees: WAV PCM, MP3, AIFF PCM, VOC PCM, MOD 4 canaux.');
  WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 320 kbit/s.');
  WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
+ WriteLn('Image: -i entree.flv -vcodec png -vframes 1 -an -f rawvideo -s 106x106 image.png');
+ WriteLn('FLV H264 CAVLC 8 bits progressif: premiere image IDR; PNG RGB natif.');
+ WriteLn('-c:v/-codec:v png, -frames:v 1; -s optionnel; -f image2 accepte.');
  WriteLn('Video locale: MP4 vers AVI, AVI vers MP4, WebM VP9/Opus vers MP4.');
  WriteLn('-c copy: changement de conteneur, pas de reencodage video.');
  WriteLn('AVI B-frames H264/MPEG4; montages MP4 elst 32/64 bits a vitesse 1.');
@@ -5892,6 +6807,7 @@ End;
 BEGIN
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
+ NoAudio:=False; VideoCodec:=''; VideoFrames:=0; ImageWidth:=0; ImageHeight:=0;
  {$IFDEF MSWINDOWS}
   NetSession:=Nil; NetRequest:=Nil;
  {$ENDIF}
@@ -5909,17 +6825,21 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.3; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.4; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
    WriteLn(' D = demuxage, E = muxage'); WriteLn(' DE wav'); WriteLn(' DE mp3');
    WriteLn(' D  hls (fMP4 VOD)'); WriteLn(' DE mp4 (profils limites et copie HLS)');
    WriteLn(' DE avi (H264/MPEG4, AAC/MP3)'); WriteLn(' D  webm (VP9/Opus)');
+   WriteLn(' D  flv (premiere image AVC/CAVLC)');
+   WriteLn('  E image2/rawvideo (une image PNG)');
    WriteLn(' D  aiff'); WriteLn(' D  voc');
    WriteLn(' D  libopenmpt (nom compatible, moteur MOD Pascal interne)'); Halt(0);
   End
   Else If Argument='-codecs' Then Begin
+   WriteLn(' E png (RGB24, sans compression)');
+   WriteLn('D  h264 (premiere IDR CAVLC 8 bits 4:2:0 progressive)');
    WriteLn('DE pcm_s16le');
    WriteLn('D  pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
    WriteLn('DE mp3 (encodeur Pascal simple 320 kbit/s)');
@@ -5929,6 +6849,26 @@ BEGIN
   If Argument='-n' Then NoOverwrite:=True Else
   If Argument='-hide_banner' Then HideBanner:=True Else
   If Argument='-vn' Then NoVideo:=True Else
+  If Argument='-an' Then NoAudio:=True Else
+  If (Argument='-vcodec') Or (Argument='-c:v') Or (Argument='-codec:v') Then Begin
+   If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
+   VideoCodec:=Lower(NextArgument);
+   If VideoCodec<>'png' Then Fail('Encodage video implemente: png, une image.');
+  End Else If (Argument='-vframes') Or (Argument='-frames:v') Then Begin
+   If InputPath='' Then Fail('Nombre d''images attendu apres -i.');
+   Value:=NextArgument; Val(Value,Number,Code);
+   If (Code<>0) Or (Number<>1) Then Fail('Extraction PNG: -vframes 1 uniquement.');
+   VideoFrames:=1;
+  End Else If Argument='-s' Then Begin
+   If InputPath='' Then Fail('Dimensions de sortie attendues apres -i.');
+   Value:=Lower(NextArgument); J:=Pos('x',Value);
+   If J<2 Then Fail('-s exige LARGEURxHAUTEUR, exemple 106x106.');
+   Val(Copy(Value,1,J-1),Number,Code);
+   If (Code<>0) Or (Number<1) Or (Number>8192) Then Fail('Largeur PNG: 1..8192.');
+   ImageWidth:=Number; Val(Copy(Value,J+1,255),Number,Code);
+   If (Code<>0) Or (Number<1) Or (Number>4096) Then Fail('Hauteur PNG: 1..4096.');
+   ImageHeight:=Number;
+  End Else
   If Argument='-hls_base_url' Then Begin
    HLSBase:=NextArgument;
    If Not IsHTTP(HLSBase) Then Fail('-hls_base_url exige une URL HTTP/HTTPS.');
@@ -5998,6 +6938,20 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If (VideoCodec='png') Or (OutputFormat='png') Or (OutputFormat='image2') Then Begin
+  If InputFormat<>'flv' Then Fail('Extraction PNG: entree FLV AVC/H264 requise.');
+  If (VideoCodec<>'') And (VideoCodec<>'png') Then Fail('Codec PNG requis.');
+  If Not ((OutputFormat='rawvideo') Or (OutputFormat='png') Or
+   (OutputFormat='image2')) Then Fail('PNG: muxeur rawvideo ou image2 requis.');
+  If NoVideo Then Fail('-vn est incompatible avec extraction PNG.');
+  If (AudioCodec<>'') Or (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Then
+   Fail('Options audio incompatibles avec extraction PNG.');
+  If Not HideBanner Then WriteLn('Premiere image FLV H264 CAVLC: decodage et PNG natifs Pascal.');
+  Temps[2]:=NewTemporary; ExtractFLVPicture(Intermediate,Temps[2],ImageWidth,ImageHeight);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('Image PNG creee: ',OutputPath); Halt(0);
+ End;
+ If (VideoFrames<>0) Or (ImageWidth<>0) Or (VideoCodec<>'') Or NoAudio Then
+  Fail('-vframes, -s, -vcodec png et -an: reserves a extraction PNG.');
  If InputFormat='hls' Then Begin
   If (OutputFormat<>'mp4') Or (AudioCodec<>'copy') Or Not AllStreams Then   Fail(
   'HLS exige -c copy et une sortie MP4.');
@@ -6033,7 +6987,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.3 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.4 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
