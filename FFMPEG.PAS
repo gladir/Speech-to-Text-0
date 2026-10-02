@@ -5912,6 +5912,8 @@ Var
  FFContexts,FFOutstanding,FFOverread: Integer;
  FFRange,FFLow,FFCount,FFPos,FFEnd: LongInt;
  FFEncoding,FFConfigured: Boolean;
+ LVEncoding: Boolean; LVPos,LVEnd: LongInt;
+ LVByte,LVCount,LVVersion,LVQP: Integer;
  Tracks: PTracks;
  TrackCount: Integer;
  FileLimit: LongInt;
@@ -7413,12 +7415,279 @@ Begin
  Y4Line:=S;
 End;
 
+{ FLV1/Sorenson Spark intra profile. H.263 VLC tables from FFmpeg,
+  LGPL-2.1-or-later; see THIRD_PARTY_NOTICES.md. }
+Function LVBits(Count: Integer; Value: LongInt): LongInt;
+Var I,B: Integer; R: LongInt;
+Begin
+ R:=0;
+ For I:=Count-1 Downto 0 Do Begin
+  If LVEncoding Then Begin
+   LVByte:=LVByte*2+((Value Shr I) And 1); Inc(LVCount);
+   If LVCount=8 Then Begin W8(LVByte); LVByte:=0; LVCount:=0; End;
+  End Else Begin
+   If LVCount=0 Then Begin
+    If LVPos>=LVEnd Then Fail('FLV1: bits tronques.');
+    LVByte:=ByteAt(LVPos); Inc(LVPos); LVCount:=8;
+   End;
+   Dec(LVCount); B:=(LVByte Shr LVCount) And 1; R:=R*2+B;
+  End;
+ End;
+ If LVEncoding Then LVBits:=Value Else LVBits:=R;
+End;
+
+Procedure LVHeader(T: Integer; V: PSample; EncodeMode: Boolean);
+Var F,W,H,D: LongInt;
+Begin
+ LVEncoding:=EncodeMode; LVPos:=V^.Pos; LVEnd:=V^.Pos+V^.Size; LVCount:=0; LVByte:=0;
+ If LVBits(17,1)<>1 Then Fail('FLV1: code de debut incorrect.');
+ LVVersion:=LVBits(5,1); If LVVersion>1 Then Fail('FLV1: version non prise en charge.');
+ D:=LVBits(8,0); F:=LVBits(3,1);
+ Case F Of
+  0: Begin W:=LVBits(8,Tracks^[T].Width); H:=LVBits(8,Tracks^[T].Height); End;
+  1: Begin W:=LVBits(16,Tracks^[T].Width); H:=LVBits(16,Tracks^[T].Height); End;
+  2: Begin W:=352; H:=288; End; 3: Begin W:=176; H:=144; End;
+  4: Begin W:=128; H:=96; End; 5: Begin W:=320; H:=240; End;
+  6: Begin W:=160; H:=120; End; Else Fail('FLV1: dimensions invalides.');
+ End;
+ If (W<1) Or (H<1) Or (W>1024) Or (H>1024) Then Fail('FLV1: dimensions 1..1024 requises.');
+ If (Tracks^[T].Width<>0) And ((Tracks^[T].Width<>W) Or (Tracks^[T].Height<>H)) Then
+  Fail('FLV1: changement de dimensions non pris en charge.');
+ Tracks^[T].Width:=W; Tracks^[T].Height:=H;
+ If LVBits(2,0)<>0 Then Fail('FLV1: seules images intra implementees; images P non prises en charge.');
+ D:=LVBits(1,0); LVQP:=LVBits(5,4);
+ If LVQP=0 Then Fail('FLV1: quantification nulle.');
+ While LVBits(1,0)<>0 Do D:=LVBits(8,0);
+End;
+
+Procedure LVFrame(T: Integer; V: PSample; EncodeMode: Boolean);
+Const
+ Scan: Array[0..63] Of Byte=(0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,
+  12,19,26,33,40,48,41,34,27,20,13,6,7,14,21,28,35,42,49,56,
+  57,50,43,36,29,22,15,23,30,37,44,51,58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63);
+ DQ: Array[0..3] Of Integer=(-1,-2,1,2);
+ MCCodes: Array[0..8] Of Integer=(
+ 1,1,2,3,1,1,2,3,1);
+ MCBits: Array[0..8] Of Integer=(
+ 1,3,3,3,4,6,6,6,9);
+ CBTable: Array[0..15,0..1] Of Integer=(
+ (3,4),(5,5),(4,5),(9,4),(3,5),(7,4),(2,6),(11,4),(2,5),(3,6),(5,4),(10,4),
+ (4,4),(8,4),(6,4),(3,2));
+ RLTable: Array[0..102,0..1] Of Integer=(
+ (2,2),(15,4),(21,6),(23,7),(31,8),(37,9),(36,9),(33,10),(32,10),(7,11),(6,11),(32,11),
+ (6,3),(20,6),(30,8),(15,10),(33,11),(80,12),(14,4),(29,8),(14,10),(81,12),(13,5),(35,9),
+ (13,10),(12,5),(34,9),(82,12),(11,5),(12,10),(83,12),(19,6),(11,10),(84,12),(18,6),(10,10),
+ (17,6),(9,10),(16,6),(8,10),(22,7),(85,12),(21,7),(20,7),(28,8),(27,8),(33,9),(32,9),
+ (31,9),(30,9),(29,9),(28,9),(27,9),(26,9),(34,11),(35,11),(86,12),(87,12),(7,4),(25,9),
+ (5,11),(15,6),(4,11),(14,6),(13,6),(12,6),(19,7),(18,7),(17,7),(16,7),(26,8),(25,8),
+ (24,8),(23,8),(22,8),(21,8),(20,8),(19,8),(24,9),(23,9),(22,9),(21,9),(20,9),(19,9),
+ (18,9),(17,9),(7,10),(6,10),(5,10),(4,10),(36,11),(37,11),(38,11),(39,11),(88,12),(89,12),
+ (90,12),(91,12),(92,12),(93,12),(94,12),(95,12),(3,7));
+ RLRun: Array[0..101] Of Integer=(
+ 0,0,0,0,0,0,0,0,0,0,0,0,
+ 1,1,1,1,1,1,2,2,2,2,3,3,
+ 3,4,4,4,5,5,5,6,6,6,7,7,
+ 8,8,9,9,10,10,11,12,13,14,15,16,
+ 17,18,19,20,21,22,23,24,25,26,0,0,
+ 0,1,1,2,3,4,5,6,7,8,9,10,
+ 11,12,13,14,15,16,17,18,19,20,21,22,
+ 23,24,25,26,27,28,29,30,31,32,33,34,
+ 35,36,37,38,39,40);
+ RLLevel: Array[0..101] Of Integer=(
+ 1,2,3,4,5,6,7,8,9,10,11,12,
+ 1,2,3,4,5,6,1,2,3,4,1,2,
+ 3,1,2,3,1,2,3,1,2,3,1,2,
+ 1,2,1,2,1,2,1,1,1,1,1,1,
+ 1,1,1,1,1,1,1,1,1,1,1,2,
+ 3,1,2,1,1,1,1,1,1,1,1,1,
+ 1,1,1,1,1,1,1,1,1,1,1,1,
+ 1,1,1,1,1,1,1,1,1,1,1,1,
+ 1,1,1,1,1,1);
+Var
+ Coeff: Array[0..5,0..63] Of Integer;
+ C,Temp,Values: Array[0..7,0..7] Of Double;
+ MBX,MBY,Block,PW,PH,BX,BY,X,Y,U,K,I,J,CP,CBP,Code,N,Run,Level,Last,Index,Dummy: Integer;
+ FrameBase,FrameEnd,PlaneBase,RawPlane,At: LongInt;
+ Sum: Double; Row: Array[0..7] Of Byte;
+
+ Function VLC(Kind: Integer): Integer;
+ Var L,I,N,Bits,Value: Integer;
+ Begin
+  Value:=0; VLC:=-1;
+  For L:=1 To 13 Do Begin
+   Value:=Value*2+LVBits(1,0); N:=103; If Kind=0 Then N:=9 Else If Kind=1 Then N:=16;
+   For I:=0 To N-1 Do Begin
+    If Kind=0 Then Begin Bits:=MCBits[I]; Code:=MCCodes[I]; End Else
+    If Kind=1 Then Begin Bits:=CBTable[I,1]; Code:=CBTable[I,0]; End Else
+    Begin Bits:=RLTable[I,1]; Code:=RLTable[I,0]; End;
+    If (Bits=L) And (Value=Code) Then Begin VLC:=I; Exit; End;
+   End;
+  End;
+  Fail('FLV1: code VLC invalide.');
+ End;
+
+ Procedure Geometry(B: Integer);
+ Begin
+  PW:=Tracks^[T].Width; PH:=Tracks^[T].Height; RawPlane:=V^.Pos; PlaneBase:=FrameBase;
+  BX:=MBX*16+(B And 1)*8; BY:=MBY*16+((B Shr 1) And 1)*8;
+  If B>=4 Then Begin
+   Inc(RawPlane,LongInt(PW)*PH); Inc(PlaneBase,LongInt(PW)*PH);
+   PW:=(PW+1) Div 2; PH:=(PH+1) Div 2; BX:=MBX*8; BY:=MBY*8;
+   If B=5 Then Begin Inc(RawPlane,LongInt(PW)*PH); Inc(PlaneBase,LongInt(PW)*PH); End;
+  End;
+ End;
+Begin
+ LVHeader(T,V,EncodeMode); FrameBase:=OutPos;
+ If Not EncodeMode Then Begin
+  N:=Tracks^[T].Width; I:=Tracks^[T].Height;
+  FrameEnd:=Ticks(FrameBase*1.0+N*1.0*I+2.0*((N+1) Div 2)*((I+1) Div 2));
+  { Reserve all planes so block writes can seek independently. }
+  At:=FrameEnd-FrameBase; While At>0 Do Begin N:=4096; If At<N Then N:=At; Zero(N); Dec(At,N); End;
+ End;
+ For U:=0 To 7 Do For X:=0 To 7 Do Begin
+  C[U,X]:=Cos((2*X+1)*U*3.14159265358979323846/16)/2;
+  If U=0 Then C[U,X]:=C[U,X]/Sqrt(2);
+ End;
+ For MBY:=0 To (Tracks^[T].Height+15) Div 16-1 Do
+ For MBX:=0 To (Tracks^[T].Width+15) Div 16-1 Do Begin
+  FillChar(Coeff,SizeOf(Coeff),0); CBP:=0;
+  If EncodeMode Then Begin
+   For Block:=0 To 5 Do Begin
+    Geometry(Block);
+    For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+     I:=BX+X; If I>=PW Then I:=PW-1; J:=BY+Y; If J>=PH Then J:=PH-1;
+     Values[Y,X]:=ByteAt(RawPlane+LongInt(J)*PW+I);
+    End;
+    For Y:=0 To 7 Do For U:=0 To 7 Do Begin
+     Sum:=0; For X:=0 To 7 Do Sum:=Sum+C[U,X]*Values[Y,X]; Temp[Y,U]:=Sum;
+    End;
+    For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+     Sum:=0; For U:=0 To 7 Do Sum:=Sum+C[Y,U]*Temp[U,X];
+     If (X=0) And (Y=0) Then Begin
+      N:=Round(Sum/8); If N<1 Then N:=1 Else If N>254 Then N:=254;
+     End Else Begin
+      N:=Trunc((Abs(Sum)-(LVQP-1))/ (2*LVQP)); If N<0 Then N:=0;
+      If N>1023 Then N:=1023; If Sum<0 Then N:=-N;
+      If N<>0 Then CBP:=CBP Or (1 Shl (5-Block));
+     End;
+     Coeff[Block,Y*8+X]:=N;
+    End;
+   End;
+   CP:=CBP And 3; Dummy:=LVBits(MCBits[CP],MCCodes[CP]);
+   CP:=CBP Shr 2; Dummy:=LVBits(CBTable[CP,1],CBTable[CP,0]);
+  End Else Begin
+   Repeat CP:=VLC(0); Until CP<>8;
+   CBP:=(CP And 3) Or (VLC(1) Shl 2);
+   If (CP And 4)<>0 Then Begin Inc(LVQP,DQ[LVBits(2,0)]);
+    If (LVQP<1) Or (LVQP>31) Then Fail('FLV1: DQUANT invalide.');
+   End;
+  End;
+  For Block:=0 To 5 Do Begin
+   If EncodeMode Then Begin
+    N:=Coeff[Block,0]; If N=128 Then N:=255; Dummy:=LVBits(8,N);
+    Last:=0; For I:=1 To 63 Do If Coeff[Block,Scan[I]]<>0 Then Last:=I;
+    Run:=0;
+    For I:=1 To Last Do Begin
+     Level:=Coeff[Block,Scan[I]];
+     If Level=0 Then Inc(Run) Else Begin
+      Dummy:=LVBits(7,3); Dummy:=LVBits(1,1); Dummy:=LVBits(1,Ord(I=Last));
+      Dummy:=LVBits(6,Run); Dummy:=LVBits(11,Level And 2047); Run:=0;
+     End;
+    End;
+   End Else Begin
+    N:=LVBits(8,0); If (N=0) Or (N=128) Then Fail('FLV1: DC invalide.'); If N=255 Then N:=128;
+    Coeff[Block,0]:=N*8; Index:=0;
+    If (CBP And (1 Shl (5-Block)))<>0 Then Repeat
+     Code:=VLC(2);
+     If Code=102 Then Begin
+      N:=8;
+      If LVVersion=1 Then Begin N:=7; If LVBits(1,0)<>0 Then N:=11; End;
+      Last:=LVBits(1,0); Run:=LVBits(6,0); Level:=LVBits(N,0);
+      If Level>=(1 Shl (N-1)) Then Dec(Level,1 Shl N);
+      If (LVVersion=0) And (Level=-128) Then Begin
+       I:=LVBits(5,0); J:=LVBits(6,0); If J>=32 Then Dec(J,64); Level:=I+J*32;
+      End;
+      If Level=0 Then Fail('FLV1: coefficient nul dans escape.');
+     End Else Begin
+      Last:=Ord(Code>=58); Run:=RLRun[Code]; Level:=RLLevel[Code];
+      If LVBits(1,0)<>0 Then Level:=-Level;
+     End;
+     Inc(Index,Run+1); If Index>63 Then Fail('FLV1: depassement bloc DCT.');
+     N:=Abs(Level)*2*LVQP+((LVQP-1) Or 1); If Level<0 Then N:=-N;
+     Coeff[Block,Scan[Index]]:=N;
+    Until Last<>0;
+    Geometry(Block);
+    For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+     Sum:=0; For U:=0 To 7 Do Sum:=Sum+C[U,X]*Coeff[Block,Y*8+U]; Temp[Y,X]:=Sum;
+    End;
+    For Y:=0 To 7 Do If BY+Y<PH Then Begin
+     K:=0;
+     For X:=0 To 7 Do If BX+X<PW Then Begin
+      Sum:=0; For U:=0 To 7 Do Sum:=Sum+C[U,Y]*Temp[U,X];
+      N:=Round(Sum); If N<0 Then N:=0 Else If N>255 Then N:=255; Row[X]:=N; Inc(K);
+     End;
+     If K>0 Then Begin SeekOut(PlaneBase+LongInt(BY+Y)*PW+BX); WriteBytes(Row,K); End;
+    End;
+   End;
+  End;
+ End;
+ If EncodeMode Then Begin If LVCount<>0 Then Dummy:=LVBits(8-LVCount,0); End
+ Else SeekOut(FrameEnd);
+End;
+
+Procedure ReadFLV1;
+Var At,N,TS,Previous,LastTS,Delta: LongInt; T,Kind: Integer; V: PSample;
+Begin
+ If (FileLimit<13) Or (Tag(0)<>'FLV'+#1) Then Fail('FLV: entete invalide.');
+ At:=Number(5,False); If (At<9) Or ((ByteAt(4) And $FA)<>0) Then Fail('FLV: entete invalide.');
+ Bounds(At,4); If Number(At,False)<>0 Then Fail('FLV: premiere taille precedente invalide.'); Inc(At,4);
+ T:=AddTrack; Tracks^[T].Video:=True; Tracks^[T].Codec:='FLV1'; Tracks^[T].Scale:=1000;
+ Tracks^[T].InputScale:=1000; LastTS:=-1; Delta:=0;
+ While At<FileLimit Do Begin
+  Bounds(At,11); If (ByteAt(At+8)<>0) Or (U16(At+9,False)<>0) Then Fail('FLV: identifiant de flux non nul.');
+  Kind:=ByteAt(At); N:=LongInt(ByteAt(At+1))*65536+U16(At+2,False);
+  TS:=LongInt(ByteAt(At+4))*65536+U16(At+5,False);
+  If ByteAt(At+7)>127 Then Fail('FLV: horodatage hors limites.'); Inc(TS,LongInt(ByteAt(At+7))*16777216);
+  Bounds(At+11,N+4); Previous:=Number(At+11+N,False); If Previous<>N+11 Then Fail('FLV: taille precedente incorrecte.');
+  If Kind=9 Then Begin
+   If (N<2) Or (ByteAt(At+11)<>$12) Then Fail('FLV1: images intra Sorenson Spark requises.');
+   If LastTS>=0 Then Begin
+    If Delta=0 Then Delta:=TS-LastTS;
+    If (Delta<=0) Or (TS-LastTS<>Delta) Then Fail('FLV1: cadence constante requise.');
+    Tracks^[T].Last^.Duration:=Delta;
+   End;
+   V:=AddSample(T,At+12,N-1,TS,1,0,True); LVHeader(T,V,False); LastTS:=TS;
+  End Else If (Kind<>8) And (Kind<>18) Then Fail('FLV: tag non pris en charge.');
+  Inc(At,N+15);
+ End;
+ If Delta=0 Then Fail('FLV1: deux images requises pour determiner la cadence.');
+ Tracks^[T].DefaultDuration:=Delta; Tracks^[T].Last^.Duration:=Delta;
+ TS:=Tracks^[T].First^.Time; V:=Tracks^[T].First;
+ While V<>Nil Do Begin Dec(V^.Time,TS); V:=V^.Next; End;
+End;
+
+Procedure WriteFLV1;
+Var V: PSample; At,Finish,N,TS: LongInt; J: Integer;
+Begin
+ If TrackCount<>1 Then Fail('FLV1: une seule piste requise.');
+ LE:=False; WTag('FLV'+#1); W8(1); W32(9); W32(0); V:=Tracks^[1].First;
+ While V<>Nil Do Begin
+  At:=OutPos; W8(9); Zero(3); TS:=Ticks(V^.Time*1000.0/Tracks^[1].Scale);
+  W8((TS Shr 16) And 255); W8((TS Shr 8) And 255); W8(TS And 255); W8((TS Shr 24) And 255); Zero(3);
+  W8($12); LVFrame(1,V,True); Finish:=OutPos; N:=Finish-At-11;
+  If N>$FFFFFF Then Fail('FLV1: image trop volumineuse.');
+  SeekOut(At+1); For J:=2 Downto 0 Do W8((N Shr (J*8)) And 255);
+  SeekOut(Finish); W32(N+11); V:=V^.Next;
+ End;
+End;
+
 Procedure ReadY4M;
 Var At,N,Num,Den: LongInt; Line,Token: String; T,J,K,Code: Integer; V: PSample;
 Begin
  At:=0; Line:=Y4Line(At);
  If Copy(Line,1,9)<>'YUV4MPEG2' Then Fail('Y4M: signature absente.');
- T:=AddTrack; Tracks^[T].Video:=True; Tracks^[T].Codec:='FFV1'; Num:=0; Den:=0;
+ T:=AddTrack; Tracks^[T].Video:=True; Tracks^[T].Codec:='FFV1';
+ If VideoCodec='flv' Then Tracks^[T].Codec:='FLV1'; Num:=0; Den:=0;
  Delete(Line,1,9);
  While Line<>'' Do Begin
   If Line[1]=' ' Then Delete(Line,1,1) Else Begin
@@ -7455,13 +7724,14 @@ Var T: Integer; V: PSample; Line,A,B,C,D: String;
 Begin
  If TrackCount<>1 Then Fail('FFV1: AVI avec une seule piste video requis.'); T:=1;
  With Tracks^[T] Do Begin
-  If (Codec<>'FFV1') Or (ConfigSize<>0) Then Fail('FFV1: AVI version 0/1 requis.');
+  If ((Codec<>'FFV1') And (Codec<>'FLV1')) Or (ConfigSize<>0) Then Fail('Y4M: FFV1 v0/1 ou FLV1 intra requis.');
   If (Width>4096) Or (Height>4096) Then Fail('FFV1: dimensions maximales 4096.');
   Str(Width,A); Str(Height,B); Str(InputScale,C); Str(DefaultDuration,D);
   Line:='YUV4MPEG2 W'+A+' H'+B+' F'+C+':'+D+' Ip A1:1 C420jpeg'+#10;
   WriteBytes(Line[1],Length(Line)); V:=First;
   While V<>Nil Do Begin
-   Line:='FRAME'+#10; WriteBytes(Line[1],Length(Line)); FFFrame(T,V,False); V:=V^.Next;
+   Line:='FRAME'+#10; WriteBytes(Line[1],Length(Line));
+   If Codec='FLV1' Then LVFrame(T,V,False) Else FFFrame(T,V,False); V:=V^.Next;
   End;
  End;
 End;
@@ -8036,11 +8306,13 @@ Begin
   New(FFStates[0]); New(FFStates[1]); New(FFRows);
  End;
  OpenRead(Source); FileLimit:=InputSize;
+ If InKind='flv' Then ReadFLV1 Else
  If InKind='yuv4mpegpipe' Then ReadY4M Else
  If InKind='m4v' Then ReadM4V Else
  If InKind='mp4' Then ReadMP4 Else If InKind='avi' Then ReadAVI Else If InKind=
  'webm' Then ReadWebM Else Fail('Conteneur video inconnu.');
  PrepareTracks; If InKind='mp4' Then ApplyMPEdits; OpenWrite(Target);
+ If OutKind='flv' Then WriteFLV1 Else
  If OutKind='yuv4mpegpipe' Then WriteY4M Else
  If OutKind='m4v' Then WriteM4V Else If OutKind='avi' Then WriteAVI Else WriteMP4;
  CloseRead; CloseWrite;
@@ -8235,7 +8507,7 @@ Begin
  WriteLn(' D  aiff            AIFF/AIFF-C PCM (alias: aif, aifc)');
  WriteLn(' D  asf             ASF, audio WMA2 seulement (alias: wma, wmv)');
  WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3 (copie); FFV1 v0/1 (profil limite)');
- WriteLn(' D  flv             FLV H264 CAVLC; premiere image IDR seulement');
+ WriteLn(' DE flv             FLV1 intra natif; extraction image H264 CAVLC');
  WriteLn('  E gif             GIF, une image, palette 256 couleurs');
  WriteLn(' D  hls             HLS fMP4 VOD (alias: m3u8); copie vers MP4');
  WriteLn('  E image2          Une image PNG/GIF; pas de sequence');
@@ -8256,7 +8528,7 @@ Begin
  WriteLn(' D  webm            WebM VP9/Opus; copie vers MP4');
  WriteLn;
  WriteLn('D/E indique le conteneur; les codecs et conversions restent limites.');
- WriteLn('Voir -codecs et FFMPEG.md. WMV2 et encodage FLV1 non implementes.');
+ WriteLn('Voir -codecs et FFMPEG.md. WMV2 non implemente; FLV1 limite aux images intra.');
 End;
 
 Procedure Help;Begin
@@ -8268,7 +8540,7 @@ Procedure Help;Begin
  WriteLn;
  WriteLn('Entrees: WAV PCM, MP1/MP3, AIFF PCM, VOC PCM, MOD 4 canaux, ASF/WMA2.');
  WriteLn('WMA2: 44100/48000 Hz, mono/stereo, blocs fixes, sans reservoir/bruit.');
- WriteLn('WMV2 video et encodage FLV1 non encore implementes.');
+ WriteLn('WMV2 non implemente. FLV1: profil intra YUV420 seulement.');
  WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 32..320 kbit/s (CBR).');
  WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
  WriteLn('MPEG-1 System: -i entree.mpg -c copy sortie.mpg|video.m1v|video.m2v|audio.mp2|audio.mp3');
@@ -8280,6 +8552,7 @@ Procedure Help;Begin
  WriteLn('Video locale: MP4 vers AVI, AVI vers MP4, WebM VP9/Opus vers MP4.');
  WriteLn('FFV1 v1 YUV420 8 bits: -i entree.y4m -c:v ffv1 sortie.avi');
  WriteLn('Decodage FFV1 v0/1 range defaut: -i entree.avi sortie.y4m');
+ WriteLn('FLV1 intra: -i entree.y4m -c:v flv sortie.flv; -i entree.flv sortie.y4m');
  WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn('-c copy: changement de conteneur, pas de reencodage video.');
  WriteLn('AVI B-frames H264/MPEG4; montages MP4 elst 32/64 bits a vitesse 1.');
@@ -8326,7 +8599,7 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.10; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.11; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
@@ -8335,6 +8608,7 @@ BEGIN
   Else If Argument='-codecs' Then Begin
    WriteLn('Codecs:');
    WriteLn(' D = decodage, E = encodage, A = audio, V = video');
+   WriteLn('DEV    flv             Flash Video (FLV1/Sorenson Spark, images intra)');
    WriteLn('DEV    ffv1            FFmpeg codec #1 (v0/1, range defaut, YUV420 8 bits)');
    WriteLn('D A    mp1             MP1 (MPEG audio layer 1)');
    WriteLn(' EV    png             PNG (RGB24, sans compression)');
@@ -8358,8 +8632,8 @@ BEGIN
    If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
    VideoCodec:=Lower(NextArgument);
    If (VideoCodec<>'png') And (VideoCodec<>'gif') And (VideoCodec<>'copy') And
-    (VideoCodec<>'ffv1') And (VideoCodec<>'rawvideo') Then
-    Fail('Codec video: png/gif, copy, ffv1 (Y4M vers AVI), rawvideo (FFV1 vers Y4M).');
+    (VideoCodec<>'ffv1') And (VideoCodec<>'flv') And (VideoCodec<>'rawvideo') Then
+    Fail('Codec video: png/gif, copy, ffv1 (Y4M/AVI), flv (Y4M/FLV), rawvideo (Y4M).');
   End Else If (Argument='-vframes') Or (Argument='-frames:v') Then Begin
    If InputPath='' Then Fail('Nombre d''images attendu apres -i.');
    Value:=NextArgument; Val(Value,Number,Code);
@@ -8466,16 +8740,17 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
- If (VideoCodec='ffv1') Or (InputFormat='yuv4mpegpipe') Or (OutputFormat='yuv4mpegpipe') Then Begin
+ If (VideoCodec='ffv1') Or (VideoCodec='flv') Or (InputFormat='yuv4mpegpipe') Or (OutputFormat='yuv4mpegpipe') Then Begin
   If IsHTTP(InputPath) Or (HLSBase<>'') Or NoVideo Or (AudioCodec<>'') Or
    (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
    (VideoFrames<>0) Or (ImageWidth<>0) Then Fail('FFV1: video locale sans filtres ni options audio requise.');
   If InputFormat='yuv4mpegpipe' Then Begin
-   If (OutputFormat<>'avi') Or (VideoCodec<>'ffv1') Then Fail('Y4M: -c:v ffv1 et sortie AVI requis.');
-  End Else If (InputFormat<>'avi') Or (OutputFormat<>'yuv4mpegpipe') Or
-   ((VideoCodec<>'') And (VideoCodec<>'rawvideo')) Then Fail('FFV1: AVI vers Y4M requis pour decodage.');
+   If Not (((OutputFormat='avi') And (VideoCodec='ffv1')) Or
+    ((OutputFormat='flv') And (VideoCodec='flv'))) Then Fail('Y4M: ffv1 vers AVI ou flv vers FLV requis.');
+  End Else If ((InputFormat<>'avi') And (InputFormat<>'flv')) Or (OutputFormat<>'yuv4mpegpipe') Or
+   ((VideoCodec<>'') And (VideoCodec<>'rawvideo')) Then Fail('Decodage: AVI FFV1 ou FLV1 intra vers Y4M requis.');
   Temps[2]:=NewTemporary; RemuxVideo(Intermediate,Temps[2],InputFormat,OutputFormat);
-  Commit(Temps[2]); Temps[2]:=''; WriteLn('Video FFV1 creee: ',OutputPath); Halt(0);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('Video creee: ',OutputPath); Halt(0);
  End;
  If (InputFormat='m4v') Or (OutputFormat='m4v') Then Begin
   If IsHTTP(InputPath) Or (HLSBase<>'') Then Fail('M4V: entree locale requise.');
@@ -8565,7 +8840,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.10 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.11 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
