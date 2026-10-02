@@ -3438,6 +3438,10 @@ Begin
  OpenRead(Name); Size:=InputSize; N:=1084; If Size<N Then N:=Size;
  FillChar(B,SizeOf(B),0); ReadAt(0,B,N); CloseRead;
  Probe:='';
+ If N>=5 Then If (B[0]=0) And (B[1]=0) And (B[2]=1) And
+  ((B[3]=$B0) Or (B[3]=$B5) Or (B[3]<=$2F)) Then Begin
+  Probe:='m4v'; Exit;
+ End;
  If N>=4 Then If (B[0]=0) And (B[1]=0) And (B[2]=1) And (B[3]=$BA) Then Begin
   Probe:='mpeg'; Exit;
  End;
@@ -6658,7 +6662,7 @@ Var
  SPSAt,SPSSize,PPSAt,PPSSize: Integer;
  GroupTime: LongInt;
  Resolution,TimeBits: Integer;
- TimeBase,LastTimeBase: LongInt;
+ TimeBase,LastTimeBase,RawStep,RawFixed,RawLast,RawIndex: LongInt;
 
 Procedure BitsAt(At,Limit: LongInt; InMemory,Escaped: Boolean);Begin
  ReadPosition:=At; ReadLimit:=Limit; MemoryBits:=InMemory; EscapeBits:=Escaped;
@@ -6980,6 +6984,11 @@ Begin
   Inc(TimeBits); Value:=Value Shr 1;
  End;
  Marker; TimeBase:=0; LastTimeBase:=0;
+ If InKind='m4v' Then Begin
+  RawFixed:=0; If Bit<>0 Then RawFixed:=GetBits(TimeBits);
+  Marker; Tracks^[T].Width:=GetBits(13); Marker;
+  Tracks^[T].Height:=GetBits(13); Marker;
+ End;
 End;
 
 Procedure MPEGPicture;
@@ -7087,6 +7096,25 @@ Begin
   If ResetOrder And (G<>Nil) Then FinishGroup;
   If LastG=Nil Then G:=V Else LastG^.DisplayNext:=V;
   LastG:=V; V^.DisplayNext:=Nil; V:=V^.Next;
+ End;
+ If InKind='m4v' Then Begin
+  G:=Sort(G); RawStep:=RawFixed; V:=G;
+  If V<>Nil Then Begin
+   RawLast:=V^.Order; V:=V^.DisplayNext;
+   While V<>Nil Do Begin
+    If RawStep=0 Then RawStep:=V^.Order-RawLast;
+    If (RawStep<=0) Or (V^.Order-RawLast<>RawStep) Then
+     Fail('M4V: cadence variable ou chronologie ambigue non prise en charge.');
+    RawLast:=V^.Order; V:=V^.DisplayNext;
+   End;
+  End;
+  If RawStep<=0 Then Fail('M4V: cadence indeterminable (une seule image sans cadence fixe).');
+  Tracks^[T].Scale:=Resolution; Tracks^[T].InputScale:=Resolution;
+  RawIndex:=0; V:=Tracks^[T].First;
+  While V<>Nil Do Begin
+   V^.Time:=Ticks(RawIndex*1.0*RawStep); V^.Duration:=RawStep;
+   Inc(RawIndex); V:=V^.Next;
+  End;
  End;
  FinishGroup;
 End;
@@ -7529,6 +7557,54 @@ Begin
  EndBox; EndBox;
 End;
 
+Procedure ReadM4V;
+Var A,LastVOP,FrameStart,VOLAt,VOLEnd,VOLSize,J: LongInt; T: Integer; V: PSample;
+Begin
+ T:=AddTrack; Tracks^[T].Video:=True; Tracks^[T].Codec:='mp4v';
+ A:=0; LastVOP:=-1; FrameStart:=0; VOLAt:=-1; VOLSize:=0;
+ While A+4<FileLimit Do Begin
+  If (ByteAt(A)=0) And (ByteAt(A+1)=0) And (ByteAt(A+2)=1) And
+   (ByteAt(A+3)>=$20) And (ByteAt(A+3)<=$2F) Then Begin
+   VOLEnd:=A+4;
+   While VOLEnd+3<FileLimit Do Begin
+    If (ByteAt(VOLEnd)=0) And (ByteAt(VOLEnd+1)=0) And (ByteAt(VOLEnd+2)=1) Then Break;
+    Inc(VOLEnd);
+   End;
+   If VOLAt<0 Then Begin VOLAt:=A; VOLSize:=VOLEnd-A; End Else Begin
+    If VOLEnd-A<>VOLSize Then Fail('M4V: changement de configuration VOL non pris en charge.');
+    For J:=0 To VOLSize-1 Do If ByteAt(A+J)<>ByteAt(VOLAt+J) Then
+     Fail('M4V: changement de configuration VOL non pris en charge.');
+   End;
+  End;
+  If (ByteAt(A)=0) And (ByteAt(A+1)=0) And (ByteAt(A+2)=1) And (ByteAt(A+3)=$B6) Then Begin
+   If LastVOP<0 Then ConfigFrom(T,0,A)
+   Else V:=AddSample(T,FrameStart,A-FrameStart,Tracks^[T].Count,1,0,False);
+   LastVOP:=A; FrameStart:=A;
+  End;
+  Inc(A);
+ End;
+ If LastVOP<0 Then Fail('M4V: aucune image VOP.');
+ V:=AddSample(T,FrameStart,FileLimit-FrameStart,Tracks^[T].Count,1,0,False);
+ ReconstructAVI(T);
+End;
+
+Procedure WriteM4V;
+Var T,Selected: Integer; V: PSample;
+Begin
+ Selected:=0;
+ For T:=1 To TrackCount Do If Tracks^[T].Video Then Begin
+  If Selected<>0 Then Fail('M4V: plusieurs pistes video non prises en charge.');
+  Selected:=T;
+ End;
+ If Selected=0 Then Fail('M4V: piste video absente.');
+ With Tracks^[Selected] Do Begin
+  If Codec<>'mp4v' Then Fail('M4V exige une piste MPEG-4 Part 2, sans reencodage.');
+  If ConfigSize=0 Then Fail('M4V: configuration VOL absente.');
+  WriteBytes(Config,ConfigSize); V:=First;
+  While V<>Nil Do Begin CopyBytes(V^.Pos,V^.Size); V:=V^.Next; End;
+ End;
+End;
+
 Procedure PrepareTracks;
 Var
  T,A,ConfigCode,Frames,N: Integer;
@@ -7629,10 +7705,11 @@ Begin
  {$ENDIF}
  New(Tracks); FillChar(Tracks^,SizeOf(Tracks^),0); TrackCount:=0; CacheAt:=-1; Level:=0;
  OpenRead(Source); FileLimit:=InputSize;
+ If InKind='m4v' Then ReadM4V Else
  If InKind='mp4' Then ReadMP4 Else If InKind='avi' Then ReadAVI Else If InKind=
  'webm' Then ReadWebM Else Fail('Conteneur video inconnu.');
  PrepareTracks; If InKind='mp4' Then ApplyMPEdits; OpenWrite(Target);
- If OutKind='avi' Then WriteAVI Else WriteMP4;
+ If OutKind='m4v' Then WriteM4V Else If OutKind='avi' Then WriteAVI Else WriteMP4;
  CloseRead; CloseWrite;
  For I:=1 To TrackCount Do Begin
   S:=Tracks^[I].First;
@@ -7827,6 +7904,7 @@ Begin
  WriteLn(' D  hls             HLS fMP4 VOD (alias: m3u8); copie vers MP4');
  WriteLn('  E image2          Une image PNG/GIF; pas de sequence');
  WriteLn(' D  libopenmpt      MOD 4 canaux, moteur Pascal interne (alias: mod)');
+ WriteLn(' DE m4v             raw MPEG-4 video format (MPEG-4 Part 2)');
  WriteLn(' DE mp3             MPEG Layer III; encodage MPEG-1 CBR 32..320 kbit/s');
  WriteLn(' DE mp4             MP4 H264/MPEG4, AAC/MP3, VP9/Opus; copie de flux');
  WriteLn(' DE mpeg            MPEG-1 System format (copie PES / muxage MP3)');
@@ -7862,6 +7940,7 @@ Procedure Help;Begin
  WriteLn('-vcodec png|gif (-c:v/-codec:v); -frames:v 1; -s optionnel; -f image2 accepte.');
  WriteLn('GIF: image unique, palette 256 couleurs RGB 3/3/2, LZW Pascal.');
  WriteLn('Video locale: MP4 vers AVI, AVI vers MP4, WebM VP9/Opus vers MP4.');
+ WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn('-c copy: changement de conteneur, pas de reencodage video.');
  WriteLn('AVI B-frames H264/MPEG4; montages MP4 elst 32/64 bits a vitesse 1.');
  WriteLn('AVI: retards arrondis au paquet; preroll audio conserve si necessaire.');
@@ -7907,7 +7986,7 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.7; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.8; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
@@ -8042,6 +8121,19 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If (InputFormat='m4v') Or (OutputFormat='m4v') Then Begin
+  If IsHTTP(InputPath) Or (HLSBase<>'') Then Fail('M4V: entree locale requise.');
+  If Not (((AudioCodec='copy') And AllStreams) Or ((VideoCodec='copy') And (AudioCodec=''))) Then
+   Fail('M4V exige -c copy ou -c:v copy.');
+  If NoVideo Or (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
+   (VideoFrames<>0) Or (ImageWidth<>0) Or ((VideoCodec<>'') And (VideoCodec<>'copy')) Then
+   Fail('M4V: copie video sans filtre ni reencodage.');
+  If Not (((InputFormat='m4v') And ((OutputFormat='mp4') Or (OutputFormat='avi') Or (OutputFormat='m4v'))) Or
+   ((OutputFormat='m4v') And ((InputFormat='mp4') Or (InputFormat='avi')))) Then
+   Fail('M4V: conversions MP4/AVI vers M4V et M4V vers MP4/AVI.');
+  Temps[2]:=NewTemporary; RemuxVideo(Intermediate,Temps[2],InputFormat,OutputFormat);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('Video creee: ',OutputPath); Halt(0);
+ End;
  If (InputFormat='mpeg') Or (OutputFormat='mpeg') Then Begin
   If IsHTTP(InputPath) Or (HLSBase<>'') Then Fail('MPEG System: entree locale requise.');
   If Not (((AudioCodec='copy') And AllStreams) Or
@@ -8117,7 +8209,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.7 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.8 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
