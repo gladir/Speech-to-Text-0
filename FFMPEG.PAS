@@ -3399,6 +3399,7 @@ Function FormatName(S: String): String;Begin
  If S='mod' Then S:='libopenmpt';
  If S='m3u8' Then S:='hls';
  If (S='mpg') Or (S='mpe') Then S:='mpeg';
+ If S='y4m' Then S:='yuv4mpegpipe';
  If S='m1v' Then S:='mpeg1video';
  If S='m2v' Then S:='mpeg2video';
  If (S='wmv') Or (S='wma') Then S:='asf';
@@ -3515,6 +3516,10 @@ Begin
  Until False;
  CloseRead;
  Probe:='';
+ If N>=9 Then If (B[0]=89) And (B[1]=85) And (B[2]=86) And (B[3]=52) And
+  (B[4]=77) And (B[5]=80) And (B[6]=69) And (B[7]=71) And (B[8]=50) Then Begin
+  Probe:='yuv4mpegpipe'; Exit;
+ End;
  If N>=5 Then If (B[0]=0) And (B[1]=0) And (B[2]=1) And
   ((B[3]=$B0) Or (B[3]=$B5) Or (B[3]<=$2F)) Then Begin
   Probe:='m4v'; Exit;
@@ -5857,7 +5862,29 @@ Procedure RemuxVideo(Const Source,Target,InKind,OutKind: String);
 Const
  MaxTracks=4;
  MaxConfig=4096;
+ FFDefault: Array[0..255] Of Byte = (
+  0,0,0,0,0,0,0,0,20,21,22,23,24,25,26,27,
+  28,29,30,31,32,33,34,35,36,37,37,38,39,40,41,42,
+  43,44,45,46,47,48,49,50,51,52,53,54,55,56,56,57,
+  58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,
+  74,75,75,76,77,78,79,80,81,82,83,84,85,86,87,88,
+  89,90,91,92,93,94,94,95,96,97,98,99,100,101,102,103,
+  104,105,106,107,108,109,110,111,112,113,114,114,115,116,117,118,
+  119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,133,
+  134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,
+  150,151,152,152,153,154,155,156,157,158,159,160,161,162,163,164,
+  165,166,167,168,169,170,171,171,172,173,174,175,176,177,178,179,
+  180,181,182,183,184,185,186,187,188,189,190,190,191,192,194,194,
+  195,196,197,198,199,200,201,202,202,204,205,206,207,208,209,209,
+  210,211,212,213,215,215,216,217,218,219,220,220,222,223,224,225,
+  226,227,227,229,229,230,231,232,234,234,235,236,237,238,239,240,
+  241,242,243,244,245,246,247,248,248,0,0,0,0,0,0,0);
 Type
+ TFFState=Array[0..31] Of Byte;
+ TFFStates=Array[0..1023] Of TFFState;
+ PFFStates=^TFFStates;
+ TFFRows=Array[0..1,0..4097] Of Integer;
+ PFFRows=^TFFRows;
  PSample=^TSample;
  TSample=Record
   Next,DisplayNext: PSample;
@@ -5878,6 +5905,13 @@ Type
  TTracks=Array[1..MaxTracks] Of TTrack;
  PTracks=^TTracks;
 Var
+ FFStates: Array[0..1] Of PFFStates;
+ FFRows: PFFRows;
+ FFQuant: Array[0..4,0..255] Of Integer;
+ FFOne,FFZero: Array[0..255] Of Byte;
+ FFContexts,FFOutstanding,FFOverread: Integer;
+ FFRange,FFLow,FFCount,FFPos,FFEnd: LongInt;
+ FFEncoding,FFConfigured: Boolean;
  Tracks: PTracks;
  TrackCount: Integer;
  FileLimit: LongInt;
@@ -6359,6 +6393,7 @@ Begin
      End
      Else If (Kind='XVID') Or (Kind='FMP4') Or (Kind='DIVX') Or (Kind='DX50') Then Codec:=
      'mp4v'
+     Else If Kind='FFV1' Then Codec:='FFV1'
      Else Fail('Codec AVI video non pris en charge: '+Kind);
      ConfigFrom(T,B+40,N-40);
     End Else
@@ -7222,12 +7257,222 @@ Begin
  LE:=OldLE;
 End;
 
+{ FFV1 v0/v1, range coder, 8-bit YUV420. FFmpeg-derived range/symbol
+  algorithms: LGPL-2.1-or-later; see THIRD_PARTY_NOTICES.md. }
+Procedure FFRenorm;
+Var Carry: Integer;
+Begin
+ If (FFLow<$FF01) Or (FFLow>=$10000) Then Begin
+  Carry:=0; If FFLow>=$10000 Then Carry:=1;
+  If FFOutstanding>=0 Then W8((FFOutstanding+Carry) And 255);
+  While FFCount>0 Do Begin W8((255+Carry) And 255); Dec(FFCount); End;
+  FFOutstanding:=FFLow Shr 8;
+ End Else Inc(FFCount);
+ FFLow:=(FFLow And 255)*256; FFRange:=FFRange*256;
+End;
+
+Function FFRac(Var State: Byte; Value: Integer): Integer;
+Var R: LongInt;
+Begin
+ If (State=0) Or (State=255) Then Fail('FFV1: etat probabiliste invalide.');
+ R:=(FFRange*State) Div 256;
+ If FFEncoding Then Begin
+  If Value=0 Then Begin FFRange:=FFRange-R; State:=FFZero[State]; End
+  Else Begin FFLow:=FFLow+FFRange-R; FFRange:=R; State:=FFOne[State]; End;
+  If FFRange<256 Then FFRenorm;
+ End Else Begin
+  FFRange:=FFRange-R; Value:=0;
+  If FFLow<FFRange Then State:=FFZero[State] Else Begin
+   Value:=1; FFLow:=FFLow-FFRange; FFRange:=R; State:=FFOne[State];
+  End;
+  If FFRange<256 Then Begin
+   FFRange:=FFRange*256; FFLow:=FFLow*256;
+   If FFPos<FFEnd Then Begin Inc(FFLow,ByteAt(FFPos)); Inc(FFPos); End
+   Else Begin Inc(FFOverread); If FFOverread>2 Then Fail('FFV1: trame tronquee.'); End;
+  End;
+ End;
+ FFRac:=Value;
+End;
+
+Function FFSymbol(Var State: TFFState; Value: Integer; SignedValue: Boolean): Integer;
+Var A,E,J,Dummy: Integer;
+Begin
+ If FFEncoding Then Begin
+  If Value=0 Then Dummy:=FFRac(State[0],1) Else Begin
+   Dummy:=FFRac(State[0],0); A:=Abs(Value); E:=0; J:=A;
+   While J>1 Do Begin Inc(E); J:=J Div 2; End;
+   If E>9 Then Fail('FFV1: symbole encode hors limites.');
+   For J:=0 To E-1 Do Dummy:=FFRac(State[1+J],1);
+   Dummy:=FFRac(State[1+E],0);
+   For J:=E-1 Downto 0 Do Dummy:=FFRac(State[22+J],(A Shr J) And 1);
+   If SignedValue Then Dummy:=FFRac(State[11+E],Ord(Value<0));
+  End;
+ End Else Begin
+  Value:=0;
+  If FFRac(State[0],0)=0 Then Begin
+   E:=0; While FFRac(State[1+E],0)<>0 Do Begin
+    Inc(E); If E>9 Then Fail('FFV1: symbole hors limites.');
+   End;
+   A:=1;
+   For J:=E-1 Downto 0 Do A:=A*2+FFRac(State[22+J],0);
+   Value:=A; If SignedValue Then If FFRac(State[11+E],0)<>0 Then Value:=-Value;
+  End;
+ End;
+ FFSymbol:=Value;
+End;
+
+Procedure FFFrame(T: Integer; V: PSample; EncodeMode: Boolean);
+Var
+ HS,QS: TFFState; Key: Byte;
+ I,J,K,N,Q,Scale,Version,Coder,Dummy,Plane,PW,PH,X,Y,Cur,Prev,PC,Context,Diff,Pred,L,Top,LT,Pixel: Integer;
+ RawPos: LongInt; Negative: Boolean;
+ Row: Array[0..4095] Of Byte;
+Begin
+ FFEncoding:=EncodeMode; FFRange:=$FF00; FFLow:=0; FFOutstanding:=-1; FFCount:=0; FFOverread:=0;
+ Move(FFDefault,FFOne,SizeOf(FFOne)); FillChar(FFZero,SizeOf(FFZero),0);
+ For I:=1 To 255 Do FFZero[I]:=(256-FFOne[256-I]) And 255;
+ FFPos:=V^.Pos; FFEnd:=V^.Pos+V^.Size; RawPos:=FFPos;
+ If Not EncodeMode Then Begin
+  If Tracks^[T].ConfigSize<>0 Then Fail('FFV1: versions avec configuration globale non implementees.');
+  If FFEnd-FFPos<2 Then Fail('FFV1: trame vide.');
+  FFLow:=ByteAt(FFPos)*256+ByteAt(FFPos+1); Inc(FFPos,2);
+  If FFLow>=$FF00 Then Fail('FFV1: code initial invalide.');
+ End;
+ Key:=128; N:=FFRac(Key,1);
+ If N<>0 Then Begin
+  FillChar(HS,SizeOf(HS),128); Version:=FFSymbol(HS,1,False);
+  If (Version<0) Or (Version>1) Then Fail('FFV1: seules versions 0/1 implementees.');
+  Coder:=FFSymbol(HS,1,False);
+  If Coder<>1 Then Fail('FFV1: range coder avec table par defaut requis.');
+  If FFSymbol(HS,0,False)<>0 Then Fail('FFV1: espace YUV requis.');
+  If Version=1 Then If FFSymbol(HS,8,False)<>8 Then Fail('FFV1: 8 bits requis.');
+  If FFRac(HS[0],1)<>1 Then Fail('FFV1: plans chroma requis.');
+  If FFSymbol(HS,1,False)<>1 Then Fail('FFV1: YUV420 requis.');
+  If FFSymbol(HS,1,False)<>1 Then Fail('FFV1: YUV420 requis.');
+  If FFRac(HS[0],0)<>0 Then Fail('FFV1: transparence non implementee.');
+  Scale:=1;
+  For I:=0 To 4 Do Begin
+   FillChar(QS,SizeOf(QS),128); J:=0; Q:=0;
+   While J<128 Do Begin
+    N:=FFSymbol(QS,127,False)+1;
+    If (N<1) Or (N>128-J) Then Fail('FFV1: table de quantification invalide.');
+    For K:=1 To N Do Begin FFQuant[I,J]:=Scale*Q; Inc(J); End;
+    Inc(Q);
+   End;
+   For J:=1 To 127 Do FFQuant[I,256-J]:=-FFQuant[I,J];
+   FFQuant[I,128]:=-FFQuant[I,127];
+   If Scale>2047 Div (2*Q-1) Then Fail('FFV1: trop de contextes.');
+   Scale:=Scale*(2*Q-1);
+  End;
+  If (FFQuant[3,127]<>0) Or (FFQuant[4,127]<>0) Then Fail('FFV1: contexte a cinq differences non implemente.');
+  FFContexts:=(Scale+1) Div 2;
+  For I:=0 To 1 Do FillChar(FFStates[I]^,SizeOf(TFFStates),128);
+  FFConfigured:=True;
+ End Else If Not FFConfigured Then Fail('FFV1: premiere image cle requise.');
+ For Plane:=0 To 2 Do Begin
+  PW:=Tracks^[T].Width; PH:=Tracks^[T].Height; PC:=0;
+  If Plane<>0 Then Begin PW:=(PW+1) Div 2; PH:=(PH+1) Div 2; PC:=1; End;
+  FillChar(FFRows^,SizeOf(TFFRows),0);
+  For Y:=0 To PH-1 Do Begin
+   Cur:=Y And 1; Prev:=1-Cur;
+   FFRows^[Cur,0]:=FFRows^[Prev,1]; FFRows^[Prev,PW+1]:=FFRows^[Prev,PW];
+   If EncodeMode Then Begin ReadAt(RawPos,Row,PW); Inc(RawPos,PW); End;
+   For X:=1 To PW Do Begin
+    L:=FFRows^[Cur,X-1]; Top:=FFRows^[Prev,X]; LT:=FFRows^[Prev,X-1];
+    Context:=FFQuant[0,(L-LT) And 255]+FFQuant[1,(LT-Top) And 255]+
+     FFQuant[2,(Top-FFRows^[Prev,X+1]) And 255];
+    Negative:=Context<0; Context:=Abs(Context);
+    If Context>=FFContexts Then Fail('FFV1: contexte invalide.');
+    Pred:=L+Top-LT;
+    If L<Top Then Begin If Pred<L Then Pred:=L Else If Pred>Top Then Pred:=Top; End
+    Else Begin If Pred<Top Then Pred:=Top Else If Pred>L Then Pred:=L; End;
+    Diff:=0;
+    If EncodeMode Then Begin
+     Diff:=Row[X-1]-Pred; If Negative Then Diff:=-Diff;
+     Diff:=((Diff+128) And 255)-128;
+    End;
+    Diff:=FFSymbol(FFStates[PC]^[Context],Diff,True);
+    If Negative Then Diff:=-Diff;
+    Pixel:=(Pred+Diff) And 255; FFRows^[Cur,X]:=Pixel; Row[X-1]:=Pixel;
+   End;
+   If Not EncodeMode Then WriteBytes(Row,PW);
+  End;
+ End;
+ If EncodeMode Then Begin FFRange:=255; Inc(FFLow,255); FFRenorm; FFRange:=255; FFRenorm; End;
+End;
+
+Function Y4Line(Var At: LongInt): String;
+Var S: String; B: Byte;
+Begin
+ S:='';
+ Repeat
+  If At>=FileLimit Then Fail('Y4M: ligne tronquee.'); B:=ByteAt(At); Inc(At);
+  If B=10 Then Break;
+  If Length(S)=250 Then Fail('Y4M: ligne trop longue.'); S:=S+Chr(B);
+ Until False;
+ Y4Line:=S;
+End;
+
+Procedure ReadY4M;
+Var At,N,Num,Den: LongInt; Line,Token: String; T,J,K,Code: Integer; V: PSample;
+Begin
+ At:=0; Line:=Y4Line(At);
+ If Copy(Line,1,9)<>'YUV4MPEG2' Then Fail('Y4M: signature absente.');
+ T:=AddTrack; Tracks^[T].Video:=True; Tracks^[T].Codec:='FFV1'; Num:=0; Den:=0;
+ Delete(Line,1,9);
+ While Line<>'' Do Begin
+  If Line[1]=' ' Then Delete(Line,1,1) Else Begin
+   J:=Pos(' ',Line); If J=0 Then J:=Length(Line)+1;
+   Token:=Copy(Line,1,J-1); Delete(Line,1,J);
+   Case Token[1] Of
+    'W','H': Begin
+     Val(Copy(Token,2,255),N,Code); If (Code<>0) Or (N<1) Or (N>4096) Then Fail('Y4M: dimensions 1..4096 requises.');
+     If Token[1]='W' Then Tracks^[T].Width:=N Else Tracks^[T].Height:=N;
+    End;
+    'F': Begin
+     K:=Pos(':',Token); If K<3 Then Fail('Y4M: cadence invalide.');
+     Val(Copy(Token,2,K-2),Num,Code); If (Code<>0) Or (Num<=0) Or (Num>1000000) Then Fail('Y4M: cadence invalide.');
+     Val(Copy(Token,K+1,255),Den,Code); If (Code<>0) Or (Den<=0) Or (Den>1000000) Then Fail('Y4M: cadence invalide.');
+    End;
+    'C': If (Token<>'C420') And (Token<>'C420jpeg') Then Fail('Y4M: C420jpeg 8 bits requis.');
+    'I': If Token<>'Ip' Then Fail('Y4M: video progressive requise.');
+    'A': If (Token<>'A1:1') And (Token<>'A0:0') Then Fail('Y4M: pixels carres requis.');
+    Else Fail('Y4M: parametre non pris en charge: '+Token);
+   End;
+  End;
+ End;
+ If (Num=0) Or (Den=0) Or (Tracks^[T].Width=0) Or (Tracks^[T].Height=0) Then Fail('Y4M: dimensions et cadence requises.');
+ Tracks^[T].Scale:=Num; Tracks^[T].InputScale:=Num;
+ N:=Tracks^[T].Width*Tracks^[T].Height+2*((Tracks^[T].Width+1) Div 2)*((Tracks^[T].Height+1) Div 2);
+ While At<FileLimit Do Begin
+  Line:=Y4Line(At); If Line<>'FRAME' Then Fail('Y4M: marqueur FRAME simple requis.');
+  V:=AddSample(T,At,N,Ticks(Tracks^[T].Count*1.0*Den),Den,0,True); Inc(At,N);
+ End;
+End;
+
+Procedure WriteY4M;
+Var T: Integer; V: PSample; Line,A,B,C,D: String;
+Begin
+ If TrackCount<>1 Then Fail('FFV1: AVI avec une seule piste video requis.'); T:=1;
+ With Tracks^[T] Do Begin
+  If (Codec<>'FFV1') Or (ConfigSize<>0) Then Fail('FFV1: AVI version 0/1 requis.');
+  If (Width>4096) Or (Height>4096) Then Fail('FFV1: dimensions maximales 4096.');
+  Str(Width,A); Str(Height,B); Str(InputScale,C); Str(DefaultDuration,D);
+  Line:='YUV4MPEG2 W'+A+' H'+B+' F'+C+':'+D+' Ip A1:1 C420jpeg'+#10;
+  WriteBytes(Line[1],Length(Line)); V:=First;
+  While V<>Nil Do Begin
+   Line:='FRAME'+#10; WriteBytes(Line[1],Length(Line)); FFFrame(T,V,False); V:=V^.Next;
+  End;
+ End;
+End;
+
 Procedure Packet(T: Integer; V: PSample);
 Var
  At,B,E,D,A: LongInt;
  OldLE: Boolean;
 Begin
  OldLE:=LE;
+ If InKind='yuv4mpegpipe' Then Begin FFFrame(T,V,True); Exit; End;
  If (Tracks^[T].Codec='avc1') And (Tracks^[T].AnnexB<>(OutKind='avi')) Then Begin
   If Tracks^[T].AnnexB Then Begin
    At:=StartCode(V^.Pos,V^.Pos+V^.Size,B);
@@ -7560,7 +7805,7 @@ Begin
   If Video Then Begin
    If VideoTrack<>0 Then Fail('AVI: une seule piste video prise en charge.');
    VideoTrack:=T;
-   If (Codec<>'avc1') And (Codec<>'mp4v') Then Fail('AVI: H264 ou MPEG-4 Part 2 requis.');
+   If (Codec<>'avc1') And (Codec<>'mp4v') And (Codec<>'FFV1') Then Fail('AVI: codec video non pris en charge.');
   End Else If (Codec<>'mp4a') And (Codec<>'.mp3') Then Fail('AVI: AAC ou MP3 requis.');
   V:=First; Delta:=Ticks(Duration*1.0/Count);
   While V<>Nil Do Begin
@@ -7579,7 +7824,7 @@ Begin
  For T:=1 To TrackCount Do With Tracks^[T] Do Begin
   StartBox('LIST'); WTag('strl'); StartBox('strh');
   If Video Then Begin
-   WTag('vids'); If Codec='avc1' Then WTag('H264') Else WTag('XVID');
+   WTag('vids'); If Codec='FFV1' Then WTag('FFV1') Else If Codec='avc1' Then WTag('H264') Else WTag('XVID');
   End Else
   Begin
    WTag('auds'); W32(0);
@@ -7593,8 +7838,8 @@ Begin
   StartBox('strf');
   If Video Then Begin
    W32(40); W32(Width); W32(Height); W16(1); W16(24);
-   If Codec='avc1' Then WTag('H264') Else WTag('XVID'); W32(0); Zero(16);
-   If Codec='mp4v' Then WriteBytes(Config,ConfigSize) Else WriteAVCInitialization(T);
+   If Codec='FFV1' Then WTag('FFV1') Else If Codec='avc1' Then WTag('H264') Else WTag('XVID'); W32(0); Zero(16);
+   If Codec='mp4v' Then WriteBytes(Config,ConfigSize) Else If Codec='avc1' Then WriteAVCInitialization(T);
   End Else
   Begin
    If Codec='mp4a' Then W16($FF) Else W16($55);
@@ -7775,7 +8020,9 @@ Begin
   Time:=V^.Time*1.0+V^.Duration; V:=V^.Next;
  End;
  Duration:=Ticks(Time);
- If (InKind='avi') And Video Then ReconstructAVI(T);
+ If (InKind='avi') And Video And (Codec<>'FFV1') Then ReconstructAVI(T);
+ If (Codec='FFV1') And (InKind<>'yuv4mpegpipe') And (OutKind<>'yuv4mpegpipe') Then
+  Fail('FFV1: sortie Y4M requise pour le decodage.');
 End;
 End;
 Begin
@@ -7784,11 +8031,17 @@ Begin
   ;
  {$ENDIF}
  New(Tracks); FillChar(Tracks^,SizeOf(Tracks^),0); TrackCount:=0; CacheAt:=-1; Level:=0;
+ FFConfigured:=False; FFStates[0]:=Nil; FFStates[1]:=Nil; FFRows:=Nil;
+ If (InKind='yuv4mpegpipe') Or (OutKind='yuv4mpegpipe') Then Begin
+  New(FFStates[0]); New(FFStates[1]); New(FFRows);
+ End;
  OpenRead(Source); FileLimit:=InputSize;
+ If InKind='yuv4mpegpipe' Then ReadY4M Else
  If InKind='m4v' Then ReadM4V Else
  If InKind='mp4' Then ReadMP4 Else If InKind='avi' Then ReadAVI Else If InKind=
  'webm' Then ReadWebM Else Fail('Conteneur video inconnu.');
  PrepareTracks; If InKind='mp4' Then ApplyMPEdits; OpenWrite(Target);
+ If OutKind='yuv4mpegpipe' Then WriteY4M Else
  If OutKind='m4v' Then WriteM4V Else If OutKind='avi' Then WriteAVI Else WriteMP4;
  CloseRead; CloseWrite;
  For I:=1 To TrackCount Do Begin
@@ -7798,6 +8051,9 @@ Begin
   End;
  End;
  Dispose(Tracks);
+ If FFStates[0]<>Nil Then Dispose(FFStates[0]);
+ If FFStates[1]<>Nil Then Dispose(FFStates[1]);
+ If FFRows<>Nil Then Dispose(FFRows);
 End;
 { END NATIVE VIDEO CONTAINERS }
 
@@ -7978,12 +8234,13 @@ Begin
  WriteLn(' --');
  WriteLn(' D  aiff            AIFF/AIFF-C PCM (alias: aif, aifc)');
  WriteLn(' D  asf             ASF, audio WMA2 seulement (alias: wma, wmv)');
- WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3; copie de flux');
+ WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3 (copie); FFV1 v0/1 (profil limite)');
  WriteLn(' D  flv             FLV H264 CAVLC; premiere image IDR seulement');
  WriteLn('  E gif             GIF, une image, palette 256 couleurs');
  WriteLn(' D  hls             HLS fMP4 VOD (alias: m3u8); copie vers MP4');
  WriteLn('  E image2          Une image PNG/GIF; pas de sequence');
  WriteLn(' D  libopenmpt      MOD 4 canaux, moteur Pascal interne (alias: mod)');
+ WriteLn(' DE yuv4mpegpipe    Y4M YUV420 8 bits (FFV1 AVI, alias: y4m)');
  WriteLn(' DE m4v             raw MPEG-4 video format (MPEG-4 Part 2)');
  WriteLn(' D  mp1             MPEG audio Layer I');
  WriteLn(' DE mp3             MPEG Layer III; encodage MPEG-1 CBR 32..320 kbit/s');
@@ -8021,6 +8278,8 @@ Procedure Help;Begin
  WriteLn('-vcodec png|gif (-c:v/-codec:v); -frames:v 1; -s optionnel; -f image2 accepte.');
  WriteLn('GIF: image unique, palette 256 couleurs RGB 3/3/2, LZW Pascal.');
  WriteLn('Video locale: MP4 vers AVI, AVI vers MP4, WebM VP9/Opus vers MP4.');
+ WriteLn('FFV1 v1 YUV420 8 bits: -i entree.y4m -c:v ffv1 sortie.avi');
+ WriteLn('Decodage FFV1 v0/1 range defaut: -i entree.avi sortie.y4m');
  WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn('-c copy: changement de conteneur, pas de reencodage video.');
  WriteLn('AVI B-frames H264/MPEG4; montages MP4 elst 32/64 bits a vitesse 1.');
@@ -8067,7 +8326,7 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.9; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.10; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
@@ -8076,6 +8335,7 @@ BEGIN
   Else If Argument='-codecs' Then Begin
    WriteLn('Codecs:');
    WriteLn(' D = decodage, E = encodage, A = audio, V = video');
+   WriteLn('DEV    ffv1            FFmpeg codec #1 (v0/1, range defaut, YUV420 8 bits)');
    WriteLn('D A    mp1             MP1 (MPEG audio layer 1)');
    WriteLn(' EV    png             PNG (RGB24, sans compression)');
    WriteLn(' EV    gif             GIF (palette RGB 3/3/2, LZW, une image)');
@@ -8097,8 +8357,9 @@ BEGIN
   If (Argument='-vcodec') Or (Argument='-c:v') Or (Argument='-codec:v') Then Begin
    If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
    VideoCodec:=Lower(NextArgument);
-   If (VideoCodec<>'png') And (VideoCodec<>'gif') And (VideoCodec<>'copy') Then
-    Fail('Codec video: png/gif (image) ou copy (extraction video MPEG).');
+   If (VideoCodec<>'png') And (VideoCodec<>'gif') And (VideoCodec<>'copy') And
+    (VideoCodec<>'ffv1') And (VideoCodec<>'rawvideo') Then
+    Fail('Codec video: png/gif, copy, ffv1 (Y4M vers AVI), rawvideo (FFV1 vers Y4M).');
   End Else If (Argument='-vframes') Or (Argument='-frames:v') Then Begin
    If InputPath='' Then Fail('Nombre d''images attendu apres -i.');
    Value:=NextArgument; Val(Value,Number,Code);
@@ -8205,6 +8466,17 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If (VideoCodec='ffv1') Or (InputFormat='yuv4mpegpipe') Or (OutputFormat='yuv4mpegpipe') Then Begin
+  If IsHTTP(InputPath) Or (HLSBase<>'') Or NoVideo Or (AudioCodec<>'') Or
+   (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
+   (VideoFrames<>0) Or (ImageWidth<>0) Then Fail('FFV1: video locale sans filtres ni options audio requise.');
+  If InputFormat='yuv4mpegpipe' Then Begin
+   If (OutputFormat<>'avi') Or (VideoCodec<>'ffv1') Then Fail('Y4M: -c:v ffv1 et sortie AVI requis.');
+  End Else If (InputFormat<>'avi') Or (OutputFormat<>'yuv4mpegpipe') Or
+   ((VideoCodec<>'') And (VideoCodec<>'rawvideo')) Then Fail('FFV1: AVI vers Y4M requis pour decodage.');
+  Temps[2]:=NewTemporary; RemuxVideo(Intermediate,Temps[2],InputFormat,OutputFormat);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('Video FFV1 creee: ',OutputPath); Halt(0);
+ End;
  If (InputFormat='m4v') Or (OutputFormat='m4v') Then Begin
   If IsHTTP(InputPath) Or (HLSBase<>'') Then Fail('M4V: entree locale requise.');
   If Not (((AudioCodec='copy') And AllStreams) Or ((VideoCodec='copy') And (AudioCodec=''))) Then
@@ -8293,7 +8565,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.9 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.10 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
