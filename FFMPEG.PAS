@@ -3322,7 +3322,7 @@ Var
  HLSListOpen,AllStreams,NoVideo,NoAudio: Boolean;
  VideoCodec: String;
  AspectNum,AspectDen: LongInt;
- HasAlbum: Boolean;
+ HasAlbum,FourMV: Boolean;
  AlbumName: String;
  AlbumWide: Array[0..254] Of Word;
  AlbumUTF8: Array[0..764] Of Byte;
@@ -8582,6 +8582,278 @@ Begin
  CloseRead; CloseWrite;
 End;
 
+{ Native bounded MPEG-4 Part 2 encoder. Y4M 420, I/P, integer-pel SAD,
+  optional INTER4V, H.263 quantization QP=4, ESC3 coefficient coding.
+  Syntax references: FFmpeg mpeg4videoenc.c, h263.c and h263data.c (LGPL). }
+Procedure EncodeMPEG4(Const Source,Target: String);
+Const
+ Scan: Array[0..63] Of Byte=(0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,
+ 12,19,26,33,40,48,41,34,27,20,13,6,7,14,21,28,35,42,49,56,
+ 57,50,43,36,29,22,15,23,30,37,44,51,58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63);
+ CB: Array[0..15,0..1] Of Byte=((3,4),(5,5),(4,5),(9,4),(3,5),(7,4),(2,6),(11,4),
+ (2,5),(3,6),(5,4),(10,4),(4,4),(8,4),(6,4),(3,2));
+ MC: Array[0..3,0..1] Of Byte=((1,1),(3,4),(2,4),(5,6));
+ MC4: Array[0..3,0..1] Of Byte=((2,3),(5,7),(4,7),(5,8));
+ MV: Array[0..32,0..1] Of Byte=((1,1),(1,2),(1,3),(1,4),(3,6),(5,7),(4,7),(3,7),
+ (11,9),(10,9),(9,9),(17,10),(16,10),(15,10),(14,10),(13,10),(12,10),(11,10),
+ (10,10),(9,10),(8,10),(7,10),(6,10),(5,10),(4,10),(7,11),(6,11),(5,11),
+ (4,11),(3,11),(2,11),(3,12),(2,12));
+ DC: Array[0..1,0..8,0..1] Of Byte=(
+ ((3,3),(3,2),(2,2),(2,3),(1,3),(1,4),(1,5),(1,6),(1,7)),
+ ((3,2),(2,2),(1,2),(1,3),(1,4),(1,5),(1,6),(1,7),(1,8)));
+ Off: Array[0..3] Of Integer=(2,1,1,-1);
+ CRound: Array[0..15] Of Byte=(0,0,0,1,1,1,1,1,0,0,0,0,0,0,1,1);
+Type
+ TRow=Array[0..639] Of Byte; PRow=^TRow;
+ TFrames=Array[0..2,0..2,0..479] Of PRow; PFrames=^TFrames;
+ TDC=Array[0..2,0..60,0..80] Of Integer; PDC=^TDC;
+ TMotion=Array[0..60,0..81,0..1] Of Integer; PMotion=^TMotion;
+Var
+ Frames:PFrames; DCP:PDC; Mot:PMotion;
+ W,H,Plane,Cur,Ref,Y,X,J,K,Code,MBX,MBY,B,BX,BY,GX,GY,CP,CBP: Integer;
+ Widths,Heights: Array[0..2] Of Integer;
+ MX,MY: Array[0..5] Of Integer;
+ Coeff: Array[0..5,0..63] Of Integer;
+ Pred: Array[0..5,0..63] Of Integer;
+ C,Temp,Values: Array[0..7,0..7] Of Double;
+ At,Limit,FrameNo,Num,Den,Time,LastSecond,Second,FrameBase,PlaneBase: LongInt;
+ MB4Count: LongInt;
+ NBits,BitCount: Integer; BitByte: Byte;
+ Intra: Boolean; Line,Token: String;
+Function Clip(V,Hi: Integer): Integer;
+Begin If V<0 Then V:=0 Else If V>Hi Then V:=Hi; Clip:=V; End;
+Function HalfFloor(V: Integer): Integer;
+Begin If V<0 Then HalfFloor:=-((-V+1) Div 2) Else HalfFloor:=V Div 2; End;
+Procedure Bits(N: Integer; V: LongInt);
+Var I: Integer;
+Begin
+ For I:=N-1 DownTo 0 Do Begin
+  BitByte:=((LongInt(BitByte) Shl 1) Or ((V Shr I) And 1)) And 255; Inc(BitCount);
+  If BitCount=8 Then Begin WriteBytes(BitByte,1); BitByte:=0; BitCount:=0; End;
+ End;
+End;
+Procedure Stuff;
+Var N: Integer;
+Begin N:=8-BitCount; Bits(N,(LongInt(1) Shl (N-1))-1); End;
+Procedure StartCode(N: Byte);
+Begin Bits(24,1); Bits(8,N); End;
+Function ReadLine: String;
+Var S: String; V: Byte;
+Begin
+ S:='';
+ Repeat
+  If At>=Limit Then Fail('MPEG4: ligne Y4M tronquee.'); ReadAt(At,V,1); Inc(At);
+  If V=10 Then Break;
+  If (Length(S)>=254) Or (V=13) Then Fail('MPEG4: ligne Y4M incorrecte.'); S:=S+Chr(V);
+ Until False; ReadLine:=S;
+End;
+Function SourcePixel(P,X,Y: Integer): Integer;
+Begin SourcePixel:=Frames^[2,P,Y]^[X]; End;
+Function ReferencePixel(P,X,Y,DX,DY: Integer): Integer;
+Var IX,IY,FX,FY,A,B,C,D: Integer;
+Begin
+ IX:=X+HalfFloor(DX); IY:=Y+HalfFloor(DY); FX:=DX And 1; FY:=DY And 1;
+ A:=Frames^[Ref,P,Clip(IY,Heights[P]-1)]^[Clip(IX,Widths[P]-1)];
+ B:=Frames^[Ref,P,Clip(IY,Heights[P]-1)]^[Clip(IX+1,Widths[P]-1)];
+ C:=Frames^[Ref,P,Clip(IY+1,Heights[P]-1)]^[Clip(IX,Widths[P]-1)];
+ D:=Frames^[Ref,P,Clip(IY+1,Heights[P]-1)]^[Clip(IX+1,Widths[P]-1)];
+ If FY=0 Then Begin If FX=0 Then ReferencePixel:=A Else ReferencePixel:=(A+B+1) Div 2; End
+ Else If FX=0 Then ReferencePixel:=(A+C+1) Div 2 Else ReferencePixel:=(A+B+C+D+2) Div 4;
+End;
+Procedure Geometry(Block: Integer);
+Begin
+ Plane:=0; BX:=MBX*16+(Block And 1)*8; BY:=MBY*16+((Block Shr 1) And 1)*8;
+ If Block>=4 Then Begin Plane:=Block-3; BX:=MBX*8; BY:=MBY*8; End;
+ GX:=BX Div 8+1; GY:=BY Div 8+1;
+End;
+Procedure SearchMotion(SX,SY,Size: Integer; Var DX,DY: Integer);
+Var A,B,X,Y,OX,OY: Integer; Cost,Best: LongInt;
+Begin
+ Best:=2147483647; DX:=0; DY:=0;
+ { Integer-pel grid, order makes zero motion win ties. }
+ For A:=0 To 4 Do For B:=0 To 4 Do Begin
+  OX:=0; OY:=0;
+  If A>0 Then Begin OX:=((A+1) Div 2)*2; If Odd(A) Then OX:=-OX; End;
+  If B>0 Then Begin OY:=((B+1) Div 2)*2; If Odd(B) Then OY:=-OY; End;
+  Cost:=0;
+  For Y:=0 To Size-1 Do For X:=0 To Size-1 Do
+   Inc(Cost,Abs(SourcePixel(0,SX+X,SY+Y)-ReferencePixel(0,SX+X,SY+Y,OX*2,OY*2)));
+  If Cost<Best Then Begin Best:=Cost; DX:=OX*2; DY:=OY*2; End;
+ End;
+End;
+Function Median(A,B,C: Integer): Integer;
+Var T: Integer;
+Begin If A>B Then Begin T:=A; A:=B; B:=T; End;
+ If B>C Then B:=C; If A>B Then B:=A; Median:=B; End;
+Procedure MotionValue(V: Integer);
+Var N: Integer;
+Begin
+ While V< -32 Do Inc(V,64); While V>31 Do Dec(V,64); N:=Abs(V);
+ Bits(MV[N,1],MV[N,0]); If N<>0 Then Begin If V<0 Then Bits(1,1) Else Bits(1,0); End;
+End;
+Procedure WriteMotion(Block: Integer; DX,DY: Integer);
+Var I,A,Prediction,Value: Integer;
+Begin
+ Geometry(Block);
+ For I:=0 To 1 Do Begin
+  A:=Mot^[GY,GX-1,I];
+  If (MBY=0) And (Block<2) Then Prediction:=A Else
+   Prediction:=Median(A,Mot^[GY-1,GX,I],Mot^[GY-1,GX+Off[Block],I]);
+  If (MBY=0) And (MBX=0) And (Block=0) Then Prediction:=0;
+  If I=0 Then Value:=DX Else Value:=DY;
+  MotionValue(Value-Prediction); Mot^[GY,GX,I]:=Value;
+ End;
+End;
+Procedure WriteDC(Value,Plane,X,Y: Integer);
+Var A,B,C,P,D,N,L: Integer;
+Begin
+ A:=DCP^[Plane,Y,X-1]; B:=DCP^[Plane,Y-1,X-1]; C:=DCP^[Plane,Y-1,X];
+ If Abs(A-B)<Abs(B-C) Then P:=C Else P:=A;
+ D:=Value-P; DCP^[Plane,Y,X]:=Value; N:=0; L:=Abs(D);
+ While L>0 Do Begin Inc(N); L:=L Shr 1; End;
+ P:=0; If Plane>0 Then P:=1; Bits(DC[P,N,1],DC[P,N,0]);
+ If N>0 Then Begin L:=D; If D<0 Then L:=(LongInt(1) Shl N)-1+D; Bits(N,L); End;
+End;
+Procedure TransformBlock(Block: Integer);
+Var X,Y,U,N: Integer; V: Double;
+Begin
+ Geometry(Block);
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+  N:=0; If Not Intra Then N:=ReferencePixel(Plane,BX+X,BY+Y,MX[Block],MY[Block]);
+  Pred[Block,Y*8+X]:=N; Values[Y,X]:=SourcePixel(Plane,BX+X,BY+Y)-N;
+ End;
+ For Y:=0 To 7 Do For U:=0 To 7 Do Begin
+  V:=0; For X:=0 To 7 Do V:=V+C[U,X]*Values[Y,X]; Temp[Y,U]:=V;
+ End;
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+  V:=0; For U:=0 To 7 Do V:=V+C[Y,U]*Temp[U,X];
+  If Intra And (Y=0) And (X=0) Then N:=Clip(Round(V/8),255) Else Begin
+   N:=Trunc((Abs(V)-3)/8); If N<0 Then N:=0; If N>2047 Then N:=2047; If V<0 Then N:=-N;
+   If N<>0 Then CBP:=CBP Or (1 Shl (5-Block));
+  End;
+  Coeff[Block,Y*8+X]:=N;
+ End;
+ { Reconstruct the reference with the same quantizer and a local IDCT. }
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+  N:=Coeff[Block,Y*8+X];
+  If Intra And (Y=0) And (X=0) Then N:=N*8 Else
+  If N>0 Then N:=N*8+3 Else If N<0 Then N:=N*8-3;
+  If N< -2048 Then N:=-2048 Else If N>2047 Then N:=2047;
+  Values[Y,X]:=N;
+ End;
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+  V:=0; For U:=0 To 7 Do V:=V+C[U,X]*Values[Y,U]; Temp[Y,X]:=V;
+ End;
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+  V:=0; For U:=0 To 7 Do V:=V+C[U,Y]*Temp[U,X];
+  Frames^[Cur,Plane,BY+Y]^[BX+X]:=Clip(Round(V)+Pred[Block,Y*8+X],255);
+ End;
+End;
+Procedure WriteBlock(Block: Integer);
+Var K,First,Last,Run,N: Integer;
+Begin
+ Geometry(Block); First:=0;
+ If Intra Then Begin WriteDC(Coeff[Block,0],Plane,GX,GY); First:=1; End;
+ Last:=63; While (Last>=First) And (Coeff[Block,Scan[Last]]=0) Do Dec(Last);
+ Run:=0;
+ For K:=First To Last Do Begin
+  N:=Coeff[Block,Scan[K]];
+  If N=0 Then Inc(Run) Else Begin
+   Bits(7,3); Bits(2,3); If K=Last Then Bits(1,1) Else Bits(1,0);
+   Bits(6,Run); Bits(1,1); Bits(12,N And $FFF); Bits(1,1); Run:=0;
+  End;
+ End;
+End;
+Begin
+ W:=0; H:=0; Num:=0; Den:=0; At:=0; OpenRead(Source); Limit:=InputSize;
+ Line:=ReadLine; If Copy(Line,1,9)<>'YUV4MPEG2' Then Fail('MPEG4: entree Y4M requise.'); Delete(Line,1,9);
+ While Line<>'' Do Begin
+  If Line[1]=' ' Then Delete(Line,1,1) Else Begin
+   J:=Pos(' ',Line); If J=0 Then J:=Length(Line)+1; Token:=Copy(Line,1,J-1); Delete(Line,1,J);
+   Case Token[1] Of
+   'W','H': Begin Val(Copy(Token,2,255),K,Code); If (Code<>0) Or (K<16) Or (K>640) Then Fail('MPEG4: dimensions invalides.');
+    If Token[1]='W' Then W:=K Else H:=K; End;
+   'F': Begin J:=Pos(':',Token); If J<3 Then Fail('Cadence Y4M invalide.');
+    Val(Copy(Token,2,J-2),Num,Code); If (Code<>0) Or (Num<1) Or (Num>65535) Then Fail('MPEG4: cadence hors limites.');
+    Val(Copy(Token,J+1,255),Den,Code); If (Code<>0) Or (Den<1) Or (Den>Num) Then Fail('MPEG4: cadence hors limites.');
+    If Num>Den*30 Then Fail('MPEG4: cadence maximale 30 images/s.'); End;
+   'I': If Token<>'Ip' Then Fail('MPEG4: video progressive requise.');
+   'C': If (Token<>'C420') And (Token<>'C420jpeg') Then Fail('MPEG4: YUV420 8 bits requis.');
+   'A': If (Token<>'A1:1') And (Token<>'A0:0') Then Fail('MPEG4: pixels carres requis en entree.');
+   Else Fail('MPEG4: option Y4M non prise en charge.');
+   End;
+  End;
+ End;
+ If (W=0) Or (H=0) Or (H>480) Or (W Mod 16<>0) Or (H Mod 16<>0) Or (Num=0) Or (Den=0) Then
+  Fail('MPEG4: dimensions multiples de 16, maximum 640x480, cadence requise.');
+ {$IFNDEF FPC}
+ If MemAvail<SizeOf(TFrames)+SizeOf(TDC)+SizeOf(TMotion)+LongInt(H)*W*5 Then Fail('MPEG4: memoire DOS insuffisante.');
+ {$ENDIF}
+ New(Frames); New(DCP); New(Mot); FillChar(Frames^,SizeOf(Frames^),0);
+ Widths[0]:=W; Heights[0]:=H;
+ For J:=1 To 2 Do Begin Widths[J]:=W Div 2; Heights[J]:=H Div 2; End;
+ For Cur:=0 To 2 Do For Plane:=0 To 2 Do For Y:=0 To Heights[Plane]-1 Do GetMem(Frames^[Cur,Plane,Y],Widths[Plane]);
+ For Y:=0 To 7 Do For X:=0 To 7 Do Begin C[Y,X]:=Cos((2*X+1)*Y*3.141592653589793/16)/2;
+  If Y=0 Then C[Y,X]:=C[Y,X]/Sqrt(2); End;
+ OpenWrite(Target); BitCount:=0; BitByte:=0; NBits:=1;
+ While (LongInt(1) Shl NBits)<Num Do Inc(NBits);
+ StartCode($B0); Bits(8,5); StartCode(0); StartCode($20);
+ Bits(1,0); Bits(8,1); Bits(1,0); Bits(4,1); Bits(1,1); Bits(2,1); Bits(1,1); Bits(1,0);
+ Bits(2,0); Bits(1,1); Bits(16,Num); Bits(1,1); Bits(1,1); Bits(NBits,Den);
+ Bits(1,1); Bits(13,W); Bits(1,1); Bits(13,H); Bits(1,1); Bits(1,0); Bits(1,1);
+ Bits(1,0); Bits(1,0); Bits(1,0); Bits(1,1); Bits(1,1); Bits(1,0); Bits(1,0); Stuff;
+ FrameNo:=0; Time:=0; LastSecond:=0; Cur:=0; Ref:=1; MB4Count:=0;
+ While At<Limit Do Begin
+  Line:=ReadLine; If Line<>'FRAME' Then Fail('MPEG4: marqueur FRAME simple requis.');
+  FrameBase:=At; PlaneBase:=LongInt(W)*H*3 Div 2;
+  If PlaneBase>Limit-At Then Fail('MPEG4: image Y4M tronquee.'); Inc(At,PlaneBase);
+  PlaneBase:=FrameBase;
+  For Plane:=0 To 2 Do For Y:=0 To Heights[Plane]-1 Do Begin
+   ReadAt(PlaneBase,Frames^[2,Plane,Y]^,Widths[Plane]); Inc(PlaneBase,Widths[Plane]);
+  End;
+  Intra:=FrameNo Mod 12=0;
+  FillChar(Mot^,SizeOf(Mot^),0);
+  For Plane:=0 To 2 Do For Y:=0 To 60 Do For X:=0 To 80 Do DCP^[Plane,Y,X]:=128;
+  StartCode($B6); If Intra Then Bits(2,0) Else Bits(2,1);
+  Second:=Time Div Num; For J:=1 To Second-LastSecond Do Bits(1,1); LastSecond:=Second;
+  Bits(1,0); Bits(1,1); Bits(NBits,Time Mod Num); Bits(1,1); Bits(1,1);
+  If Not Intra Then Bits(1,0); Bits(3,0); Bits(5,4); If Not Intra Then Bits(3,1);
+  For MBY:=0 To H Div 16-1 Do For MBX:=0 To W Div 16-1 Do Begin
+   If Not Intra Then Begin
+    If FourMV Then For B:=0 To 3 Do Begin Geometry(B); SearchMotion(BX,BY,8,MX[B],MY[B]); End
+    Else Begin SearchMotion(MBX*16,MBY*16,16,MX[0],MY[0]);
+     For B:=1 To 3 Do Begin MX[B]:=MX[0]; MY[B]:=MY[0]; End; End;
+    X:=0; Y:=0; For B:=0 To 3 Do Begin Inc(X,MX[B]); Inc(Y,MY[B]); End;
+    { Floor divide by eight, including negative motion. }
+    MX[4]:=HalfFloor(HalfFloor(HalfFloor(X)))+CRound[X And 15];
+    MY[4]:=HalfFloor(HalfFloor(HalfFloor(Y)))+CRound[Y And 15];
+    MX[5]:=MX[4]; MY[5]:=MY[4];
+   End;
+   CBP:=0; For B:=0 To 5 Do TransformBlock(B); CP:=CBP And 3;
+   If Intra Then Begin
+    If CP=0 Then Bits(1,1) Else Bits(3,CP); Bits(1,0); CP:=CBP Shr 2;
+    Bits(CB[CP,1],CB[CP,0]);
+   End Else Begin
+    Bits(1,0);
+    If FourMV Then Begin Bits(MC4[CP,1],MC4[CP,0]); Inc(MB4Count); End Else Bits(MC[CP,1],MC[CP,0]);
+    CP:=(CBP Shr 2) Xor 15; Bits(CB[CP,1],CB[CP,0]);
+    If FourMV Then For B:=0 To 3 Do WriteMotion(B,MX[B],MY[B]) Else Begin
+     WriteMotion(0,MX[0],MY[0]);
+     For B:=1 To 3 Do Begin Geometry(B); Mot^[GY,GX,0]:=MX[0]; Mot^[GY,GX,1]:=MY[0]; End;
+    End;
+   End;
+   For B:=0 To 5 Do WriteBlock(B);
+  End;
+  Stuff; Inc(FrameNo); If Time>2147483647-Den Then Fail('MPEG4: duree excessive.'); Inc(Time,Den);
+  J:=Cur; Cur:=Ref; Ref:=J;
+ End;
+ If FrameNo=0 Then Fail('MPEG4: aucune image.'); CloseRead; CloseWrite;
+ For Cur:=0 To 2 Do For Plane:=0 To 2 Do For Y:=0 To Heights[Plane]-1 Do FreeMem(Frames^[Cur,Plane,Y],Widths[Plane]);
+ Dispose(Frames); Dispose(DCP); Dispose(Mot);
+ If Not HideBanner Then WriteLn('MPEG4: ',FrameNo,' images, ',MB4Count,' macroblocs INTER4V.');
+End;
+
+
 { Rewrite only container tags; compressed MP3 packets and WAV chunks are copied. }
 Procedure WriteAudioAlbum(Const Source,Target: String);
 Var B: Array[0..4095] Of Byte; H: Array[0..9] Of Byte;
@@ -8790,13 +9062,15 @@ Procedure Help;Begin
  WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn;
  WriteLn(' /?                             Affiche l''aide de cette commande.');
+ WriteLn(' -4mv                           MPEG4: quatre vecteurs 8x8 par macrobloc P.');
+ WriteLn(' -c:v mpeg4                      Y4M 420 vers M4V/AVI/MP4, images I/P, QP=4.');
+ WriteLn(' -ac 1|2                        Canaux de sortie (-ac apr'+#138+'s -i)');
  WriteLn(' -album NOM                     Nom de l''album (MP3, WAV, AVI, MP4).');
- WriteLn(' -aspect N:D|DECIMAL             Ratio affichage (4:3, 16:9); sorties MP4, AVI, Y4M.');
  WriteLn(' -an                            Ne pas '+#130+'crire les pistes audio (sortie vid'+#130+'o uniquement).');
  WriteLn('                                AVI B-frames H264/MPEG4; Montages MP4 elst 32/64 bits '+#133+' vitesse 1.');
  WriteLn('                                AVI: retards arrondis au paquet; preroll audio conserve si n'+#130+'cessaire.');
  WriteLn(' -ar HZ                         Fr'+#130+'quence de sortie 4000..192000 (-ar apr'+#138+'s -i)');
- WriteLn(' -ac 1|2                        Canaux de sortie (-ac apr'+#138+'s -i)');
+ WriteLn(' -aspect N:D|DECIMAL             Ratio affichage (4:3, 16:9); sorties MP4, AVI, Y4M.');
  WriteLn(' -b:a 64k                       D'+#130+'bit MP3 CBR (d'+#130+'faut 320k); -ab 64 accepte; -vn; -hide_banner; -y; -n');
  WriteLn(' -c:a pcm_s16le|mp3|copy        (-acodec et -codec:a accept'+#130+'s)');
  WriteLn(' -c copy                        Changement de conteneur, pas de r'+#130+'encodage vid'+#130'o.');
@@ -8883,7 +9157,7 @@ Begin
 End;
 
 BEGIN
- HasAlbum:=False; AlbumName:=''; AlbumWideSize:=0; AlbumUTF8Size:=0;
+ FourMV:=False; HasAlbum:=False; AlbumName:=''; AlbumWideSize:=0; AlbumUTF8Size:=0;
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
  AspectNum:=0; AspectDen:=1;
@@ -8924,7 +9198,8 @@ BEGIN
    WriteLn('D A    pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
    WriteLn(' EV    png             PNG (RGB24, sans compression)');
    WriteLn('D A    wmav2           WMA2 (44100/48000 Hz, VLC, blocs fixes, sans reservoir/bruit)');
-   WriteLn('Copie seulement: h264, mpeg4, vp9, aac, opus (voir limites).'); Halt(0);
+   WriteLn(' EV    mpeg4           MPEG-4 Part 2 (Y4M, I/P, option -4mv)');
+   WriteLn('Copie seulement: h264, vp9, aac, opus (voir limites).'); Halt(0);
   End
   Else If Argument='-y' Then Overwrite:=True Else
   If Argument='-n' Then NoOverwrite:=True Else
@@ -8938,14 +9213,14 @@ BEGIN
    ParseAspect(NextArgument);
   End Else
   If Argument='-4mv' Then Begin
-   Fail('-4mv exige un encodeur MPEG-4 Part 2 avec mouvements 8x8; non implemente.');
+   FourMV:=True;
   End Else
   If (Argument='-vcodec') Or (Argument='-c:v') Or (Argument='-codec:v') Then Begin
    If InputPath='' Then Fail('Codec video de sortie attendu apres -i.');
    VideoCodec:=Lower(NextArgument);
    If (VideoCodec<>'png') And (VideoCodec<>'gif') And (VideoCodec<>'copy') And
-    (VideoCodec<>'ffv1') And (VideoCodec<>'flv') And (VideoCodec<>'rawvideo') Then
-    Fail('Codec video: png/gif, copy, ffv1 (Y4M/AVI), flv (Y4M/FLV), rawvideo (Y4M).');
+    (VideoCodec<>'ffv1') And (VideoCodec<>'flv') And (VideoCodec<>'mpeg4') And (VideoCodec<>'rawvideo') Then
+    Fail('Codec video: png/gif, copy, ffv1, flv, mpeg4 (Y4M), rawvideo.');
   End Else If (Argument='-vframes') Or (Argument='-frames:v') Then Begin
    If InputPath='' Then Fail('Nombre d''images attendu apres -i.');
    Value:=NextArgument; Val(Value,Number,Code);
@@ -9059,6 +9334,19 @@ BEGIN
   If NoVideo Then Fail('-aspect incompatible avec -vn.');
   If (OutputFormat<>'mp4') And (OutputFormat<>'avi') And (OutputFormat<>'yuv4mpegpipe') Then
    Fail('-aspect: sorties MP4, AVI et Y4M uniquement.');
+ End;
+ If FourMV And (VideoCodec='') Then VideoCodec:='mpeg4';
+ If FourMV And (VideoCodec<>'mpeg4') Then Fail('-4mv exige un encodage MPEG-4 Part 2, pas une copie.');
+ If VideoCodec='mpeg4' Then Begin
+  If (InputFormat<>'yuv4mpegpipe') Or IsHTTP(InputPath) Or (HLSBase<>'') Or NoVideo Or
+   (AudioCodec<>'') Or (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
+   (VideoFrames<>0) Or (ImageWidth<>0) Then Fail('MPEG4: entree Y4M locale sans filtres ni audio requise.');
+  If (OutputFormat<>'m4v') And (OutputFormat<>'avi') And (OutputFormat<>'mp4') Then
+   Fail('MPEG4: sorties M4V, AVI ou MP4 requises.');
+  Temps[3]:=NewTemporary; EncodeMPEG4(Intermediate,Temps[3]); Temps[2]:=NewTemporary;
+  If OutputFormat='m4v' Then CopyFile(Temps[3],Temps[2])
+  Else RemuxVideo(Temps[3],Temps[2],'m4v',OutputFormat);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('Video MPEG4 creee: ',OutputPath); Halt(0);
  End;
  If (VideoCodec='ffv1') Or (VideoCodec='flv') Or (InputFormat='yuv4mpegpipe') Or (OutputFormat='yuv4mpegpipe') Then Begin
   If IsHTTP(InputPath) Or (HLSBase<>'') Or NoVideo Or (AudioCodec<>'') Or
