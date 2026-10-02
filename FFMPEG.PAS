@@ -7604,6 +7604,32 @@ Begin
  End;
 End;
 
+Procedure ShowFormats;
+Begin
+ WriteLn('Formats disponibles dans FFMPEG Pascal:');
+ WriteLn(' D. = Demuxage (lecture)');
+ WriteLn(' .E = Muxage (ecriture)');
+ WriteLn(' --');
+ WriteLn(' D  aiff            AIFF/AIFF-C PCM (alias: aif, aifc)');
+ WriteLn(' D  asf             ASF, audio WMA2 seulement (alias: wma, wmv)');
+ WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3; copie de flux');
+ WriteLn(' D  flv             FLV H264 CAVLC; premiere image IDR seulement');
+ WriteLn('  E gif             GIF, une image, palette 256 couleurs');
+ WriteLn(' D  hls             HLS fMP4 VOD (alias: m3u8); copie vers MP4');
+ WriteLn('  E image2          Une image PNG/GIF; pas de sequence');
+ WriteLn(' D  libopenmpt      MOD 4 canaux, moteur Pascal interne (alias: mod)');
+ WriteLn(' DE mp3             MPEG Layer III; encodage MPEG-1 CBR 32..320 kbit/s');
+ WriteLn(' DE mp4             MP4 H264/MPEG4, AAC/MP3, VP9/Opus; copie de flux');
+ WriteLn('  E png             PNG RGB24, une image');
+ WriteLn('  E rawvideo        Alias de sortie PNG/GIF; pas de pixels bruts');
+ WriteLn(' D  voc             Creative Voice PCM');
+ WriteLn(' DE wav             RIFF/WAVE PCM; encodage PCM16');
+ WriteLn(' D  webm            WebM VP9/Opus; copie vers MP4');
+ WriteLn;
+ WriteLn('D/E indique le conteneur; les codecs et conversions restent limites.');
+ WriteLn('Voir -codecs et FFMPEG.md. WMV2 et encodage FLV1 non implementes.');
+End;
+
 Procedure Help;Begin
  WriteLn('FFMPEG - Cette commande permet de manipuler, convertir, encoder, d'+#130+
  'coder, enregistrer et diffuser ',
@@ -7670,15 +7696,7 @@ BEGIN
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
-   WriteLn(' D = demuxage, E = muxage'); WriteLn(' DE wav'); WriteLn(' DE mp3');
-   WriteLn(' D  hls (fMP4 VOD)'); WriteLn(' DE mp4 (profils limites et copie HLS)');
-   WriteLn(' DE avi (H264/MPEG4, AAC/MP3)'); WriteLn(' D  webm (VP9/Opus)');
-   WriteLn(' D  flv (premiere image AVC/CAVLC)');
-   WriteLn('  E image2/rawvideo (une image PNG/GIF)');
-   WriteLn('  E gif (une image)');
-   WriteLn(' D  asf/wma/wmv (audio WMA2 seulement, profil limite)');
-   WriteLn(' D  aiff'); WriteLn(' D  voc');
-   WriteLn(' D  libopenmpt (nom compatible, moteur MOD Pascal interne)'); Halt(0);
+   ShowFormats; Halt(0);
   End
   Else If Argument='-codecs' Then Begin
    WriteLn(' E png (RGB24, sans compression)');
