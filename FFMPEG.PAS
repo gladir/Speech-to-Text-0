@@ -3809,8 +3809,8 @@ Const MaxTracks=4; MaxConfig=4096;
 Type
  PSample=^TSample;
  TSample=Record
-  Next: PSample;
-  Pos,Size,Time,Duration,Composition,OutputPos,OutputSize: LongInt;
+  Next,DisplayNext: PSample;
+  Pos,Size,Time,Duration,Composition,OutputPos,OutputSize,Order: LongInt;
   Key: Boolean;
  End;
  TTrack=Record
@@ -3820,7 +3820,7 @@ Type
   Config: Array[0..MaxConfig-1] Of Byte;
   ConfigSize,NALBytes: Integer;
   First,Last,Cursor: PSample;
-  Stsz,Stsc,Stco,Stts,Ctts,Stss,Entry: LongInt;
+  Stsz,Stsc,Stco,Stts,Ctts,Stss,Entry,EditAt,AVIStep,HeaderStart,StartDelay,DShowAlign: LongInt;
  End;
  TTracks=Array[1..MaxTracks] Of TTrack;
  PTracks=^TTracks;
@@ -3828,7 +3828,7 @@ Var
  Tracks: PTracks; TrackCount: Integer; FileLimit: LongInt;
  Cache: Array[0..4095] Of Byte; CacheAt,CacheSize: LongInt;
  Stack: Array[0..15] Of LongInt; Level: Integer; LE: Boolean;
- I,Pick: Integer; P,Moov,Movi,RiffEnd: LongInt;
+ I,Pick: Integer; P,Moov,Movi,RiffEnd,MovieScale: LongInt;
  S,NextSample: PSample; Clock,Best: Double;
 
 Function ByteAt(At: LongInt): Byte;
@@ -4060,12 +4060,7 @@ Begin
  If ByteAt(Tk+8)<>0 Then Fail('tkhd version 1 non pris en charge.');
  Tracks^[T].ID:=Number(Tk+20,False);
  If Ed<>0 Then Begin
-  MPBox(Ed,Limit,B,E); C:=Child(B,E,'elst');
-  If C<>0 Then Begin
-   If (ByteAt(C+8)<>0) Or (Number(C+12,False)<>1) Or (Signed32(C+20)<>0) Or
-    (U16(C+24,False)<>1) Or (U16(C+26,False)<>0) Then
-    Fail('Liste de montage MP4 avec decalage: remuxage non pris en charge.');
-  End;
+  MPBox(Ed,Limit,B,E); Tracks^[T].EditAt:=Child(B,E,'elst');
  End;
  MPBox(Md,Limit,B,E); C:=Child(B,E,'hdlr'); D:=Child(B,E,'mdhd');
  If (C=0) Or (D=0) Then Fail('mdia MP4 incomplet.');
@@ -4142,7 +4137,12 @@ Procedure ReadMP4;
 Var A,B,E,C,D,F,T,N: LongInt;
 Begin
  Moov:=Child(0,FileLimit,'moov'); If Moov=0 Then Fail('MP4 sans moov.');
- MPBox(Moov,FileLimit,B,E);
+ MPBox(Moov,FileLimit,B,E); C:=Child(B,E,'mvhd');
+ If C=0 Then Fail('Horloge mvhd MP4 absente.');
+ If ByteAt(C+8)=0 Then MovieScale:=Number(C+20,False)
+ Else If ByteAt(C+8)=1 Then MovieScale:=Number(C+28,False)
+ Else Fail('Version mvhd MP4 inconnue.');
+ If MovieScale=0 Then Fail('Horloge movie MP4 nulle.');
  A:=B;
  While A<E Do Begin
   MPBox(A,E,C,D); If Tag(A+4)='trak' Then MPTrack(C,D); A:=D;
@@ -4178,7 +4178,7 @@ End;
 
 { AVI RIFF, un seul segment RIFF, codecs H264/XVID, AAC/MP3. }
 Procedure AVIWalk(At,Limit: LongInt; T,Depth: Integer; InMovi: Boolean);
-Var N,B,E,A,Stream,Rate,Scale: LongInt; Name,Kind: String[4]; V: PSample;
+Var N,B,E,A,Stream,Rate,Scale,Units: LongInt; Name,Kind: String[4]; V: PSample;
 Begin
  If Depth>8 Then Fail('Imbrication AVI excessive.');
  While At<Limit Do Begin
@@ -4194,7 +4194,8 @@ Begin
    Kind:=Tag(B); Tracks^[T].Video:=Kind='vids';
    If (Kind<>'vids') And (Kind<>'auds') Then Fail('Type de piste AVI non pris en charge.');
    Scale:=Number(B+20,True); Rate:=Number(B+24,True);
-   If (Scale=0) Or (Rate=0) Or (Number(B+28,True)<>0) Then Fail('Horloge/decalage AVI non pris en charge.');
+   If (Scale=0) Or (Rate=0) Then Fail('Horloge AVI invalide.');
+   Tracks^[T].AVIUnits:=Number(B+28,True);
    If Number(B+44,True)<>0 Then Fail('AVI a paquets de taille fixe non pris en charge.');
    Tracks^[T].InputScale:=Rate; Tracks^[T].DefaultDuration:=Scale;
    If Not Tracks^[T].Video Then Tracks^[T].Scale:=Rate;
@@ -4212,6 +4213,8 @@ Begin
      A:=U16(B,True); Channels:=U16(B+2,True); Rate:=Number(B+4,True);
      If A=$55 Then Codec:='.mp3' Else If A=$FF Then Codec:='mp4a'
      Else Fail('Audio AVI: seuls MP3 et AAC bruts sont pris en charge.');
+     DShowAlign:=U16(B+12,True);
+     If (Codec='mp4a') And (DShowAlign<=4) Then DShowAlign:=0;
      If (N>=18) And (Codec='mp4a') Then Begin
       A:=U16(B+16,True); If A>N-18 Then Fail('Configuration AAC AVI tronquee.');
       ConfigFrom(T,B+18,A);
@@ -4223,12 +4226,13 @@ Begin
    If (Stream<1) Or (Stream>TrackCount) Then Fail('Piste AVI inconnue.');
    If (Copy(Name,3,2)<>'dc') And (Copy(Name,3,2)<>'db') And (Copy(Name,3,2)<>'wb') Then Fail('Type de paquet AVI non pris en charge.');
    With Tracks^[Stream] Do Begin
+    Units:=1;
+    If Not Video And (DShowAlign>0) Then Units:=(N+DShowAlign-1) Div DShowAlign;
     If N=0 Then Begin
-     If Not Video Or (Last=nil) Then Fail('Paquet AVI vide sans image precedente.');
-     Last^.Duration:=Ticks((AVIUnits+1.0)*DefaultDuration*Scale/InputScale)-Last^.Time;
+     If Last<>nil Then Last^.Duration:=Ticks((AVIUnits+Units*1.0)*DefaultDuration*Scale/InputScale)-Last^.Time;
     End Else V:=AddSample(Stream,B,N,Ticks(AVIUnits*1.0*DefaultDuration*Scale/InputScale),
-     Ticks((AVIUnits+1.0)*DefaultDuration*Scale/InputScale)-Ticks(AVIUnits*1.0*DefaultDuration*Scale/InputScale),0,False);
-    Inc(AVIUnits);
+     Ticks((AVIUnits+Units*1.0)*DefaultDuration*Scale/InputScale)-Ticks(AVIUnits*1.0*DefaultDuration*Scale/InputScale),0,False);
+    Inc(AVIUnits,Units);
    End;
   End;
   At:=E+(N And 1); If At>Limit Then Fail('Padding AVI absent.');
@@ -4444,47 +4448,326 @@ Begin
   ConfigSize:=A+3+PPSN; NALBytes:=4;
  End;
 End;
-Procedure CheckAVCSlices(V: PSample);
-Var At,Payload,NextPayload,Finish,NalEnd,ReadPosition: LongInt;
- Kind,BitCount,CurrentByte,ZeroCount: Integer; HasSlice: Boolean;
+{ Reconstruit les PTS a partir de POC H264 ou du temps VOP MPEG-4.
+  Les paquets restent dans l'ordre de decodage. Aucune image n'est decodee. }
+Procedure ReconstructAVI(T: Integer);
+Type TOffsets=Array[0..255] Of LongInt;
+Var
+ V,G,LastG: PSample;
+ ReadPosition,ReadLimit: LongInt; MemoryBits,EscapeBits: Boolean;
+ BitCount,CurrentByte,ZeroCount: Integer;
+ SPSID,PPSID,FrameBits,POCBits,POCType,Chroma,BottomPresent: Integer;
+ RefL0,RefL1,WeightedBi: Integer; WeightedP,Redundant,FrameOnly,DeltaZero: Boolean;
+ OffsetNonRef,OffsetBottom,CycleSum: LongInt; CycleCount: Integer; Offsets: TOffsets;
+ PreviousLSB,PreviousMSB,PreviousFrame,PreviousFrameOffset: LongInt;
+ FrameOffset,FrameNumber,PictureOrder: LongInt; HasPicture,ResetOrder: Boolean;
+ SPSAt,SPSSize,PPSAt,PPSSize: Integer;
+ GroupTime: LongInt; Resolution,TimeBits: Integer; TimeBase,LastTimeBase: LongInt;
 
+Procedure BitsAt(At,Limit: LongInt; InMemory,Escaped: Boolean);
+Begin ReadPosition:=At; ReadLimit:=Limit; MemoryBits:=InMemory; EscapeBits:=Escaped; BitCount:=0; ZeroCount:=0; End;
+Function ReadByte: Integer;
+Begin
+ If ReadPosition>=ReadLimit Then Fail('En-tete video tronque pendant la reconstruction PTS.');
+ If MemoryBits Then ReadByte:=Tracks^[T].Config[ReadPosition] Else ReadByte:=ByteAt(ReadPosition);
+ Inc(ReadPosition);
+End;
 Function Bit: Integer;
 Var C: Integer;
 Begin
  If BitCount=0 Then Begin
-  If ReadPosition>=NalEnd Then Fail('En-tete de slice H264 tronque.');
-  C:=ByteAt(ReadPosition); Inc(ReadPosition);
-  If (ZeroCount>=2) And (C=3) Then Begin
-   If ReadPosition>=NalEnd Then Fail('RBSP H264 tronque.');
-   C:=ByteAt(ReadPosition); Inc(ReadPosition); ZeroCount:=0;
+  C:=ReadByte;
+  If EscapeBits And (ZeroCount>=2) And (C=3) Then Begin
+   C:=ReadByte; If C>3 Then Fail('Octet emulation-prevention H264 incorrect.'); ZeroCount:=0;
   End;
   If C=0 Then Inc(ZeroCount) Else ZeroCount:=0;
   CurrentByte:=C; BitCount:=8;
  End;
  Dec(BitCount); Bit:=(CurrentByte Shr BitCount) And 1;
 End;
-Function UE: LongInt;
-Var N,A: Integer; Value: LongInt;
+Function GetBits(N: Integer): LongInt;
+Var A: Integer; D: LongInt;
 Begin
- N:=0; While Bit=0 Do Begin Inc(N); If N>24 Then Fail('Code Exp-Golomb H264 hors limite.'); End;
- Value:=1; For A:=1 To N Do Value:=Value*2+Bit; UE:=Value-1;
+ If (N<0) Or (N>30) Then Fail('Champ binaire video hors limite.');
+ D:=0; For A:=1 To N Do D:=D*2+Bit; GetBits:=D;
 End;
-Var SliceType,FirstMB: LongInt;
+Function UE: LongInt;
+Var N: Integer; D: LongInt;
 Begin
- Finish:=V^.Pos+V^.Size; At:=StartCode(V^.Pos,Finish,Payload); HasSlice:=False; V^.Key:=False;
+ N:=0; While Bit=0 Do Begin Inc(N); If N>24 Then Fail('Exp-Golomb H264 hors limite.'); End;
+ D:=GetBits(N); UE:=(LongInt(1) Shl N)-1+D;
+End;
+Function SE: LongInt;
+Var D: LongInt;
+Begin D:=UE; If Odd(D) Then SE:=(D+1) Div 2 Else SE:=-(D Div 2); End;
+Function SmallUE(Maximum: Integer): Integer;
+Var D: LongInt;
+Begin D:=UE; If D>Maximum Then Fail('Parametre H264 hors limite.'); SmallUE:=D; End;
+Procedure Marker;
+Begin If Bit<>1 Then Fail('Marqueur temporel MPEG-4 invalide.'); End;
+Procedure ScalingList(N: Integer);
+Var A,Last,Next: Integer; Delta: LongInt;
+Begin
+ Last:=8; Next:=8;
+ For A:=1 To N Do Begin
+  If Next<>0 Then Begin Delta:=SE; Next:=(Last+(Delta Mod 256)+256) Mod 256; End;
+  If Next<>0 Then Last:=Next;
+ End;
+End;
+Procedure ParseAVCConfig;
+Var A,Profile,N,SkipValue: LongInt;
+Begin
+ With Tracks^[T] Do Begin
+  If (ConfigSize<8) Or ((Config[5] And 31)<>1) Then Fail('PTS AVI: une seule SPS H264 requise.');
+  SPSAt:=8; SPSSize:=Integer(Config[6])*256+Config[7];
+  A:=SPSAt+SPSSize;
+  If (SPSSize<4) Or (A+3>ConfigSize) Then Fail('SPS avcC tronquee.');
+  If Config[A]<>1 Then Fail('PTS AVI: une seule PPS H264 requise.');
+  PPSAt:=A+3; PPSSize:=Integer(Config[A+1])*256+Config[A+2];
+  If (PPSSize<2) Or (PPSAt+PPSSize>ConfigSize) Then Fail('PPS avcC tronquee.');
+ End;
+ BitsAt(SPSAt+1,SPSAt+SPSSize,True,True);
+ Profile:=GetBits(8); SkipValue:=GetBits(16); SPSID:=SmallUE(31); Chroma:=1;
+ If SPSID>31 Then Fail('SPS id H264 hors limite.');
+ If Profile In [44,83,86,100,110,118,122,128,134,135,138,139,244] Then Begin
+  Chroma:=SmallUE(3);
+  If Chroma=3 Then If Bit<>0 Then Fail('H264 separate colour planes non pris en charge.');
+  SkipValue:=UE; SkipValue:=UE; SkipValue:=Bit;
+  If Bit<>0 Then Begin
+   N:=8; If Chroma=3 Then N:=12;
+   For A:=0 To N-1 Do If Bit<>0 Then If A<6 Then ScalingList(16) Else ScalingList(64);
+  End;
+ End;
+ FrameBits:=SmallUE(12)+4;
+ POCType:=SmallUE(2); CycleCount:=0; CycleSum:=0;
+ If POCType=0 Then Begin
+  POCBits:=SmallUE(12)+4;
+ End Else If POCType=1 Then Begin
+  DeltaZero:=Bit<>0; OffsetNonRef:=SE; OffsetBottom:=SE; CycleCount:=SmallUE(255);
+  If CycleCount>255 Then Fail('Cycle POC H264 hors limite.');
+  For A:=0 To CycleCount-1 Do Begin Offsets[A]:=SE; CycleSum:=Ticks(CycleSum*1.0+Offsets[A]); End;
+ End Else If POCType<>2 Then Fail('Type POC H264 inconnu.');
+ SkipValue:=UE; SkipValue:=Bit; SkipValue:=UE; SkipValue:=UE; FrameOnly:=Bit<>0;
+ BitsAt(PPSAt+1,PPSAt+PPSSize,True,True);
+ PPSID:=SmallUE(255); If UE<>SPSID Then Fail('PPS et SPS H264 incompatibles.');
+ SkipValue:=Bit; BottomPresent:=Bit;
+ If UE<>0 Then Fail('Groupes de slices H264 FMO non pris en charge.');
+ RefL0:=SmallUE(31)+1; RefL1:=SmallUE(31)+1;
+ If (RefL0>32) Or (RefL1>32) Then Fail('Trop de references H264.');
+ WeightedP:=Bit<>0; WeightedBi:=GetBits(2);
+ SkipValue:=SE; SkipValue:=SE; SkipValue:=SE; SkipValue:=Bit; SkipValue:=Bit; Redundant:=Bit<>0;
+ PreviousLSB:=0; PreviousMSB:=0; PreviousFrame:=0; PreviousFrameOffset:=0;
+End;
+Procedure RefList;
+Var Code,A: LongInt; N: Integer;
+Begin
+ If Bit<>0 Then Begin
+  N:=0;
+  Repeat
+   Code:=UE; Inc(N); If (N>64) Or (Code>3) Then Fail('Liste de references H264 invalide.');
+   If Code<>3 Then A:=UE;
+  Until Code=3;
+ End;
+End;
+Procedure WeightList(N: Integer);
+Var A,C: Integer; D: LongInt;
+Begin
+ For A:=1 To N Do Begin
+  If Bit<>0 Then Begin D:=SE; D:=SE; End;
+  If Chroma<>0 Then If Bit<>0 Then For C:=1 To 2 Do Begin D:=SE; D:=SE; End;
+ End;
+End;
+Procedure Slice(Payload,Finish: LongInt; Kind,RefID: Integer);
+Var FirstMB,SliceKind,N,FrameID,LSB,MSB,Top,Bottom,Delta0,Delta1,AbsFrame: LongInt;
+ Expected: Double; A,L0,L1,MMCO,Operations: Integer; FirstSlice: Boolean;
+Begin
+ BitsAt(Payload+1,Finish,False,True);
+ FirstMB:=UE; SliceKind:=UE; If SliceKind>9 Then Fail('Type slice H264 invalide.');
+ SliceKind:=SliceKind Mod 5;
+ If UE<>PPSID Then Fail('Changement PPS H264 non pris en charge.');
+ FrameID:=GetBits(FrameBits);
+ If Not FrameOnly Then If Bit<>0 Then Fail('Images H264 par champs non prises en charge.');
+ If Kind=5 Then N:=UE;
+ Delta0:=0; Delta1:=0; LSB:=0;
+ If POCType=0 Then Begin LSB:=GetBits(POCBits); If BottomPresent<>0 Then Delta1:=SE; End
+ Else If (POCType=1) And Not DeltaZero Then Begin Delta0:=SE; If BottomPresent<>0 Then Delta1:=SE; End;
+ FirstSlice:=Not HasPicture;
+ If Not FirstSlice Then Begin
+  If (FirstMB=0) Or (FrameID<>FrameNumber) Then Fail('Plusieurs images H264 dans un paquet AVI.');
+  Exit;
+ End;
+ If FirstMB<>0 Then Fail('Premiere slice H264 manquante.');
+ HasPicture:=True; FrameNumber:=FrameID; ResetOrder:=Kind=5; V^.Key:=ResetOrder;
+ If Kind=5 Then Begin PreviousLSB:=0; PreviousMSB:=0; PreviousFrame:=0; PreviousFrameOffset:=0; End;
+ FrameOffset:=PreviousFrameOffset;
+ If FrameNumber<PreviousFrame Then FrameOffset:=Ticks(FrameOffset*1.0+(LongInt(1) Shl FrameBits));
+ If POCType=0 Then Begin
+  N:=LongInt(1) Shl POCBits; MSB:=PreviousMSB;
+  If (LSB<PreviousLSB) And (PreviousLSB-LSB>=N Div 2) Then MSB:=Ticks(MSB*1.0+N)
+  Else If (LSB>PreviousLSB) And (LSB-PreviousLSB>N Div 2) Then MSB:=Ticks(MSB*1.0-N);
+  Top:=Ticks(MSB*1.0+LSB); Bottom:=Ticks(Top*1.0+Delta1);
+  If RefID<>0 Then Begin PreviousLSB:=LSB; PreviousMSB:=MSB; End;
+ End Else If POCType=1 Then Begin
+  AbsFrame:=Ticks(FrameOffset*1.0+FrameNumber); If CycleCount=0 Then AbsFrame:=0;
+  If (RefID=0) And (AbsFrame>0) Then Dec(AbsFrame);
+  Expected:=0;
+  If AbsFrame>0 Then Begin
+   Expected:=((AbsFrame-1) Div CycleCount)*1.0*CycleSum;
+   For A:=0 To (AbsFrame-1) Mod CycleCount Do Expected:=Expected+Offsets[A];
+  End;
+  If RefID=0 Then Expected:=Expected+OffsetNonRef;
+  Top:=Ticks(Expected+Delta0); Bottom:=Ticks(Top*1.0+OffsetBottom+Delta1);
+ End Else Begin
+  Expected:=2.0*(FrameOffset*1.0+FrameNumber); If RefID=0 Then Expected:=Expected-1;
+  If Kind=5 Then Expected:=0; Top:=Ticks(Expected); Bottom:=Top;
+ End;
+ PictureOrder:=Top; If Bottom<Top Then PictureOrder:=Bottom;
+ PreviousFrame:=FrameNumber; PreviousFrameOffset:=FrameOffset;
+ { Aller jusqu'au marquage des references pour ne pas ignorer un MMCO 5. }
+ If Redundant Then N:=UE;
+ If SliceKind=1 Then N:=Bit;
+ L0:=RefL0; L1:=RefL1;
+ If (SliceKind=0) Or (SliceKind=1) Or (SliceKind=3) Then If Bit<>0 Then Begin
+  L0:=SmallUE(31)+1; If SliceKind=1 Then L1:=SmallUE(31)+1;
+  If (L0>32) Or (L1>32) Then Fail('References H264 hors limite.');
+ End;
+ If (SliceKind<>2) And (SliceKind<>4) Then RefList;
+ If SliceKind=1 Then RefList;
+ If (WeightedP And ((SliceKind=0) Or (SliceKind=3))) Or ((WeightedBi=1) And (SliceKind=1)) Then Begin
+  N:=UE; If Chroma<>0 Then N:=UE; WeightList(L0); If SliceKind=1 Then WeightList(L1);
+ End;
+ If RefID<>0 Then Begin
+  If Kind=5 Then Begin N:=Bit; N:=Bit; End
+  Else If Bit<>0 Then Begin
+   Operations:=0;
+   Repeat
+    MMCO:=SmallUE(6); Inc(Operations); If Operations>64 Then Fail('Marquage references H264 invalide.');
+    If MMCO=5 Then Fail('Reinitialisation POC H264 MMCO 5 non prise en charge.');
+    If (MMCO=1) Or (MMCO=3) Then N:=UE;
+    If MMCO=2 Then N:=UE;
+    If (MMCO=3) Or (MMCO=6) Then N:=UE;
+    If MMCO=4 Then N:=UE;
+   Until MMCO=0;
+  End;
+ End;
+End;
+Procedure AVCPicture;
+Var At,Payload,NextPayload,Finish,NalEnd: LongInt; Kind,RefID,A,ConfigAt,ConfigLength: Integer;
+Begin
+ Finish:=V^.Pos+V^.Size; At:=StartCode(V^.Pos,Finish,Payload); HasPicture:=False; ResetOrder:=False;
  While At>=0 Do Begin
   NalEnd:=StartCode(Payload,Finish,NextPayload); If NalEnd<0 Then NalEnd:=Finish;
-  If Payload>=NalEnd Then Fail('NAL H264 vide.'); Kind:=ByteAt(Payload) And 31;
-  If (Kind=1) Or (Kind=5) Then Begin
-   HasSlice:=True; If Kind=5 Then V^.Key:=True;
-   ReadPosition:=Payload+1; BitCount:=0; ZeroCount:=0; FirstMB:=UE; SliceType:=UE;
-   If SliceType>9 Then Fail('Type de slice H264 invalide.');
-   If (SliceType Mod 5)=1 Then Fail('AVI H264 avec B-frames: reconstruction PTS non implementee.');
-  End Else If (Kind In [2,3,4,14,20,21]) Then Fail('Extension H264 non prise en charge.');
+  If Payload>=NalEnd Then Fail('NAL H264 vide.');
+  Kind:=ByteAt(Payload) And 31; RefID:=(ByteAt(Payload) Shr 5) And 3;
+  If (Kind=1) Or (Kind=5) Then Slice(Payload,NalEnd,Kind,RefID)
+  Else If (Kind=7) Or (Kind=8) Then Begin
+   If Kind=7 Then Begin ConfigAt:=SPSAt; ConfigLength:=SPSSize; End
+   Else Begin ConfigAt:=PPSAt; ConfigLength:=PPSSize; End;
+   If NalEnd-Payload<>ConfigLength Then Fail('Changement configuration H264 non pris en charge.');
+   For A:=0 To ConfigLength-1 Do If ByteAt(Payload+A)<>Tracks^[T].Config[ConfigAt+A] Then Fail('Changement SPS/PPS H264 non pris en charge.');
+  End Else If Kind In [2,3,4,14,20,21] Then Fail('Extension H264 non prise en charge.');
   At:=StartCode(Payload,Finish,Payload);
  End;
- If Not HasSlice Then Fail('Paquet AVI H264 sans image.');
+ If Not HasPicture Then Fail('Paquet AVI H264 sans image.');
+ V^.Order:=PictureOrder;
 End;
+Procedure ParseVOL;
+Var A,Version,Value: LongInt;
+Begin
+ A:=0;
+ With Tracks^[T] Do Begin
+  While (A+4<ConfigSize) And Not ((Config[A]=0) And (Config[A+1]=0) And (Config[A+2]=1) And
+   (Config[A+3]>=$20) And (Config[A+3]<=$2F)) Do Inc(A);
+  If A+4>=ConfigSize Then Fail('VOL MPEG-4 absent pour reconstruire les PTS.');
+  BitsAt(A+4,ConfigSize,True,False);
+ End;
+ Value:=Bit; Value:=GetBits(8); Version:=1;
+ If Bit<>0 Then Begin Version:=GetBits(4); Value:=GetBits(3); End;
+ Value:=GetBits(4); If Value=15 Then Value:=GetBits(16);
+ If Bit<>0 Then Begin
+  Value:=GetBits(2); Value:=Bit;
+  If Bit<>0 Then Begin
+   Value:=GetBits(15); Marker; Value:=GetBits(15); Marker; Value:=GetBits(15); Marker;
+   Value:=GetBits(3); Value:=GetBits(11); Marker; Value:=GetBits(15); Marker;
+  End;
+ End;
+ Value:=GetBits(2); If Value<>0 Then Fail('Forme VOL MPEG-4 non rectangulaire.');
+ Marker; Resolution:=GetBits(16); If Resolution=0 Then Fail('Resolution temporelle MPEG-4 nulle.');
+ TimeBits:=1; Value:=Resolution-1; While Value>1 Do Begin Inc(TimeBits); Value:=Value Shr 1; End;
+ Marker; TimeBase:=0; LastTimeBase:=0;
+End;
+Procedure MPEGPicture;
+Var At,Finish,Seconds,Increment,Kind,Hours,Minutes: LongInt; Found: Boolean;
+Begin
+ Finish:=V^.Pos+V^.Size; At:=V^.Pos; Found:=False;
+ While At+4<Finish Do Begin
+  If (ByteAt(At)=0) And (ByteAt(At+1)=0) And (ByteAt(At+2)=1) And (ByteAt(At+3)=$B3) Then Begin
+   BitsAt(At+4,Finish,False,False); Hours:=GetBits(5); Minutes:=GetBits(6); Marker; Seconds:=GetBits(6);
+   If (Hours>23) Or (Minutes>59) Or (Seconds>59) Then Fail('Timecode GOP MPEG-4 invalide.');
+   TimeBase:=Seconds+60*(Minutes+60*Hours);
+  End;
+  If (ByteAt(At)=0) And (ByteAt(At+1)=0) And (ByteAt(At+2)=1) And (ByteAt(At+3)=$B6) Then Begin
+   If Found Then Fail('MPEG-4 packed bitstream: plusieurs VOP par paquet non pris en charge.');
+   Found:=True; BitsAt(At+4,Finish,False,False); Kind:=GetBits(2);
+   If Kind=3 Then Fail('VOP MPEG-4 sprite non pris en charge.');
+   Seconds:=0; While Bit<>0 Do Begin Inc(Seconds); If Seconds>3600 Then Fail('Temps VOP MPEG-4 invalide.'); End;
+   Marker; Increment:=GetBits(TimeBits); Marker;
+   If Bit=0 Then Fail('VOP MPEG-4 non code non pris en charge.');
+   If Kind<>2 Then Begin LastTimeBase:=TimeBase; Inc(TimeBase,Seconds); Seconds:=TimeBase; End
+   Else Seconds:=LastTimeBase+Seconds;
+   V^.Order:=Ticks(Seconds*1.0*Resolution+Increment); V^.Key:=Kind=0;
+  End;
+  Inc(At);
+ End;
+ If Not Found Then Fail('Paquet MPEG-4 sans VOP.');
+ ResetOrder:=False;
+End;
+Function Merge(A,B: PSample): PSample;
+Var Head,Tail,N: PSample;
+Begin
+ Head:=nil; Tail:=nil;
+ While (A<>nil) Or (B<>nil) Do Begin
+  If A=nil Then Begin N:=B; B:=B^.DisplayNext; End
+  Else If B=nil Then Begin N:=A; A:=A^.DisplayNext; End
+  Else If A^.Order<=B^.Order Then Begin N:=A; A:=A^.DisplayNext; End
+  Else Begin N:=B; B:=B^.DisplayNext; End;
+  If Tail=nil Then Head:=N Else Tail^.DisplayNext:=N; Tail:=N;
+ End;
+ If Tail<>nil Then Tail^.DisplayNext:=nil; Merge:=Head;
+End;
+Function Sort(Head: PSample): PSample;
+Var Slow,Fast,Other: PSample;
+Begin
+ If Head=nil Then Begin Sort:=nil; Exit; End;
+ If Head^.DisplayNext=nil Then Begin Sort:=Head; Exit; End;
+ Slow:=Head; Fast:=Head^.DisplayNext;
+ While Fast<>nil Do Begin Fast:=Fast^.DisplayNext; If Fast<>nil Then Begin Slow:=Slow^.DisplayNext; Fast:=Fast^.DisplayNext; End; End;
+ Other:=Slow^.DisplayNext; Slow^.DisplayNext:=nil; Sort:=Merge(Sort(Head),Sort(Other));
+End;
+Procedure FinishGroup;
+Var A,Previous: PSample;
+Begin
+ A:=Sort(G); Previous:=nil;
+ While A<>nil Do Begin
+  If Previous<>nil Then If Previous^.Order=A^.Order Then Fail('Ordre de presentation ambigu dans AVI.');
+  A^.Composition:=Ticks(GroupTime*1.0-A^.Time); GroupTime:=Ticks(GroupTime*1.0+A^.Duration);
+  Previous:=A; A:=A^.DisplayNext;
+ End;
+ G:=nil; LastG:=nil;
+End;
+Begin
+ G:=nil; LastG:=nil; GroupTime:=0;
+ If Tracks^[T].Codec='avc1' Then ParseAVCConfig Else ParseVOL;
+ V:=Tracks^[T].First;
+ While V<>nil Do Begin
+  If Tracks^[T].Codec='avc1' Then AVCPicture Else MPEGPicture;
+  If ResetOrder And (G<>nil) Then FinishGroup;
+  If LastG=nil Then G:=V Else LastG^.DisplayNext:=V;
+  LastG:=V; V^.DisplayNext:=nil; V:=V^.Next;
+ End;
+ FinishGroup;
+End;
+
 Procedure WriteAVCInitialization(T: Integer);
 Var A,B,D,N,K: LongInt; OldLE: Boolean;
 Begin
@@ -4554,10 +4837,14 @@ Var V: PSample; Keys: LongInt; HasCTS: Boolean;
 Begin
  With Tracks^[T] Do Begin
   StartBox('trak'); StartBox('tkhd'); W32(7); W32(0); W32(0); W32(T); W32(0);
-  W32(Ticks((Duration-Skip)*1000.0/Scale)); Zero(8); W16(0); W16(0);
+  W32(Ticks((Duration-Skip+StartDelay)*1000.0/Scale)); Zero(8); W16(0); W16(0);
   If Video Then W16(0) Else W16(256); W16(0); Matrix; W32(Width Shl 16); W32(Height Shl 16); EndBox;
-  If Skip>0 Then Begin
-   StartBox('edts'); StartBox('elst'); W32(0); W32(1); W32(Ticks((Duration-Skip)*1000.0/Scale)); W32(Skip); W16(1); W16(0); EndBox; EndBox;
+  If (Skip>0) Or (StartDelay>0) Then Begin
+   StartBox('edts'); StartBox('elst'); W32(0);
+   If StartDelay>0 Then Begin
+    W32(2); W32(Ticks(StartDelay*1000.0/Scale)); W32(-1); W16(1); W16(0);
+   End Else W32(1);
+   W32(Ticks((Duration-Skip)*1000.0/Scale)); W32(Skip); W16(1); W16(0); EndBox; EndBox;
   End;
   StartBox('mdia'); StartBox('mdhd'); W32(0); W32(0); W32(0); W32(Scale); W32(Duration); W16($55C4); W16(0); EndBox;
   StartBox('hdlr'); W32(0); W32(0); If Video Then WTag('vide') Else WTag('soun'); Zero(12); W8(0); EndBox;
@@ -4614,7 +4901,7 @@ Begin
  Until Pick=0;
  EndBox; StartBox('moov'); MovieDuration:=0;
  For T:=1 To TrackCount Do Begin
-  P:=Ticks((Tracks^[T].Duration-Tracks^[T].Skip)*1000.0/Tracks^[T].Scale); If P>MovieDuration Then MovieDuration:=P;
+  P:=Ticks((Tracks^[T].Duration-Tracks^[T].Skip+Tracks^[T].StartDelay)*1000.0/Tracks^[T].Scale); If P>MovieDuration Then MovieDuration:=P;
  End;
  StartBox('mvhd'); W32(0); W32(0); W32(0); W32(1000); W32(MovieDuration);
  W32($10000); W16(256); Zero(10); Matrix; Zero(24); W32(TrackCount+1); EndBox;
@@ -4626,6 +4913,119 @@ Begin
  Name:='00dc'; Name[1]:=Chr(48+(T-1) Div 10); Name[2]:=Chr(48+(T-1) Mod 10);
  If Not Tracks^[T].Video Then Begin Name[3]:='w'; Name[4]:='b'; End; ChunkTag:=Name;
 End;
+{ AVI n'a pas d'elst: appliquer l'intervalle media puis representer le retard
+  par dwStart, a la precision d'un paquet/image. Pas de reencodage cache. }
+Procedure ApplyMPEdits;
+Var T,A,Version,Code: Integer;
+ At,B,E,N,EntrySize,Media,Length,Lead,Offset,Step,Removed,Kept: LongInt;
+ Seg,MediaValue,StartValue,EndValue,FirstDTS,Shift: Double;
+ HaveMedia,Selected: Boolean;
+ V,NextV,FirstKeep,LastKeep: PSample;
+
+Function Read64(Position: LongInt; Signed: Boolean): Double;
+Var High,Low: Double;
+Begin
+ High:=U32(Position,False); Low:=U32(Position+4,False);
+ If Signed And (High>=2147483648.0) Then High:=High-4294967296.0;
+ Read64:=High*4294967296.0+Low;
+End;
+Begin
+ FirstDTS:=0;
+ For T:=1 To TrackCount Do With Tracks^[T] Do Begin
+  If EditAt<>0 Then Begin
+   MPBox(EditAt,FileLimit,B,E); If E-B<8 Then Fail('elst tronquee.');
+   Version:=ByteAt(B); If Version>1 Then Fail('Version elst inconnue.');
+   N:=Number(B+4,False); EntrySize:=12; If Version=1 Then EntrySize:=20;
+   If (N<1) Or (N>32) Or (N>(E-B-8) Div EntrySize) Then Fail('Liste elst incorrecte.');
+   At:=B+8; Lead:=0; Media:=0; Length:=0; HaveMedia:=False;
+   For A:=1 To N Do Begin
+    If Version=0 Then Begin Seg:=U32(At,False); MediaValue:=Signed32(At+4); Code:=8; End
+    Else Begin Seg:=Read64(At,False); MediaValue:=Read64(At+8,True); Code:=16; End;
+    If (U16(At+Code,False)<>1) Or (U16(At+Code+2,False)<>0) Then Fail('Montage MP4: seule la vitesse 1 est prise en charge.');
+    If Seg<=0 Then Fail('Montage MP4 de duree nulle non pris en charge.');
+    If MediaValue=-1 Then Begin
+     If HaveMedia Then Fail('Montage MP4: segment vide apres le media non pris en charge.');
+     Lead:=Ticks(Lead*1.0+Seg*Scale/MovieScale);
+    End Else Begin
+     If (MediaValue<0) Or HaveMedia Then Fail('Montage MP4: un seul intervalle media continu est pris en charge.');
+     Media:=Ticks(MediaValue*Scale/InputScale); Length:=Ticks(Seg*Scale/MovieScale); HaveMedia:=True;
+    End;
+    Inc(At,EntrySize);
+   End;
+   If Not HaveMedia Then Fail('Montage MP4 sans intervalle media.');
+   Offset:=Ticks(Lead*1.0-Media); EndValue:=Media*1.0+Length;
+   FirstKeep:=nil; LastKeep:=nil; V:=First;
+   While V<>nil Do Begin
+    StartValue:=V^.Time*1.0+V^.Composition;
+    If Not Video And (V<>First) And (StartValue<Media) And (StartValue+V^.Duration>Media+1) Then
+     Fail('Debut montage MP4 au milieu dun paquet audio: reencodage requis.');
+    If ((StartValue>=Media-1.0) Or (Not Video And (V=First) And (StartValue+V^.Duration>Media))) And
+     (StartValue<EndValue-1.0) Then Begin
+     If FirstKeep=nil Then FirstKeep:=V; LastKeep:=V;
+    End;
+    V:=V^.Next;
+   End;
+   If FirstKeep=nil Then Fail('Montage MP4 sans paquets dans intervalle demande.');
+   If Not Video And (Media>First^.Time) Then Begin
+    { AAC/MP3 peuvent dependre du preroll pour l'etat du decodeur. AVI ne
+      peut pas cacher ces echantillons avec une edit list. Les conserver,
+      puis decaler ensemble toutes les pistes; ne pas abimer le debut audio. }
+    If Media>First^.Time+First^.Duration+1 Then
+     Fail('Coupe audio MP4 au-dela de lamorcage: reencodage requis pour AVI.');
+    FirstKeep:=First;
+    If Not HideBanner Then WriteLn('AVI piste ',T,': preroll audio conserve; origine commune ajustee.');
+   End;
+   If Video And Not FirstKeep^.Key Then Fail('Debut montage video hors image cle: reencodage requis.');
+   { Ne jamais enlever une reference necessaire aux B-frames conservees. }
+   V:=FirstKeep;
+   Repeat
+    StartValue:=V^.Time*1.0+V^.Composition;
+    If Video And ((StartValue<Media-1.0) Or (StartValue>=EndValue-1.0)) Then
+     Fail('Coupe MP4 traversant des references B-frames: reencodage requis.');
+    If V=LastKeep Then Break; V:=V^.Next;
+   Until V=nil;
+   V:=First; Selected:=False; Kept:=0; Removed:=0;
+   While V<>nil Do Begin
+    NextV:=V^.Next;
+    If V=FirstKeep Then Selected:=True;
+    If Selected Then Begin V^.Time:=Ticks(V^.Time*1.0+Offset); Inc(Kept); End
+    Else Begin Dispose(V); Inc(Removed); End;
+    If V=LastKeep Then Selected:=False;
+    V:=NextV;
+   End;
+   First:=FirstKeep; Last:=LastKeep; Last^.Next:=nil; Count:=Kept;
+   If Not HideBanner Then WriteLn('Montage piste ',T,': ',Removed,' paquet(s) retires, decalage applique.');
+  End;
+  If First^.Time*1.0/Scale<FirstDTS Then FirstDTS:=First^.Time*1.0/Scale;
+ End;
+ { Un decalage commun conserve l'alignement des pistes lorsque le decodeur
+   video a besoin de paquets avant la premiere presentation. }
+ Shift:=-FirstDTS;
+ For T:=1 To TrackCount Do With Tracks^[T] Do Begin
+  Step:=First^.Duration; If Step<=0 Then Fail('Duree de paquet AVI invalide.');
+  V:=First;
+  While V<>nil Do Begin
+   If (V^.Next<>nil) And (Abs(V^.Duration-Step)>1) Then Fail('AVI: cadence variable non prise en charge.');
+   If (V^.Next=nil) And (V^.Duration>Step+1) Then Fail('AVI: derniere duree variable non prise en charge.');
+   V:=V^.Next;
+  End;
+  AVIStep:=Step;
+  StartValue:=First^.Time+Shift*Scale;
+  HeaderStart:=Ticks(StartValue/Step);
+  If HeaderStart<0 Then Fail('Origine AVI negative.');
+  If (Abs(StartValue-HeaderStart*1.0*Step)>1) And Not HideBanner Then
+   WriteLn('AVI piste ',T,': retard arrondi a la precision dun paquet.');
+  V:=First; At:=Ticks(HeaderStart*1.0*Step);
+  While V<>nil Do Begin
+   V^.Time:=At;
+   If (V^.Next=nil) And (V^.Duration<Step) And Not HideBanner Then
+    WriteLn('AVI piste ',T,': fin arrondie au paquet complet (sans reencodage).');
+   V^.Duration:=Step; At:=Ticks(At*1.0+Step); V:=V^.Next;
+  End;
+  Duration:=Ticks(Count*1.0*Step);
+ End;
+End;
+
 Procedure WriteAVI;
 Var T,VideoTrack: Integer; V: PSample; Delta,Divisor,AVIUnit,AVIRate: LongInt;
 Function GCD(A,B: LongInt): LongInt;
@@ -4640,7 +5040,6 @@ Begin
   End Else If (Codec<>'mp4a') And (Codec<>'.mp3') Then Fail('AVI: AAC ou MP3 requis.');
   V:=First; Delta:=Ticks(Duration*1.0/Count);
   While V<>nil Do Begin
-   If (V^.Composition<>0) And (Codec<>'avc1') Then Fail('AVI MPEG-4: images reordonnees non prises en charge.');
    If Abs(V^.Duration-Delta)>1 Then Fail('AVI: cadence variable non prise en charge.'); V:=V^.Next;
   End;
  End;
@@ -4656,7 +5055,7 @@ Begin
   Divisor:=GCD(Duration,Count); AVIUnit:=Duration Div Divisor;
   AVIRate:=Count Div Divisor; Divisor:=GCD(AVIUnit,Scale);
   AVIUnit:=AVIUnit Div Divisor; AVIRate:=Ticks(AVIRate*1.0*(Scale Div Divisor));
-  W32(0); W16(0); W16(0); W32(0); W32(AVIUnit); W32(AVIRate); W32(0); W32(Count);
+  W32(0); W16(0); W16(0); W32(0); W32(AVIUnit); W32(AVIRate); W32(HeaderStart); W32(Count);
   W32(0); W32(-1); W32(0); W16(0); W16(0); W16(Width); W16(Height); EndBox;
   StartBox('strf');
   If Video Then Begin
@@ -4665,7 +5064,7 @@ Begin
    If Codec='mp4v' Then WriteBytes(Config,ConfigSize) Else WriteAVCInitialization(T);
   End Else Begin
    If Codec='mp4a' Then W16($FF) Else W16($55);
-   W16(Channels); W32(Rate); W32(0); W16(1); W16(0);
+   W16(Channels); W32(Rate); W32(0); W16(0); W16(0);
    If Codec='mp4a' Then Begin W16(ConfigSize); WriteBytes(Config,ConfigSize); End Else W16(0);
   End;
   EndBox; EndBox;
@@ -4736,7 +5135,9 @@ Begin
    Config[8]:=SavedConfig[17]; Config[9]:=SavedConfig[16]; Config[10]:=0;
   End;
   V:=First; Time:=0; Origin:=First^.Time;
+  If InKind='avi' Then StartDelay:=Ticks(Origin);
   While V<>nil Do Begin
+   If InKind='avi' Then V^.Time:=V^.Time-Ticks(Origin);
    If InKind='webm' Then Begin
     V^.Time:=V^.Time-Ticks(Origin);
     If Codec='Opus' Then Begin
@@ -4758,25 +5159,13 @@ Begin
      End;
     End;
    End;
-   If InKind='avi' Then Begin
-    If Codec='mp4v' Then Begin
-     Position:=V^.Pos; Finish:=Position+V^.Size; Payload:=Position;
-     While (Payload+4<Finish) And Not ((ByteAt(Payload)=0) And (ByteAt(Payload+1)=0) And (ByteAt(Payload+2)=1) And (ByteAt(Payload+3)=$B6)) Do Inc(Payload);
-     If Payload+4>=Finish Then Fail('Paquet MPEG-4 sans VOP.');
-     A:=ByteAt(Payload+4) Shr 6; If A>=2 Then Fail('AVI MPEG-4 B-frames/packed bitstream non pris en charge.'); V^.Key:=A=0;
-     Inc(Payload,5);
-     While Payload+4<Finish Do Begin
-      If (ByteAt(Payload)=0) And (ByteAt(Payload+1)=0) And (ByteAt(Payload+2)=1) And (ByteAt(Payload+3)=$B6) Then
-       Fail('AVI MPEG-4 packed bitstream non pris en charge.');
-      Inc(Payload);
-     End;
-    End Else If Codec='avc1' Then CheckAVCSlices(V) Else V^.Key:=True;
-   End;
+   If (InKind='avi') And Not Video Then V^.Key:=True;
    If (V^.Time<0) Or (V^.Duration<=0) Then Fail('Chronologie video/audio invalide.');
    If Abs(V^.Time-Time)>2 Then Fail('Chronologie avec decalage/trou non prise en charge.');
    Time:=V^.Time*1.0+V^.Duration; V:=V^.Next;
   End;
   Duration:=Ticks(Time);
+  If (InKind='avi') And Video Then ReconstructAVI(T);
  End;
 End;
 
@@ -4785,7 +5174,7 @@ Begin
  New(Tracks); FillChar(Tracks^,SizeOf(Tracks^),0); TrackCount:=0; CacheAt:=-1; Level:=0;
  OpenRead(Source); FileLimit:=InputSize;
  If InKind='mp4' Then ReadMP4 Else If InKind='avi' Then ReadAVI Else If InKind='webm' Then ReadWebM Else Fail('Conteneur video inconnu.');
- PrepareTracks; OpenWrite(Target);
+ PrepareTracks; If InKind='mp4' Then ApplyMPEdits; OpenWrite(Target);
  If OutKind='avi' Then WriteAVI Else WriteMP4;
  CloseRead; CloseWrite;
  For I:=1 To TrackCount Do Begin
@@ -4976,7 +5365,8 @@ Procedure Help;Begin
  WriteLn('HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
  WriteLn('Video locale: MP4 vers AVI, AVI vers MP4, WebM VP9/Opus vers MP4.');
  WriteLn('-c copy: changement de conteneur, pas de reencodage video.');
- WriteLn('AVI vers MP4 sans B-frames; autres restrictions dans FFMPEG.md.');
+ WriteLn('AVI B-frames H264/MPEG4; montages MP4 elst 32/64 bits a vitesse 1.');
+ WriteLn('AVI: retards arrondis au paquet; preroll audio conserve si necessaire.');
  WriteLn('-hls_base_url URL_ORIGINE: resout les URI d''une liste locale.');
  WriteLn('-c:a pcm_s16le|mp3|copy   (-acodec et -codec:a acceptes)');
  WriteLn('-ar HZ   frequence de sortie 4000..192000 (-ar apres -i)');
@@ -5018,7 +5408,7 @@ BEGIN
   End
   Else If Argument='-version' Then Begin
    WriteLn(
-   'FFMPEG Pascal 1.2; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
+   'FFMPEG Pascal 1.3; sources de reference FFmpeg 8.0.git; moteurs Pascal du projet.');
    Halt(0);
   End
   Else If Argument='-formats' Then Begin
@@ -5142,7 +5532,7 @@ BEGIN
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
  '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
- If Not HideBanner Then WriteLn('FFMPEG Pascal 1.2 - moteur audio natif du projet');
+ If Not HideBanner Then WriteLn('FFMPEG Pascal 1.3 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
   Else
