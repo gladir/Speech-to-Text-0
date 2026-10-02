@@ -6093,6 +6093,7 @@ Var
  Name: String[4];
 Begin
  MPBox(At,Limit,B,E); Name:=Tag(At+4); Tracks^[T].Codec:=Name;
+ If NoAudio And Not Tracks^[T].Video Then Exit;
  With Tracks^[T] Do Begin
   If Video Then Begin
    If E-At<86 Then Fail('Entree video MP4 tronquee.');
@@ -6382,7 +6383,7 @@ Begin
    Scale:=Number(B+20,True); Rate:=Number(B+24,True);
    If (Scale=0) Or (Rate=0) Then Fail('Horloge AVI invalide.');
    Tracks^[T].AVIUnits:=Number(B+28,True);
-   If Number(B+44,True)<>0 Then Fail('AVI a paquets de taille fixe non pris en charge.');
+   If (Number(B+44,True)<>0) And (Tracks^[T].Video Or Not NoAudio) Then Fail('AVI a paquets de taille fixe non pris en charge.');
    Tracks^[T].InputScale:=Rate; Tracks^[T].DefaultDuration:=Scale;
    If Not Tracks^[T].Video Then Tracks^[T].Scale:=Rate;
   End Else If (Name='strf') And (T>0) Then Begin
@@ -6400,6 +6401,7 @@ Begin
      ConfigFrom(T,B+40,N-40);
     End Else
     Begin
+     If NoAudio Then Codec:='skip' Else Begin
      If N<16 Then Fail('WAVEFORMAT AVI tronque.');
      A:=U16(B,True); Channels:=U16(B+2,True); Rate:=Number(B+4,True);
      If A=$55 Then Codec:='.mp3' Else If A=$FF Then Codec:='mp4a'
@@ -6409,6 +6411,7 @@ Begin
      If (N>=18) And (Codec='mp4a') Then Begin
       A:=U16(B+16,True); If A>N-18 Then Fail('Configuration AAC AVI tronquee.');
       ConfigFrom(T,B+18,A);
+     End;
      End;
     End;
    End;
@@ -8069,7 +8072,30 @@ Begin
   C:=A Mod B; A:=B; B:=C;
  End; GCD:=A;
 End;
+Procedure RestoreAVIHolds;
+Var T,J,N: Integer; V,NextV,Hold: PSample; Step: LongInt;
 Begin
+ For T:=1 To TrackCount Do With Tracks^[T] Do If Video Then Begin
+  Step:=Ticks(DefaultDuration*1.0*Scale/InputScale);
+  If Step<=0 Then Fail('AVI: cadence invalide.');
+  V:=First;
+  While V<>Nil Do Begin
+   NextV:=V^.Next; Delta:=Ticks(V^.Duration*1.0/Step);
+   If (Delta<1) Or (Delta>30000) Or (Abs(V^.Duration-Delta*1.0*Step)>1) Then
+    Fail('AVI: duree non multiple de la cadence.');
+   N:=Delta; V^.Duration:=Step;
+   For J:=2 To N Do Begin
+    New(Hold); FillChar(Hold^,SizeOf(TSample),0);
+    Hold^.Pos:=V^.Pos; Hold^.Time:=Ticks(V^.Time*1.0+Step); Hold^.Duration:=Step;
+    Hold^.Next:=NextV; V^.Next:=Hold; V:=Hold; Inc(Count);
+   End;
+   If NextV=Nil Then Last:=V;
+   V:=NextV;
+  End;
+ End;
+End;
+Begin
+ If InKind='avi' Then RestoreAVIHolds;
  VideoTrack:=0;
  For T:=1 To TrackCount Do With Tracks^[T] Do Begin
   If Video Then Begin
@@ -8200,6 +8226,23 @@ Begin
  End;
 End;
 
+Procedure RemoveAudioTracks;
+Var T,Keep: Integer; V,N: PSample;
+Begin
+ If Not NoAudio Then Exit;
+ Keep:=0;
+ For T:=1 To TrackCount Do Begin
+  If Tracks^[T].Video Then Begin
+   Inc(Keep); If Keep<>T Then Tracks^[Keep]:=Tracks^[T];
+  End Else Begin
+   V:=Tracks^[T].First;
+   While V<>Nil Do Begin N:=V^.Next; Dispose(V); V:=N; End;
+  End;
+ End;
+ TrackCount:=Keep;
+ If Keep=0 Then Fail('-an: aucune piste video a ecrire.');
+End;
+
 Procedure PrepareTracks;
 Var
  T,A,ConfigCode,Frames,N: Integer;
@@ -8311,7 +8354,7 @@ Begin
  If InKind='m4v' Then ReadM4V Else
  If InKind='mp4' Then ReadMP4 Else If InKind='avi' Then ReadAVI Else If InKind=
  'webm' Then ReadWebM Else Fail('Conteneur video inconnu.');
- PrepareTracks; If InKind='mp4' Then ApplyMPEdits; OpenWrite(Target);
+ RemoveAudioTracks; PrepareTracks; If InKind='mp4' Then ApplyMPEdits; OpenWrite(Target);
  If OutKind='flv' Then WriteFLV1 Else
  If OutKind='yuv4mpegpipe' Then WriteY4M Else
  If OutKind='m4v' Then WriteM4V Else If OutKind='avi' Then WriteAVI Else WriteMP4;
@@ -8555,6 +8598,7 @@ Procedure Help;Begin
  WriteLn('FLV1 intra: -i entree.y4m -c:v flv sortie.flv; -i entree.flv sortie.y4m');
  WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn('-c copy: changement de conteneur, pas de reencodage video.');
+ WriteLn('-an: ne pas ecrire les pistes audio (sortie video uniquement).');
  WriteLn('AVI B-frames H264/MPEG4; montages MP4 elst 32/64 bits a vitesse 1.');
  WriteLn('AVI: retards arrondis au paquet; preroll audio conserve si necessaire.');
  WriteLn('-hls_base_url URL_ORIGINE: resout les URI d''une liste locale.');
@@ -8803,22 +8847,27 @@ BEGIN
   Temps[2]:=NewTemporary; ExtractFLVPicture(Intermediate,Temps[2],ImageWidth,ImageHeight);
   Commit(Temps[2]); Temps[2]:=''; WriteLn('Image ',VideoCodec,' creee: ',OutputPath); Halt(0);
  End;
- If (VideoFrames<>0) Or (ImageWidth<>0) Or (VideoCodec<>'') Or NoAudio Then
-  Fail('-vframes, -s, -vcodec png/gif et -an: reserves a extraction PNG/GIF.');
+ If (VideoFrames<>0) Or (ImageWidth<>0) Or ((VideoCodec<>'') And (VideoCodec<>'copy')) Then
+  Fail('-vframes, -s et encodage video non pris en charge pour cette sortie.');
  If InputFormat='hls' Then Begin
   If (OutputFormat<>'mp4') Or (AudioCodec<>'copy') Or Not AllStreams Then   Fail(
   'HLS exige -c copy et une sortie MP4.');
   If (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or NoVideo Then   Fail(
   'HLS copy conserve toutes les pistes: conversion et -vn non pris en charge.');
-  Temps[2]:=NewTemporary; AssembleHLS(Intermediate,Temps[2]);
-  Commit(Temps[2]); Temps[2]:=''; WriteLn('MP4 fragmente cree: ',OutputPath); Halt(0);
+  Temps[2]:=NewTemporary;
+  If NoAudio Then Begin
+   Temps[3]:=NewTemporary; AssembleHLS(Intermediate,Temps[3]);
+   RemuxVideo(Temps[3],Temps[2],'mp4','mp4');
+  End Else AssembleHLS(Intermediate,Temps[2]);
+  Commit(Temps[2]); Temps[2]:=''; WriteLn('MP4 cree: ',OutputPath); Halt(0);
  End;
  If IsHTTP(InputPath) Then Fail('Entree reseau reservee aux listes HLS.');
  If HLSBase<>'' Then Fail('-hls_base_url exige une entree HLS.');
  If (InputFormat='mp4') Or (InputFormat='avi') Or (InputFormat='webm') Then Begin
   If Not (((InputFormat='mp4') And (OutputFormat='avi')) Or
   ((InputFormat='avi') And (OutputFormat='mp4')) Or
-  ((InputFormat='webm') And (OutputFormat='mp4'))) Then   Fail(
+  ((InputFormat='webm') And (OutputFormat='mp4')) Or
+  (NoAudio And (InputFormat=OutputFormat) And ((InputFormat='mp4') Or (InputFormat='avi')))) Then   Fail(
   'Conversions video: MP4 vers AVI, AVI vers MP4, WebM vers MP4.');
   If (AudioCodec<>'') And ((AudioCodec<>'copy') Or Not AllStreams) Then   Fail(
   'Video: utiliser -c copy; aucun reencodage video implemente.');
@@ -8828,6 +8877,8 @@ BEGIN
   Temps[2]:=NewTemporary; RemuxVideo(InputPath,Temps[2],InputFormat,OutputFormat);
   Commit(Temps[2]); Temps[2]:=''; WriteLn('Video creee: ',OutputPath); Halt(0);
  End;
+ If NoAudio Then Fail('-an: aucune piste a ecrire dans une sortie audio seule.');
+ If VideoCodec<>'' Then Fail('Codec video incompatible avec une sortie audio seule.');
  If (OutputFormat<>'wav') And (OutputFormat<>'mp3') Then Fail(
  'Seules les sorties WAV et MP3 sont implementees.');
  If AudioCodec='' Then If OutputFormat='wav' Then AudioCodec:=
