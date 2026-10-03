@@ -3334,15 +3334,21 @@ Var
  HLSListOpen,AllStreams,NoVideo,NoAudio: Boolean;
  VideoCodec: String;
  AspectNum,AspectDen: LongInt;
- HasAlbum,FourMV,HasVideoBitrate,HasBFrames,HasVideoTolerance: Boolean;
+ HasAlbum,FourMV,HasVideoBitrate,HasBFrames,HasVideoTolerance,HasBQuant,HasVideoBuffer,HasComment: Boolean;
  BFrames:Integer;
- VideoBitrate,VideoTolerance: LongInt;
+ VideoBitrate,VideoTolerance,VideoBuffer: LongInt;
+ VideoBufferAvailable:Double;
+ BQuantFactor,BQuantOffset:Double; LastReferenceQP:Integer;
  VideoRateBits,VideoRateDuration,VideoFrameBudget: Double;
  VideoRateLimited: LongInt;
  AlbumName: String;
  AlbumWide: Array[0..254] Of Word;
  AlbumUTF8: Array[0..764] Of Byte;
  AlbumWideSize,AlbumUTF8Size: Integer;
+ CommentName: String;
+ CommentWide: Array[0..254] Of Word;
+ CommentUTF8: Array[0..764] Of Byte;
+ CommentWideSize,CommentUTF8Size: Integer;
  VideoFrames,ImageWidth,ImageHeight: Integer;
  {$IFDEF MSWINDOWS}
   NetSession,NetRequest: Pointer;
@@ -3553,7 +3559,7 @@ Var Code: Integer;
 Begin {$I-}Seek(ActiveOutput,P); Code:=IOResult;{$I+}
  If Code<>0 Then Fail('Reprise encodage video impossible.'); End;
 Procedure VideoRateStart;
-Begin VideoRateBits:=0; VideoRateDuration:=0; VideoRateLimited:=0; End;
+Begin VideoBufferAvailable:=VideoBuffer*0.75; LastReferenceQP:=4; VideoRateBits:=0; VideoRateDuration:=0; VideoRateLimited:=0; End;
 Procedure VideoTrialStart(Var R: TVideoRateTrial; Seconds: Double);
 Var Compensation:Double;
 Begin
@@ -3566,6 +3572,32 @@ Begin
  End;
  VideoFrameBudget:=VideoBitrate*Seconds*Compensation;
  R.Q:=4; R.Low:=4; R.High:=31; R.Best:=0; R.Done:=False; R.Budget:=VideoFrameBudget;
+ If (VideoBuffer>0) And (R.Budget>VideoBufferAvailable) Then R.Budget:=VideoBufferAvailable;
+End;
+Procedure VideoPictureTrialStart(Var R:TVideoRateTrial; Seconds:Double; IsB:Boolean);
+Begin
+ VideoTrialStart(R,Seconds);
+ { Positive factor fixes B QP from the last accepted reference, not a trial. }
+ If IsB And (BQuantFactor>0) Then Begin
+  If VideoBuffer=0 Then R.Done:=True Else Begin
+   R.Q:=Trunc(LastReferenceQP*BQuantFactor+BQuantOffset+0.5);
+   If R.Q<1 Then R.Q:=1; If R.Q>31 Then R.Q:=31; R.Low:=R.Q;
+  End;
+ End;
+End;
+Function VideoPictureQP(Base:Integer; IsB:Boolean):Integer;
+Var Q:Double;
+Begin
+ Q:=Base;
+ If IsB Then Begin
+  If BQuantFactor>0 Then Begin
+   Q:=LastReferenceQP*BQuantFactor+BQuantOffset;
+   If (VideoBuffer>0) And (Q<Base) Then Q:=Base;
+  End
+  Else If BQuantFactor<0 Then Q:=-Base*BQuantFactor+BQuantOffset;
+ End;
+ If Q<1 Then Q:=1; If Q>31 Then Q:=31;
+ VideoPictureQP:=Trunc(Q+0.5);
 End;
 Function VideoTrialAgain(Var R: TVideoRateTrial; Bytes: LongInt): Boolean;
 Begin
@@ -3577,6 +3609,11 @@ End;
 Procedure VideoRateAccept(Bytes: LongInt; Seconds: Double);
 Var Code: Integer;
 Begin
+ If VideoBuffer>0 Then Begin
+  If Bytes*8.0>VideoBufferAvailable Then Fail('-bufsize: tampon insuffisant pour cette image au QP autorise.');
+  VideoBufferAvailable:=VideoBufferAvailable-Bytes*8.0+VideoBitrate*Seconds;
+  If VideoBufferAvailable>VideoBuffer Then VideoBufferAvailable:=VideoBuffer;
+ End;
  { Remove the tail of a larger trial before the next picture or muxing. }
  {$I-}Truncate(ActiveOutput); Code:=IOResult;{$I+}
  If Code<>0 Then Fail('Finalisation encodage video impossible.');
@@ -3588,7 +3625,7 @@ Begin
  If HideBanner Or (VideoRateDuration<=0) Then Exit;
  WriteLn('Tolerance video: ',VideoTolerance,' bits/s.');
  WriteLn('Debit video cible: ',VideoBitrate,' bit/s; obtenu: ',VideoRateBits/VideoRateDuration:0:0,' bit/s.');
- If VideoRateLimited>0 Then WriteLn(VideoRateLimited,' image(s): cible depassee a la quantification maximale.');
+ If VideoRateLimited>0 Then WriteLn(VideoRateLimited,' image(s): budget depasse (quantification maximale ou QP B impose).');
 End;
 
 Function Probe(Const Name: String): String;
@@ -8037,12 +8074,19 @@ Begin
  StartBox('mvhd'); W32(0); W32(0); W32(0); W32(1000); W32(MovieDuration);
  W32($10000); W16(256); Zero(10); Matrix; Zero(24); W32(TrackCount+1); EndBox;
  For T:=1 To TrackCount Do WriteMPTrack(T);
- If HasAlbum Then Begin
+ If HasAlbum Or HasComment Then Begin
   StartBox('udta'); StartBox('meta'); W32(0);
   StartBox('hdlr'); W32(0); W32(0); WTag('mdir'); WTag('appl'); Zero(8); W8(0); EndBox;
-  StartBox('ilst'); StartBox(#169+'alb'); StartBox('data'); W32(1); W32(0);
-  If AlbumUTF8Size>0 Then WriteBytes(AlbumUTF8,AlbumUTF8Size);
-  EndBox; EndBox; EndBox; EndBox; EndBox;
+  StartBox('ilst');
+  If HasAlbum Then Begin
+   StartBox(#169+'alb'); StartBox('data'); W32(1); W32(0);
+   If AlbumUTF8Size>0 Then WriteBytes(AlbumUTF8,AlbumUTF8Size); EndBox; EndBox;
+  End;
+  If HasComment Then Begin
+   StartBox(#169+'cmt'); StartBox('data'); W32(1); W32(0);
+   If CommentUTF8Size>0 Then WriteBytes(CommentUTF8,CommentUTF8Size); EndBox; EndBox;
+  End;
+  EndBox; EndBox; EndBox;
  End;
  EndBox;
 End;
@@ -8298,6 +8342,11 @@ Begin
  If HasAlbum Then Begin
   StartBox('LIST'); WTag('INFO'); StartBox('IPRD');
   If AlbumUTF8Size>0 Then WriteBytes(AlbumUTF8,AlbumUTF8Size); W8(0);
+  EndBox; EndBox;
+ End;
+ If HasComment Then Begin
+  StartBox('LIST'); WTag('INFO'); StartBox('ICMT');
+  If CommentUTF8Size>0 Then WriteBytes(CommentUTF8,CommentUTF8Size); W8(0);
   EndBox; EndBox;
  End;
  StartBox('LIST'); Movi:=OutPos; WTag('movi');
@@ -9107,7 +9156,7 @@ Begin
   RateCode:=0; For J:=1 To 8 Do If Num*Rates[J,1]=Den*Rates[J,0] Then RateCode:=J;
   If RateCode=0 Then Fail('MPEG1: cadence standard 23.976/24/25/29.97/30/50/59.94/60 requise.');
   Allocate; VideoRateStart; OpenWrite(Target); StartCode($B3); PutBits(12,W); PutBits(12,H); PutBits(4,1); PutBits(4,RateCode);
-  PutBits(18,$3FFFF); PutBits(1,1); PutBits(10,20); PutBits(1,0); PutBits(1,0); PutBits(1,0); QP:=4;
+  PutBits(18,$3FFFF); PutBits(1,1); If VideoBuffer>0 Then PutBits(10,(VideoBuffer+16383) Div 16384) Else PutBits(10,20); PutBits(1,0); PutBits(1,0); PutBits(1,0); QP:=4;
   If MPEG2 Then Begin
    StartCode($B5); PutBits(4,1); If Num>Den*30 Then PutBits(8,$44) Else PutBits(8,$48); { Main Profile }
    PutBits(1,1); PutBits(2,1); PutBits(4,0); PutBits(12,0); PutBits(1,1);
@@ -9123,9 +9172,9 @@ Begin
     End;
     For Y:=CH[P] To Heights[P]-1 Do Move(Frames^[3,P,CH[P]-1]^,Frames^[3,P,Y]^,Widths[P]);
    End;
-   Align; FrameStart:=VideoOutPosition; VideoTrialStart(Trial,Den*1.0/Num);
+   Align; FrameStart:=VideoOutPosition; VideoPictureTrialStart(Trial,Den*1.0/Num,IsB);
    Repeat
-   VideoRewind(FrameStart); WriteCount:=0; WriteByte:=0; QP:=Trial.Q;
+   VideoRewind(FrameStart); WriteCount:=0; WriteByte:=0; QP:=VideoPictureQP(Trial.Q,IsB);
    StartCode(0); PutBits(10,DisplayIndex Mod 1024); PutBits(3,PicType); PutBits(16,65535);
    If IsB Then For P:=0 To 1 Do Begin PutBits(1,0); If MPEG2 Then PutBits(3,7) Else PutBits(3,1); End;
    PutBits(1,0);
@@ -9151,7 +9200,8 @@ Begin
    End;
    Align; FrameBytes:=VideoOutPosition-FrameStart;
    Until Not VideoTrialAgain(Trial,FrameBytes);
-   VideoRateAccept(FrameBytes,Den*1.0/Num); Inc(FrameCount);
+   VideoRateAccept(FrameBytes,Den*1.0/Num);
+   If Not IsB Then LastReferenceQP:=QP; Inc(FrameCount);
    If Not IsB Then Begin SwapFrame:=Past; Past:=Future; Future:=Cur; Cur:=SwapFrame; End;
   End;
   If FrameCount=0 Then Fail('MPEG1: aucune image.'); StartCode($B7);
@@ -9481,9 +9531,9 @@ Begin
    ReadAt(PlaneBase,Frames^[2,Plane,Y]^,Widths[Plane]); Inc(PlaneBase,Widths[Plane]);
   End;
   Intra:=Not IsB And ((FrameNo=0) Or (DisplayIndex Mod 12=0));
-  FrameStart:=VideoOutPosition; SavedMB4:=MB4Count; VideoTrialStart(Trial,Den*1.0/Num);
+  FrameStart:=VideoOutPosition; SavedMB4:=MB4Count; VideoPictureTrialStart(Trial,Den*1.0/Num,IsB);
   Repeat
-  QP:=Trial.Q; VideoRewind(FrameStart); BitCount:=0; BitByte:=0; MB4Count:=SavedMB4;
+  QP:=VideoPictureQP(Trial.Q,IsB); VideoRewind(FrameStart); BitCount:=0; BitByte:=0; MB4Count:=SavedMB4;
   FillChar(Mot^,SizeOf(Mot^),0);
   For Plane:=0 To 2 Do For Y:=0 To 60 Do For X:=0 To 80 Do DCP^[Plane,Y,X]:=1024;
   StartCode($B6); If IsB Then Bits(2,2) Else If Intra Then Bits(2,0) Else Bits(2,1);
@@ -9527,6 +9577,7 @@ Begin
   Stuff; FrameBytes:=VideoOutPosition-FrameStart;
   Until Not VideoTrialAgain(Trial,FrameBytes);
   VideoRateAccept(FrameBytes,Den*1.0/Num);
+   If Not IsB Then LastReferenceQP:=QP;
   If Not IsB Then Begin PreviousSecond:=LastSecond; LastSecond:=Second; End;
   Inc(FrameNo); If Time>2147483647-Den Then Fail('MPEG4: duree excessive.'); Inc(Time,Den);
   If Not IsB Then Begin J:=Cur; Cur:=Ref; Ref:=J; End;
@@ -9596,19 +9647,30 @@ Begin
    If TagEnd-At<10 Then Fail('Trame ID3 tronquee.');
    Name:=TagAt(At); N:=GetSize(At+4,False,Version=4);
    If N>TagEnd-At-10 Then Fail('Trame ID3 hors etiquette.');
-   If Name<>'TALB' Then Inc(Kept,10+N); Inc(At,10+N);
+   If Not ((HasAlbum And (Name='TALB')) Or (HasComment And (Name='COMM'))) Then Inc(Kept,10+N); Inc(At,10+N);
   End;
-  N:=3+LongInt(AlbumWideSize)*2;
-  If Kept>268435455-10-N Then Fail('ID3 trop volumineux.');
-  PutTag('ID3'); PutByte(Version); PutByte(0); PutByte(0); PutSize(Kept+10+N,False,True);
-  PutTag('TALB'); PutSize(N,False,Version=4); PutByte(0); PutByte(0);
-  PutByte(1); PutByte(255); PutByte(254);
-  For J:=0 To AlbumWideSize-1 Do Begin PutByte(AlbumWide[J] And 255); PutByte(AlbumWide[J] Shr 8); End;
+  N:=0;
+  If HasAlbum Then Inc(N,13+LongInt(AlbumWideSize)*2);
+  If HasComment Then Inc(N,20+LongInt(CommentWideSize)*2);
+  If Kept>268435455-N Then Fail('ID3 trop volumineux.');
+  PutTag('ID3'); PutByte(Version); PutByte(0); PutByte(0); PutSize(Kept+N,False,True);
+  If HasAlbum Then Begin
+   N:=3+LongInt(AlbumWideSize)*2;
+   PutTag('TALB'); PutSize(N,False,Version=4); PutByte(0); PutByte(0);
+   PutByte(1); PutByte(255); PutByte(254);
+   For J:=0 To AlbumWideSize-1 Do Begin PutByte(AlbumWide[J] And 255); PutByte(AlbumWide[J] Shr 8); End;
+  End;
+  If HasComment Then Begin
+   N:=10+LongInt(CommentWideSize)*2;
+   PutTag('COMM'); PutSize(N,False,Version=4); PutByte(0); PutByte(0);
+   PutByte(1); PutTag('und'); PutByte(255); PutByte(254); PutByte(0); PutByte(0); PutByte(255); PutByte(254);
+   For J:=0 To CommentWideSize-1 Do Begin PutByte(CommentWide[J] And 255); PutByte(CommentWide[J] Shr 8); End;
+  End;
   At:=10;
   While At<TagEnd Do Begin
    ReadAt(At,H,1); If H[0]=0 Then Break;
    Name:=TagAt(At); N:=GetSize(At+4,False,Version=4);
-   If Name<>'TALB' Then CopyRange(At,N+10); Inc(At,N+10);
+   If Not ((HasAlbum And (Name='TALB')) Or (HasComment And (Name='COMM'))) Then CopyRange(At,N+10); Inc(At,N+10);
   End;
   CopyRange(TagEnd,Size-TagEnd);
  End Else Begin
@@ -9631,19 +9693,26 @@ Begin
      If PartSize>At+N-Part Then Fail('INFO WAV hors bloc.');
      If Odd(PartSize) Then Inc(PartSize);
      If PartSize>At+N-Part Then Fail('INFO WAV sans bourrage.');
-     If TagAt(Part)<>'IPRD' Then Inc(InfoSize,8+PartSize); Inc(Part,8+PartSize);
+     If Not ((HasAlbum And (TagAt(Part)='IPRD')) Or (HasComment And (TagAt(Part)='ICMT'))) Then Inc(InfoSize,8+PartSize); Inc(Part,8+PartSize);
     End;
     PutTag('LIST'); PutSize(InfoSize,True,False); PutTag('INFO'); Part:=At+12;
     While Part<At+8+N Do Begin
      PartSize:=GetSize(Part+4,True,False); If Odd(PartSize) Then Inc(PartSize);
-     If TagAt(Part)<>'IPRD' Then CopyRange(Part,8+PartSize); Inc(Part,8+PartSize);
+     If Not ((HasAlbum And (TagAt(Part)='IPRD')) Or (HasComment And (TagAt(Part)='ICMT'))) Then CopyRange(Part,8+PartSize); Inc(Part,8+PartSize);
     End;
    End Else CopyRange(At,EndAt-At);
    At:=EndAt;
   End;
+  If HasAlbum Then Begin
   N:=AlbumUTF8Size+1; PartSize:=N; If Odd(PartSize) Then Inc(PartSize);
   PutTag('LIST'); PutSize(12+PartSize,True,False); PutTag('INFO'); PutTag('IPRD'); PutSize(N,True,False);
   If AlbumUTF8Size>0 Then WriteBytes(AlbumUTF8,AlbumUTF8Size); PutByte(0); If Odd(N) Then PutByte(0);
+  End;
+  If HasComment Then Begin
+  N:=CommentUTF8Size+1; PartSize:=N; If Odd(PartSize) Then Inc(PartSize);
+  PutTag('LIST'); PutSize(12+PartSize,True,False); PutTag('INFO'); PutTag('ICMT'); PutSize(N,True,False);
+  If CommentUTF8Size>0 Then WriteBytes(CommentUTF8,CommentUTF8Size); PutByte(0); If Odd(N) Then PutByte(0);
+  End;
   {$I-}OutSize:=FilePos(ActiveOutput); Code:=IOResult;{$I+}
   If (Code<>0) Or (OutSize<12) Then Fail('Taille sortie WAV incorrecte.');
   {$I-}Seek(ActiveOutput,4); Code:=IOResult;{$I+}
@@ -9659,7 +9728,7 @@ Var
  Code,RestoreCode: Integer;
 Begin
  Backup:=''; Ready:=Stage;
- If HasAlbum And ((OutputFormat='mp3') Or (OutputFormat='wav')) Then Begin
+ If (HasAlbum Or HasComment) And ((OutputFormat='mp3') Or (OutputFormat='wav')) Then Begin
   Temps[4]:=NewTemporary; WriteAudioAlbum(Stage,Temps[4]); Ready:=Temps[4];
  End;
  If IsDirectory(OutputPath) Then Fail('La sortie designe un dossier.');
@@ -9746,12 +9815,7 @@ Procedure Help;Begin
  WriteLn('M4V brut MPEG-4 Part 2: MP4/AVI vers M4V et M4V vers MP4/AVI, -c copy.');
  WriteLn;
  WriteLn(' /?                             Affiche l''aide de cette commande.');
- WriteLn(' -c:v mpeg1video|mpeg2video      Y4M vers M1V/M2V (I/B); M1V/MPEG1 vers Y4M.');
- WriteLn(' -bf N                          0..16 images B entre references MPEG (defaut 0).');
- WriteLn(' -bt TOLERANCE                  Tolerance video, defaut 4000k; 0: budget strict.');
- WriteLn(' -b DEBIT, -b:v DEBIT            Debit video cible, defaut 200k (bits/s; k, M).');
  WriteLn(' -4mv                           MPEG4: quatre vecteurs 8x8 par macrobloc P.');
- WriteLn(' -c:v mpeg4                      Y4M 420 vers M4V/AVI/MP4, images I/P, debit cible -b.');
  WriteLn(' -ac 1|2                        Canaux de sortie (-ac apr'+#138+'s -i)');
  WriteLn(' -album NOM                     Nom de l''album (MP3, WAV, AVI, MP4).');
  WriteLn(' -an                            Ne pas '+#130+'crire les pistes audio (sortie vid'+#130+'o uniquement).');
@@ -9759,10 +9823,18 @@ Procedure Help;Begin
  WriteLn('                                AVI: retards arrondis au paquet; preroll audio conserve si n'+#130+'cessaire.');
  WriteLn(' -ar HZ                         Fr'+#130+'quence de sortie 4000..192000 (-ar apr'+#138+'s -i)');
  WriteLn(' -aspect N:D|DECIMAL             Ratio affichage (4:3, 16:9); sorties MP4, AVI, Y4M.');
+ WriteLn(' -b DEBIT, -b:v DEBIT            Debit video cible, defaut 200k (bits/s; k, M).'); 
  WriteLn(' -b:a 64k                       D'+#130+'bit MP3 CBR (d'+#130+'faut 320k); -ab 64 accepte; -vn; -hide_banner; -y; -n');
+ WriteLn(' -bf N                          0..16 images B entre references MPEG (defaut 0).');
+ WriteLn(' -b_qfactor F, -b_qoffset O      QP des images B; defauts 1.25 et 1.25.');
+ WriteLn(' -bt TOLERANCE                  Tolerance video, defaut 4000k; 0: budget strict.');
+ WriteLn(' -bufsize BITS                  Tampon video, 0 desactive; suffixes k/M.');
  WriteLn(' -c:a pcm_s16le|mp3|copy        (-acodec et -codec:a accept'+#130+'s)');
+ WriteLn(' -c:v mpeg4                      Y4M 420 vers M4V/AVI/MP4, images I/P, debit cible -b.');
+ WriteLn(' -c:v mpeg1video|mpeg2video      Y4M vers M1V/M2V (I/B); M1V/MPEG1 vers Y4M.');
  WriteLn(' -c copy                        Changement de conteneur, pas de r'+#130+'encodage vid'+#130'o.');
  WriteLn(' -codecs                        Liste des codecs support'+#130+'s');
+ WriteLn(' -comment TEXTE                 Commentaire MP3, WAV, AVI, MP4.');
  WriteLn(' -f wav|mp3|aiff|voc|libopenmpt Avant -i; -f wav|mp3 avant sortie');
  WriteLn(' -formats                       Liste des formats support'+#130+'s');
  WriteLn(' -h                             Affiche l''aide de cette commande');
@@ -9782,6 +9854,18 @@ Var
 Function NextArgument: String;Begin
  Inc(I); If I>ParamCount Then Fail('Valeur manquante pour '+Argument);
  NextArgument:=ParamStr(I);
+End;
+
+Function ParseBQuant(S,OptionName:String):Double;
+Var J,Code:Integer; V:Double;
+Begin
+ If S='' Then Fail(OptionName+': valeur manquante.');
+ For J:=1 To Length(S) Do
+  If Not (S[J] In ['0'..'9','+','-','.']) Then Fail(OptionName+': nombre decimal requis.');
+ Val(S,V,Code);
+ If Code<>0 Then Fail(OptionName+': nombre decimal invalide.');
+ If (V< -1000) Or (V>1000) Then Fail(OptionName+': valeur -1000..1000 requise.');
+ ParseBQuant:=V;
 End;
 
 Function ParseVideoRate(S,OptionName:String; Minimum,Maximum:LongInt):LongInt;
@@ -9839,6 +9923,39 @@ Begin
  End;
 End;
 
+Procedure PrepareComment;
+Const OEM850: Array[128..255] Of Word=(
+ 199,252,233,226,228,224,229,231,234,235,232,239,238,236,196,197,
+ 201,230,198,244,246,242,251,249,255,214,220,248,163,216,215,402,
+ 225,237,243,250,241,209,170,186,191,174,172,189,188,161,171,187,
+ 9617,9618,9619,9474,9508,193,194,192,169,9571,9553,9559,9565,162,165,9488,
+ 9492,9524,9516,9500,9472,9532,227,195,9562,9556,9577,9574,9568,9552,9580,164,
+ 240,208,202,203,200,305,205,206,207,9496,9484,9608,9604,166,204,9600,
+ 211,223,212,210,245,213,181,254,222,218,219,217,253,221,175,180,
+ 173,177,8215,190,182,167,247,184,176,168,183,185,179,178,9632,160);
+Var J,N: Integer; U: Word;
+Begin
+ CommentWideSize:=Length(CommentName); CommentUTF8Size:=0;
+ {$IFDEF MSWINDOWS}
+ If CommentWideSize>0 Then Begin
+  CommentWideSize:=MultiByteToWideChar(0,0,@CommentName[1],Length(CommentName),@CommentWide,255);
+  If CommentWideSize=0 Then Fail('Conversion du nom commentaire impossible.');
+ End;
+ {$ELSE}
+ For J:=0 To CommentWideSize-1 Do Begin
+  N:=Ord(CommentName[J+1]); If N<128 Then CommentWide[J]:=N Else CommentWide[J]:=OEM850[N];
+ End;
+ {$ENDIF}
+ For J:=0 To CommentWideSize-1 Do Begin
+  U:=CommentWide[J]; N:=CommentUTF8Size;
+  If U<128 Then Begin CommentUTF8[N]:=U; Inc(N); End Else
+  If U<2048 Then Begin CommentUTF8[N]:=$C0 Or (U Shr 6); CommentUTF8[N+1]:=$80 Or (U And 63); Inc(N,2); End Else
+  Begin CommentUTF8[N]:=$E0 Or (U Shr 12); CommentUTF8[N+1]:=$80 Or ((U Shr 6) And 63);
+   CommentUTF8[N+2]:=$80 Or (U And 63); Inc(N,3); End;
+  CommentUTF8Size:=N;
+ End;
+End;
+
 Procedure ParseAspect(S: String);
 Var K,C,Dots,Digits: Integer; N,D,G,R: LongInt; Decimal: Boolean;
 Begin
@@ -9867,9 +9984,10 @@ Begin
 End;
 
 BEGIN
- HasBFrames:=False; BFrames:=0;
+ HasBFrames:=False; BFrames:=0; HasBQuant:=False; BQuantFactor:=1.25; BQuantOffset:=1.25;
  HasVideoBitrate:=False; VideoBitrate:=200000;
- HasVideoTolerance:=False; VideoTolerance:=4000000;
+ HasVideoTolerance:=False; VideoTolerance:=4000000; HasVideoBuffer:=False; VideoBuffer:=0;
+ HasComment:=False; CommentName:=''; CommentWideSize:=0; CommentUTF8Size:=0;
  FourMV:=False; HasAlbum:=False; AlbumName:=''; AlbumWideSize:=0; AlbumUTF8Size:=0;
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
@@ -9920,7 +10038,10 @@ BEGIN
   If Argument='-n' Then NoOverwrite:=True Else
   If Argument='-hide_banner' Then HideBanner:=True Else
   If Argument='-vn' Then NoVideo:=True Else
-  If Argument='-album' Then Begin
+  If Argument='-comment' Then Begin
+   CommentName:=NextArgument; HasComment:=True; PrepareComment;
+  End
+  Else If Argument='-album' Then Begin
    AlbumName:=NextArgument; HasAlbum:=True; PrepareAlbum;
   End Else
   If Argument='-an' Then NoAudio:=True Else
@@ -9986,6 +10107,15 @@ BEGIN
   End
   Else If (Argument='-b') Or (Argument='-b:v') Then Begin
    VideoBitrate:=ParseVideoRate(NextArgument,'-b',1,100000000); HasVideoBitrate:=True;
+  End
+  Else If Argument='-b_qfactor' Then Begin
+   BQuantFactor:=ParseBQuant(NextArgument,'-b_qfactor'); HasBQuant:=True;
+  End
+  Else If Argument='-b_qoffset' Then Begin
+   BQuantOffset:=ParseBQuant(NextArgument,'-b_qoffset'); HasBQuant:=True;
+  End
+  Else If Argument='-bufsize' Then Begin
+   VideoBuffer:=ParseVideoRate(NextArgument,'-bufsize',0,16760832); HasVideoBuffer:=True;
   End
   Else If Argument='-bt' Then Begin
    VideoTolerance:=ParseVideoRate(NextArgument,'-bt',0,2147483647); HasVideoTolerance:=True;
@@ -10053,22 +10183,22 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
- If HasBFrames Then Begin
+ If HasBFrames Or HasBQuant Then Begin
   If (InputFormat<>'yuv4mpegpipe') Or
    Not ((VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or (VideoCodec='mpeg2video') Or
     (FourMV And (VideoCodec='')) Or ((VideoCodec='') And
      ((OutputFormat='mpeg1video') Or (OutputFormat='mpeg2video')))) Then
-   Fail('-bf exige un encodage Y4M vers MPEG-1, MPEG-2 ou MPEG-4; incompatible avec copy.');
+   Fail('-bf/-b_qfactor/-b_qoffset exige un encodage Y4M vers MPEG-1, MPEG-2 ou MPEG-4; incompatible avec copy.');
  End;
- If HasVideoBitrate Or HasVideoTolerance Then Begin
+ If HasVideoBitrate Or HasVideoTolerance Or HasVideoBuffer Then Begin
   If (InputFormat<>'yuv4mpegpipe') Or
    Not ((VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or (VideoCodec='mpeg2video') Or (VideoCodec='flv') Or
     (FourMV And (VideoCodec='')) Or ((VideoCodec='') And ((OutputFormat='mpeg1video') Or (OutputFormat='mpeg2video')))) Then
-   Fail('-b/-bt exige un encodage video Y4M vers MPEG4, MPEG1, MPEG2 ou FLV1; incompatible avec copy et FFV1.');
+   Fail('-b/-bt/-bufsize exige un encodage video Y4M vers MPEG4, MPEG1, MPEG2 ou FLV1; incompatible avec copy et FFV1.');
  End;
- If HasAlbum And (OutputFormat<>'mp3') And (OutputFormat<>'wav') And
+ If (HasAlbum Or HasComment) And (OutputFormat<>'mp3') And (OutputFormat<>'wav') And
   (OutputFormat<>'avi') And (OutputFormat<>'mp4') Then
-  Fail('-album: sorties MP3, WAV, AVI et MP4 uniquement.');
+  Fail('-album/-comment: sorties MP3, WAV, AVI et MP4 uniquement.');
  If AspectNum>0 Then Begin
   If NoVideo Then Fail('-aspect incompatible avec -vn.');
   If (OutputFormat<>'mp4') And (OutputFormat<>'avi') And (OutputFormat<>'yuv4mpegpipe') Then
@@ -10185,7 +10315,7 @@ BEGIN
   If (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or NoVideo Then   Fail(
   'HLS copy conserve toutes les pistes: conversion et -vn non pris en charge.');
   Temps[2]:=NewTemporary;
-  If NoAudio Or (AspectNum>0) Or HasAlbum Then Begin
+  If NoAudio Or (AspectNum>0) Or HasAlbum Or HasComment Then Begin
    Temps[3]:=NewTemporary; AssembleHLS(Intermediate,Temps[3]);
    RemuxVideo(Temps[3],Temps[2],'mp4','mp4');
   End Else AssembleHLS(Intermediate,Temps[2]);
@@ -10197,7 +10327,7 @@ BEGIN
   If Not (((InputFormat='mp4') And (OutputFormat='avi')) Or
   ((InputFormat='avi') And (OutputFormat='mp4')) Or
   ((InputFormat='webm') And (OutputFormat='mp4')) Or
-  ((NoAudio Or (AspectNum>0) Or HasAlbum) And (InputFormat=OutputFormat) And ((InputFormat='mp4') Or (InputFormat='avi')))) Then   Fail(
+  ((NoAudio Or (AspectNum>0) Or HasAlbum Or HasComment) And (InputFormat=OutputFormat) And ((InputFormat='mp4') Or (InputFormat='avi')))) Then   Fail(
   'Conversions video: MP4 vers AVI, AVI vers MP4, WebM vers MP4.');
   If (AudioCodec<>'') And ((AudioCodec<>'copy') Or Not AllStreams) Then   Fail(
   'Video: utiliser -c copy; aucun reencodage video implemente.');
