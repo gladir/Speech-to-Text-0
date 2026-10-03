@@ -3350,7 +3350,7 @@ Var
  CommentUTF8: Array[0..764] Of Byte;
  CommentWideSize,CommentUTF8Size: Integer;
  VideoFrames,ImageWidth,ImageHeight: Integer;
- HasCrop:Boolean; CropTop,CropBottom,CropLeft,CropRight:Integer;
+ HasCrop,Decoded4XM:Boolean; CropTop,CropBottom,CropLeft,CropRight:Integer;
  {$IFDEF MSWINDOWS}
   NetSession,NetRequest: Pointer;
  {$ENDIF}
@@ -3674,6 +3674,8 @@ Begin
  If N>=9 Then If (B[0]=70) And (B[1]=76) And (B[2]=86) Then Begin
   Probe:='flv'; Exit;
  End;
+ If N>=12 Then If (B[0]=82) And (B[1]=73) And (B[2]=70) And (B[3]=70) And
+  (B[8]=52) And (B[9]=88) And (B[10]=77) And (B[11]=86) Then Begin Probe:='4xm'; Exit; End;
  If N>=12 Then Begin
   If (B[4]=102) And (B[5]=116) And (B[6]=121) And (B[7]=112) Then Begin
    Probe:='mp4'; Exit;
@@ -9727,6 +9729,619 @@ Begin
  CloseRead; CloseWrite;
 End;
 
+{ 4X Movie: native decoder adapted from FFmpeg libavcodec/4xm.c and
+  libavformat/4xm.c, Copyright Michael Niedermayer / FFmpeg contributors.
+  LGPL-2.1-or-later; see THIRD_PARTY_NOTICES.md. }
+Procedure Decode4XM(Const Source,Target:String);
+Const XMVec:Array[0..255,0..1] Of ShortInt=(
+(0,0),
+(0,-1),
+(-1,0),
+(1,0),
+(0,1),
+(-1,-1),
+(1,-1),
+(-1,1),
+(1,1),
+(0,-2),
+(-2,0),
+(2,0),
+(0,2),
+(-1,-2),
+(1,-2),
+(-2,-1),
+(2,-1),
+(-2,1),
+(2,1),
+(-1,2),
+(1,2),
+(-2,-2),
+(2,-2),
+(-2,2),
+(2,2),
+(0,-3),
+(-3,0),
+(3,0),
+(0,3),
+(-1,-3),
+(1,-3),
+(-3,-1),
+(3,-1),
+(-3,1),
+(3,1),
+(-1,3),
+(1,3),
+(-2,-3),
+(2,-3),
+(-3,-2),
+(3,-2),
+(-3,2),
+(3,2),
+(-2,3),
+(2,3),
+(0,-4),
+(-4,0),
+(4,0),
+(0,4),
+(-1,-4),
+(1,-4),
+(-4,-1),
+(4,-1),
+(4,1),
+(-1,4),
+(1,4),
+(-3,-3),
+(-3,3),
+(3,3),
+(-2,-4),
+(-4,-2),
+(4,-2),
+(-4,2),
+(-2,4),
+(2,4),
+(-3,-4),
+(3,-4),
+(4,-3),
+(-5,0),
+(-4,3),
+(-3,4),
+(3,4),
+(-1,-5),
+(-5,-1),
+(-5,1),
+(-1,5),
+(-2,-5),
+(2,-5),
+(5,-2),
+(5,2),
+(-4,-4),
+(-4,4),
+(-3,-5),
+(-5,-3),
+(-5,3),
+(3,5),
+(-6,0),
+(0,6),
+(-6,-1),
+(-6,1),
+(1,6),
+(2,-6),
+(-6,2),
+(2,6),
+(-5,-4),
+(5,4),
+(4,5),
+(-6,-3),
+(6,3),
+(-7,0),
+(-1,-7),
+(5,-5),
+(-7,1),
+(-1,7),
+(4,-6),
+(6,4),
+(-2,-7),
+(-7,2),
+(-3,-7),
+(7,-3),
+(3,7),
+(6,-5),
+(0,-8),
+(-1,-8),
+(-7,-4),
+(-8,1),
+(4,7),
+(2,-8),
+(-2,8),
+(6,6),
+(-8,3),
+(5,-7),
+(-5,7),
+(8,-4),
+(0,-9),
+(-9,-1),
+(1,9),
+(7,-6),
+(-7,6),
+(-5,-8),
+(-5,8),
+(-9,3),
+(9,-4),
+(7,-7),
+(8,-6),
+(6,8),
+(10,1),
+(-10,2),
+(9,-5),
+(10,-3),
+(-8,-7),
+(-10,-4),
+(6,-9),
+(-11,0),
+(11,1),
+(-11,-2),
+(-2,11),
+(7,-9),
+(-7,9),
+(10,6),
+(-4,11),
+(8,-9),
+(8,9),
+(5,11),
+(7,-10),
+(12,-3),
+(11,6),
+(-9,-9),
+(8,10),
+(5,12),
+(-11,7),
+(13,2),
+(6,-12),
+(10,9),
+(-11,8),
+(-7,12),
+(0,14),
+(14,-2),
+(-9,11),
+(-6,13),
+(-14,-4),
+(-5,-14),
+(5,14),
+(-15,-1),
+(-14,-6),
+(3,-15),
+(11,-11),
+(-7,14),
+(-5,15),
+(8,-14),
+(15,6),
+(3,16),
+(7,-15),
+(-16,5),
+(0,17),
+(-16,-6),
+(-10,14),
+(-16,7),
+(12,13),
+(-16,8),
+(-17,6),
+(-18,3),
+(-7,17),
+(15,11),
+(16,10),
+(2,-19),
+(3,-19),
+(-11,-16),
+(-18,8),
+(-19,-6),
+(2,-20),
+(-17,-11),
+(-10,-18),
+(8,19),
+(-21,-1),
+(-20,7),
+(-4,21),
+(21,5),
+(15,16),
+(2,-22),
+(-10,-20),
+(-22,5),
+(20,-11),
+(-7,-22),
+(-12,20),
+(23,-5),
+(13,-20),
+(24,-2),
+(-15,19),
+(-11,22),
+(16,19),
+(23,-10),
+(-18,-18),
+(-9,-24),
+(24,-10),
+(-3,26),
+(-23,13),
+(-18,-20),
+(17,21),
+(-4,27),
+(27,6),
+(1,-28),
+(-11,26),
+(-17,-23),
+(7,28),
+(11,-27),
+(29,5),
+(-23,-19),
+(-28,-11),
+(-21,22),
+(-30,7),
+(-17,26),
+(-27,16),
+(13,29),
+(19,-26),
+(10,-31),
+(-14,-30),
+(20,-27),
+(-29,18),
+(-16,-31),
+(-28,-22),
+(21,-30),
+(-25,28),
+(26,-29),
+(25,-32),
+(-32,-32));
+XMCode:Array[0..1,0..3,0..6,0..1] Of Byte=(
+(((0,1),(2,2),(6,3),(14,4),(30,5),(31,5),(0,0)),((0,1),(0,0),(2,2),(6,3),(14,4),(15,4),(0,0)),((0,1),(2,2),(0,0),(6,3),(14,4),(15,4),(0,0)),((0,1),(0,0),(0,0),(2,2),(6,3),(14,4),(15,4))),
+(((1,2),(4,3),(5,3),(0,2),(6,3),(7,3),(0,0)),((1,2),(0,0),(2,2),(0,2),(6,3),(7,3),(0,0)),((1,2),(2,2),(0,0),(0,2),(6,3),(7,3),(0,0)),((1,2),(0,0),(0,0),(0,2),(2,2),(6,3),(7,3))));
+XMDQ:Array[0..63] Of Byte=(16,15,13,19,24,31,28,17,17,23,25,31,36,63,45,21,18,24,27,37,52,59,49,20,16,28,34,40,60,80,51,20,18,31,48,66,68,86,56,21,19,38,56,59,64,64,48,20,27,48,55,55,56,51,35,15,20,35,34,32,31,22,15,8);
+Type
+ TXRow=Array[0..639] Of Word; PXRow=^TXRow;
+ TXFrames=Array[0..1,0..479] Of PXRow; PXFrames=^TXFrames;
+ PXSegment=^TXSegment;
+ TXSegment=Record Next:PXSegment; At,Size:LongInt; End;
+ TXPending=Record First,Last:PXSegment; ID,Size,Total:LongInt; End;
+ TXPendingList=Array[0..99] Of TXPending; PXPendingList=^TXPendingList;
+ TXBits=Record At,Size,Bit:LongInt; Swap:Boolean; End;
+ TXBlock=Array[0..63] Of LongInt;
+Var
+ Frames:PXFrames; Pending:PXPendingList; Packet:PXSegment;
+ W,H,Version,Cur,Prev:Integer; FileEnd,CacheAt,CacheSize:LongInt;
+ Cache:Array[0..4095] Of Byte;
+ PacketAt,PacketSize,WordsAt,WordsEnd,BytesAt,BytesEnd:LongInt;
+ GB,Pre:TXBits; Nodes:Array[257..511,0..1] Of Integer; Root:Integer;
+ Blocks:Array[0..5] Of TXBlock; LastDC:LongInt;
+ RateN,RateD,FrameCount:LongInt; HaveHeader,HaveRate,Opened:Boolean;
+Function FByte(P:LongInt):Byte;
+Begin
+ If (P<0) Or (P>=FileEnd) Then Fail('4xm: lecture hors fichier.');
+ If (P<CacheAt) Or (P>=CacheAt+CacheSize) Then Begin
+  CacheAt:=P; CacheSize:=4096; If FileEnd-P<CacheSize Then CacheSize:=FileEnd-P;
+  ReadAt(P,Cache,CacheSize);
+ End;
+ FByte:=Cache[P-CacheAt];
+End;
+Function FNumber(P:LongInt):LongInt;
+Var V:Double; J:Integer;
+Begin V:=0; For J:=3 DownTo 0 Do V:=V*256+FByte(P+J);
+ If V>2147483647.0 Then Fail('4xm: entier hors limites.'); FNumber:=Trunc(V); End;
+Function Tag(P:LongInt):String;
+Var S:String; J:Integer;
+Begin S:=''; For J:=0 To 3 Do S:=S+Chr(FByte(P+J)); Tag:=S; End;
+Function PB(P:LongInt):Byte;
+Var S:PXSegment;
+Begin
+ If (P<0) Or (P>=PacketSize) Then Fail('4xm: paquet tronque.');
+ If Packet=Nil Then PB:=FByte(PacketAt+P) Else Begin
+  S:=Packet; While (S<>Nil) And (P>=S^.Size) Do Begin Dec(P,S^.Size); S:=S^.Next; End;
+  If S=Nil Then Fail('4xm: fragments incomplets.'); PB:=FByte(S^.At+P);
+ End;
+End;
+Function PN(P:LongInt):LongInt;
+Var V:Double; J:Integer;
+Begin V:=0; For J:=3 DownTo 0 Do V:=V*256+PB(P+J);
+ If V>2147483647.0 Then Fail('4xm: taille de flux excessive.'); PN:=Trunc(V); End;
+Function PW(P:LongInt):Word;
+Begin PW:=Word(PB(P))+Word(PB(P+1))*256; End;
+Function Bits(Var G:TXBits; N:Integer):LongInt;
+Var V,P:LongInt; J:Integer;
+Begin
+ If (N<0) Or (N>24) Or (G.Bit>G.Size*8-N) Then Fail('4xm: flux de bits tronque.');
+ V:=0;
+ For J:=1 To N Do Begin
+  P:=G.Bit Div 8; If G.Swap Then P:=(P Div 4)*4+3-(P Mod 4);
+  V:=V*2+((PB(G.At+P) Shr (7-(G.Bit Mod 8))) And 1); Inc(G.Bit);
+ End;
+ Bits:=V;
+End;
+Function SAR(V:LongInt; N:Integer):LongInt;
+Var D:LongInt;
+Begin D:=LongInt(1) Shl N; If V>=0 Then SAR:=V Div D Else SAR:=-1-((-1-V) Div D); End;
+Function Signed16(V:LongInt):LongInt;
+Begin V:=V And $FFFF; If V>=32768 Then Dec(V,65536); Signed16:=V; End;
+Function Mul(V,K:LongInt):LongInt;
+Var D:Double; L:LongInt;
+Begin
+ D:=V*1.0*K; D:=D-Trunc(D/4294967296.0)*4294967296.0;
+ If D<0 Then D:=D+4294967296.0;
+ If D>=2147483648.0 Then D:=D-4294967296.0;
+ L:=Trunc(D); Mul:=SAR(L,16);
+End;
+Procedure Transform(Var Block:TXBlock);
+Var A,T:TXBlock; Pass,I,J:Integer;
+ t0,t1,t2,t3,t4,t5,t6,t7,t10,t11,t12,t13,z5,z10,z11,z12,z13:LongInt;
+Begin
+ FillChar(T,SizeOf(T),0);
+ For Pass:=0 To 1 Do For I:=0 To 7 Do Begin
+  For J:=0 To 7 Do If Pass=0 Then A[J]:=Block[J*8+I] Else A[J]:=T[I*8+J];
+  t10:=A[0]+A[4]; t11:=A[0]-A[4]; t13:=A[2]+A[6]; t12:=Mul(A[2]-A[6],92682)-t13;
+  t0:=t10+t13; t3:=t10-t13; t1:=t11+t12; t2:=t11-t12;
+  z13:=A[5]+A[3]; z10:=A[5]-A[3]; z11:=A[1]+A[7]; z12:=A[1]-A[7];
+  t7:=z11+z13; t11:=Mul(z11-z13,92682); z5:=Mul(z10+z12,121095);
+  t10:=Mul(z12,70936)-z5; t12:=Mul(z10,-171254)+z5;
+  t6:=t12-t7; t5:=t11-t6; t4:=t10+t5;
+  A[0]:=t0+t7; A[7]:=t0-t7; A[1]:=t1+t6; A[6]:=t1-t6;
+  A[2]:=t2+t5; A[5]:=t2-t5; A[4]:=t3+t4; A[3]:=t3-t4;
+  For J:=0 To 7 Do If Pass=0 Then T[J*8+I]:=A[J] Else Block[I*8+J]:=Signed16(SAR(A[J],6));
+ End;
+End;
+Function Huff:Integer;
+Var N,Count:Integer;
+Begin N:=Root; Count:=0;
+ While N>256 Do Begin N:=Nodes[N,Bits(Pre,1)]; Inc(Count); If Count>31 Then Fail('4xm: Huffman trop profond.'); End;
+ Huff:=N;
+End;
+Function XBits(N:Integer):LongInt;
+Var V:LongInt;
+Begin V:=Bits(GB,N); If (N>0) And (V<(LongInt(1) Shl (N-1))) Then V:=V+1-(LongInt(1) Shl N); XBits:=V; End;
+Procedure ReadBlock(Var B:TXBlock);
+Const Zig:Array[0..63] Of Byte=(0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,12,19,26,33,40,48,41,34,27,20,13,6,7,14,21,28,35,42,49,56,57,50,43,36,29,22,15,23,30,37,44,51,58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63);
+Var Code,I,J:Integer; V:LongInt;
+Begin
+ FillChar(B,SizeOf(B),0); Code:=Huff; If Code>15 Then Fail('4xm: code DC incorrect.');
+ V:=XBits(Code)*16+LastDC; LastDC:=Signed16(V); B[0]:=LastDC; I:=1;
+ While I<64 Do Begin
+  Code:=Huff; If Code=0 Then Exit;
+  If Code=240 Then Begin Inc(I,16); If I>=64 Then Fail('4xm: run AC hors bloc.'); End Else Begin
+   If (Code>=256) Or (Code Mod 16=0) Then Fail('4xm: code AC incorrect.');
+   V:=XBits(Code Mod 16); Inc(I,Code Div 16); If I>=64 Then Fail('4xm: coefficient hors bloc.');
+   J:=Zig[I]; B[J]:=Signed16(V*XMDQ[J]); Inc(I);
+  End;
+ End;
+End;
+Procedure DecodeI;
+Var Freq:Array[0..511] Of LongInt;
+ P,Start,Finish,Size,Base,Count,Min0,Min1:LongInt;
+ I,J,S0,S1,X,Y,XX,YY,K,BX,BY,Bi:Integer; CB,CR,CG,L,V:LongInt;
+Begin
+ Size:=PN(0); If (Size>PacketSize-12) Or (Size>67108864) Then Fail('4xm: taille intra incorrecte.');
+ Count:=PN(Size+4); If (Count>(PacketSize-Size-12) Div 4) Or (Count*4<>PacketSize-Size-12) Then Fail('4xm: prefixe intra incorrect.');
+ GB.At:=4; GB.Size:=Size; GB.Bit:=0; GB.Swap:=False;
+ Base:=Size+12; P:=Base; FillChar(Freq,SizeOf(Freq),0);
+ Start:=PB(P); Inc(P); Finish:=PB(P); Inc(P);
+ Repeat
+  If Start>Finish Then Fail('4xm: plage Huffman incorrecte.');
+  For I:=Start To Finish Do Begin Freq[I]:=PB(P); Inc(P); End;
+  Start:=PB(P); Inc(P); If Start=0 Then Break; Finish:=PB(P); Inc(P);
+ Until False;
+ Freq[256]:=1; While (P-Base) Mod 4<>0 Do Inc(P);
+ If P>PacketSize Then Fail('4xm: table Huffman tronquee.');
+ Root:=256;
+ For J:=257 To 511 Do Begin
+  Min0:=65536; Min1:=65536; S0:=0; S1:=0;
+  For I:=0 To J-1 Do If (Freq[I]>0) And (Freq[I]<Min1) Then Begin
+   If Freq[I]<Min0 Then Begin Min1:=Min0; S1:=S0; Min0:=Freq[I]; S0:=I; End
+   Else Begin Min1:=Freq[I]; S1:=I; End;
+  End;
+  If Min1=65536 Then Break;
+  Freq[J]:=Min0+Min1; Freq[S0]:=0; Freq[S1]:=0; Nodes[J,0]:=S0; Nodes[J,1]:=S1; Root:=J;
+ End;
+ If Root=256 Then Fail('4xm: table Huffman vide.');
+ Pre.At:=P; Pre.Size:=PacketSize-P; Pre.Bit:=0; Pre.Swap:=True; LastDC:=0;
+ For BY:=0 To H Div 16-1 Do For BX:=0 To W Div 16-1 Do Begin
+  For K:=0 To 5 Do Begin ReadBlock(Blocks[K]); If K<4 Then Blocks[K,0]:=Signed16(Blocks[K,0]+8192); Transform(Blocks[K]); End;
+  For Y:=0 To 7 Do For X:=0 To 7 Do Begin
+   Bi:=X Div 4+2*(Y Div 4); I:=2*(X Mod 4)+16*(Y Mod 4);
+   CB:=Blocks[4,X+8*Y]; CR:=Blocks[5,X+8*Y]; CG:=SAR(CB+CR,1); CB:=CB*2;
+   For YY:=0 To 1 Do For XX:=0 To 1 Do Begin
+    L:=Blocks[Bi,I+XX+YY*8]; V:=SAR(L+CB,3)+((L-CG) And $FC)*8+((L+CR) And $F8)*256;
+    Frames^[Cur,BY*16+Y*2+YY]^[BX*16+X*2+XX]:=V And $FFFF;
+   End;
+  End;
+ End;
+ If Huff<>256 Then Fail('4xm: marqueur final intra absent.');
+End;
+Function Mixed(A,B:Word):Word;
+Begin Mixed:=((2*(A And 31)+(B And 31)) Div 3)+
+ ((2*((A Shr 5) And 31)+((B Shr 5) And 31)) Div 3)*32+
+ ((2*(A Shr 10)+(B Shr 10)) Div 3)*1024; End;
+Procedure DecodeI2;
+Var X,Y,XX,YY,I:Integer; P:LongInt; Colors:Array[0..3] Of Word; B:Array[0..3] Of Byte;
+Begin
+ P:=0;
+ For Y:=0 To H Div 16-1 Do For X:=0 To W Div 16-1 Do Begin
+  Colors[0]:=PW(P); Colors[1]:=PW(P+2);
+  If ((Colors[0] Or Colors[1]) And $8000)<>0 Then Fail('4xm: couleur ifr2 hors profil.');
+  Colors[2]:=Mixed(Colors[0],Colors[1]); Colors[3]:=Mixed(Colors[1],Colors[0]);
+  For I:=0 To 3 Do B[I]:=PB(P+4+I); Inc(P,8);
+  For YY:=0 To 15 Do For XX:=0 To 15 Do Frames^[Cur,Y*16+YY]^[X*16+XX]:=Colors[(B[YY Div 4] Shr (2*(XX Div 4))) And 3];
+ End;
+End;
+Function NextWord:Word;
+Begin If WordsAt>WordsEnd-2 Then Fail('4xm: wordstream tronque.'); NextWord:=PW(WordsAt); Inc(WordsAt,2); End;
+Function NextByte:Byte;
+Begin If BytesAt>=BytesEnd Then Fail('4xm: bytestream tronque.'); NextByte:=PB(BytesAt); Inc(BytesAt); End;
+Procedure PBlock(X,Y,LW,LH:Integer);
+Var Index,Table,Code,Len,BitsSoFar,I,DX,DY,BW,BH,XX,YY,Scale,Carry:Integer;
+ DC,V,S,Base:LongInt;
+Begin
+ If (LW=0) And (LH=0) Then Fail('4xm: bloc predictif nul.');
+ Index:=0; If LH=0 Then Begin If LW=1 Then Index:=3 Else Index:=1; End;
+ If LW=0 Then Begin If LH=1 Then Index:=3 Else Index:=2; End;
+ Table:=0; If Version<=1 Then Table:=1;
+ Code:=-1; BitsSoFar:=0;
+ For Len:=1 To 5 Do Begin
+  BitsSoFar:=BitsSoFar*2+Bits(GB,1);
+  For I:=0 To 6 Do If (XMCode[Table,Index,I,1]=Len) And (XMCode[Table,Index,I,0]=BitsSoFar) Then Code:=I;
+  If Code>=0 Then Break;
+ End;
+ If Code<0 Then Fail('4xm: VLC predictif invalide.');
+ If Code=1 Then Begin If LH=0 Then Fail('4xm: division verticale invalide.'); PBlock(X,Y,LW,LH-1); PBlock(X,Y+(1 Shl (LH-1)),LW,LH-1); Exit; End;
+ If Code=2 Then Begin If LW=0 Then Fail('4xm: division horizontale invalide.'); PBlock(X,Y,LW-1,LH); PBlock(X+(1 Shl (LW-1)),Y,LW-1,LH); Exit; End;
+ If Code=6 Then Begin
+  Frames^[Cur,Y]^[X]:=NextWord;
+  If LW>0 Then Frames^[Cur,Y]^[X+1]:=NextWord Else Frames^[Cur,Y+1]^[X]:=NextWord; Exit;
+ End;
+ If (Code=3) And (Version>=2) Then Exit;
+ DX:=0; DY:=0; DC:=0; Scale:=1; BW:=1 Shl LW; BH:=1 Shl LH;
+ If (Code=0) Or (Code=4) Then Begin
+  I:=NextByte;
+  If Version>1 Then Begin DX:=XMVec[I,0]; DY:=XMVec[I,1]; End
+  Else Begin DX:=(I And 15)-8; DY:=(I Shr 4)-8; End;
+ End;
+ If (Code=4) Or (Code=5) Then DC:=NextWord;
+ If Code=5 Then Scale:=0;
+ Base:=LongInt(Y+DY)*W+X+DX;
+ If (Base<0) Or (Base>LongInt(W)*(H-BH+1)-BW) Then Fail('4xm: vecteur hors image.');
+ For YY:=0 To BH-1 Do Begin
+  Carry:=0;
+  For XX:=0 To BW-1 Do Begin
+   S:=Base+LongInt(YY)*W+XX;
+   V:=Scale*LongInt(Frames^[Prev,S Div W]^[S Mod W])+DC;
+   If (LW>0) And Odd(XX) Then Inc(V,Carry);
+   Carry:=0; If (LW>0) And Not Odd(XX) And (V>65535) Then Carry:=1;
+   Frames^[Cur,Y+YY]^[X+XX]:=V And $FFFF;
+  End;
+ End;
+End;
+Procedure DecodeP(OldWords,OldBits:LongInt);
+Var Extra,BS,WS,YS:LongInt; X,Y:Integer;
+Begin
+ Extra:=0; BS:=OldBits; WS:=OldWords;
+ If Version>1 Then Begin Extra:=20; BS:=PN(8); WS:=PN(12); YS:=PN(16); End
+ Else YS:=PacketSize-BS-WS;
+ If (BS Mod 4<>0) Or (BS>PacketSize) Or (WS>PacketSize-BS) Or (YS<0) Or (YS>PacketSize-BS-WS) Or (Extra>PacketSize-BS-WS-YS) Then Fail('4xm: tailles predictives invalides.');
+ GB.At:=Extra; GB.Size:=BS; GB.Bit:=0; GB.Swap:=True;
+ WordsAt:=Extra+BS; WordsEnd:=WordsAt+WS; BytesAt:=WordsEnd; BytesEnd:=BytesAt+YS;
+ For Y:=0 To H Div 8-1 Do For X:=0 To W Div 8-1 Do PBlock(X*8,Y*8,3,3);
+End;
+Procedure RGB(X,Y:Integer; Var R,G,B:LongInt);
+Var V:Word;
+Begin
+ V:=Frames^[Cur,Y]^[X];
+ If Version>2 Then Begin R:=(V Shr 11) And 31; G:=(V Shr 5) And 63; B:=V And 31; G:=(G Shl 2) Or (G Shr 4); End
+ Else Begin B:=(V Shr 10) And 31; G:=(V Shr 5) And 31; R:=V And 31; G:=(G Shl 3) Or (G Shr 2); End;
+ R:=(R Shl 3) Or (R Shr 2); B:=(B Shl 3) Or (B Shr 2);
+End;
+Procedure OutputFrame;
+Var X,Y,P,DX,DY,Swap:Integer; R,G,B,U,V,Sum:LongInt; Row:Array[0..639] Of Byte; S:String;
+Begin
+ {$IFDEF TEST_4XM_RGB}
+ For Y:=0 To H-1 Do WriteBytes(Frames^[Cur,Y]^,W*2);
+ {$ELSE}
+ S:='FRAME'+#10; WriteBytes(S[1],Length(S));
+ For P:=0 To 2 Do Begin
+  If P=0 Then Begin
+   For Y:=0 To H-1 Do Begin
+    For X:=0 To W-1 Do Begin RGB(X,Y,R,G,B); Row[X]:=16+((66*R+129*G+25*B+128) Div 256); End;
+    WriteBytes(Row,W);
+   End;
+  End Else For Y:=0 To H Div 2-1 Do Begin
+   For X:=0 To W Div 2-1 Do Begin
+    Sum:=0;
+    For DY:=0 To 1 Do For DX:=0 To 1 Do Begin
+     RGB(X*2+DX,Y*2+DY,R,G,B);
+     If P=1 Then V:=-38*R-74*G+112*B Else V:=112*R-94*G-18*B;
+     U:=128+SAR(V+128,8); Inc(Sum,U);
+    End;
+    Row[X]:=(Sum+2) Div 4;
+   End;
+   WriteBytes(Row,W Div 2);
+  End;
+ End;
+ {$ENDIF}
+ Swap:=Cur; Cur:=Prev; Prev:=Swap; Inc(FrameCount);
+End;
+Procedure StartOutput;
+Var S,T:String; I,J:Integer;
+Begin
+ If Not HaveHeader Or Not HaveRate Then Fail('4xm: piste video ou cadence absente.');
+ {$IFNDEF FPC}
+ If MemAvail<LongInt(W)*H*4+SizeOf(TXFrames)+SizeOf(TXPendingList)+32768 Then Fail('4xm: memoire DOS insuffisante.');
+ {$ENDIF}
+ New(Frames); FillChar(Frames^,SizeOf(Frames^),0);
+ For I:=0 To 1 Do For J:=0 To H-1 Do Begin GetMem(Frames^[I,J],W*2); FillChar(Frames^[I,J]^,W*2,0); End;
+ OpenWrite(Target); Opened:=True;
+ {$IFNDEF TEST_4XM_RGB}
+ Str(W,T); S:='YUV4MPEG2 W'+T; Str(H,T); S:=S+' H'+T;
+ Str(RateN,T); S:=S+' F'+T; Str(RateD,T); S:=S+':'+T+' Ip A1:1 C420jpeg'+#10;
+ WriteBytes(S[1],Length(S));
+ {$ENDIF}
+End;
+Procedure Scan(Start,Finish:LongInt; Depth:Integer; InMovie:Boolean);
+Var P,N,EndAt,At,ID,Total,Count:LongInt; Kind,ListKind:String; I,J,Slot:Integer;
+ Rate:Single; Raw:Array[0..3] Of Byte; Num:Double; S:PXSegment;
+Begin
+ If Depth>16 Then Fail('4xm: imbrication excessive.'); P:=Start;
+ While P<Finish Do Begin
+  If Finish-P<8 Then Fail('4xm: entete de bloc tronquee.'); Kind:=Tag(P); N:=FNumber(P+4); At:=P+8;
+  If N>Finish-At Then Fail('4xm: bloc hors conteneur.'); EndAt:=At+N;
+  If Kind='LIST' Then Begin
+   If N<4 Then Fail('4xm: LIST tronquee.'); ListKind:=Tag(At);
+   Scan(At+4,EndAt,Depth+1,InMovie Or (ListKind='MOVI'));
+  End Else If (Kind='std_') And Not InMovie Then Begin
+   If N<8 Then Fail('4xm: cadence tronquee.'); For J:=0 To 3 Do Raw[J]:=FByte(At+4+J);
+   If (Raw[3] And $7F)=$7F Then Fail('4xm: cadence invalide.'); Move(Raw,Rate,4);
+   If (Rate<=0) Or (Rate>120) Then Fail('4xm: cadence 0..120 requise.');
+   RateD:=10000; Num:=Rate*RateD; RateN:=Round(Num); If RateN=0 Then Fail('4xm: cadence trop petite.'); HaveRate:=True;
+  End Else If (Kind='vtrk') And Not InMovie Then Begin
+   If HaveHeader Or (N<>68) Then Fail('4xm: une seule piste video vtrk requise.');
+   Version:=FNumber(At+8) Shr 16; Count:=FNumber(At+28);
+   If (Count<16) Or (Count>640) Or (Count Mod 16<>0) Then Fail('4xm: largeur multiple de 16, maximum 640.'); W:=Count;
+   Count:=FNumber(At+32); If (Count<16) Or (Count>480) Or (Count Mod 16<>0) Then Fail('4xm: hauteur multiple de 16, maximum 480.'); H:=Count;
+   If (Version<0) Or (Version>4) Then Fail('4xm: versions 0..4 uniquement.'); HaveHeader:=True;
+  End Else If InMovie And ((Kind='ifrm') Or (Kind='ifr2') Or (Kind='pfrm') Or (Kind='pfr2') Or (Kind='cfrm') Or (Kind='cfr2')) Then Begin
+   If Not Opened Then StartOutput;
+   Packet:=Nil; Slot:=-1; PacketAt:=At; PacketSize:=N;
+   If (Kind='cfrm') Or (Kind='cfr2') Then Begin
+    If (Version<=1) Or (N<12) Then Fail('4xm: fragment invalide.');
+    ID:=FNumber(At+4); Total:=FNumber(At+8); If Total<20 Then Fail('4xm: taille fragmentee invalide.');
+    For I:=0 To 99 Do If (Pending^[I].First<>Nil) And (Pending^[I].ID=ID) Then Slot:=I;
+    If Slot<0 Then For I:=99 DownTo 0 Do If Pending^[I].First=Nil Then Slot:=I;
+    If Slot<0 Then Fail('4xm: trop de trames fragmentees.');
+    If Pending^[Slot].First=Nil Then Begin Pending^[Slot].ID:=ID; Pending^[Slot].Total:=Total; End;
+    If (Pending^[Slot].Total<>Total) Or (N-12>Total-Pending^[Slot].Size) Or (N=12) Then Fail('4xm: fragments incoherents.');
+    New(S); S^.Next:=Nil; S^.At:=At+12; S^.Size:=N-12;
+    If Pending^[Slot].Last=Nil Then Pending^[Slot].First:=S Else Pending^[Slot].Last^.Next:=S;
+    Pending^[Slot].Last:=S; Inc(Pending^[Slot].Size,N-12);
+    If Pending^[Slot].Size=Total Then Begin Packet:=Pending^[Slot].First; PacketSize:=Total; DecodeP(0,0); OutputFrame;
+     While Packet<>Nil Do Begin S:=Packet; Packet:=S^.Next; Dispose(S); End;
+     FillChar(Pending^[Slot],SizeOf(TXPending),0);
+    End;
+   End Else Begin
+    If Kind='ifr2' Then DecodeI2 Else Begin
+     If N<4 Then Fail('4xm: paquet video tronque.'); Inc(PacketAt,4); Dec(PacketSize,4);
+     If Kind='ifrm' Then DecodeI Else DecodeP(FByte(At+2)+LongInt(FByte(At+3))*256,FByte(At)+LongInt(FByte(At+1))*256);
+    End;
+    OutputFrame;
+   End;
+  End;
+  P:=EndAt; { 4XM chunks are not RIFF word-padded, matching the demuxer. }
+ End;
+End;
+Var I,J:Integer; Size:LongInt;
+Begin
+ OpenRead(Source); FileEnd:=InputSize; CacheAt:=-1; CacheSize:=0; Packet:=Nil;
+ HaveHeader:=False; HaveRate:=False; Opened:=False; FrameCount:=0; Cur:=0; Prev:=1; Frames:=Nil;
+ New(Pending); FillChar(Pending^,SizeOf(Pending^),0);
+ If (FileEnd<12) Or (Tag(0)<>'RIFF') Or (Tag(8)<>'4XMV') Then Fail('4xm: signature RIFF/4XMV requise.');
+ Size:=FNumber(4); If Size<>FileEnd-8 Then Fail('4xm: taille RIFF incoherente.');
+ Scan(12,FileEnd,0,False);
+ For I:=0 To 99 Do If Pending^[I].First<>Nil Then Fail('4xm: trame fragmentee incomplete.');
+ If FrameCount=0 Then Fail('4xm: aucune image video.');
+ CloseRead; CloseWrite; For I:=0 To 1 Do For J:=0 To H-1 Do FreeMem(Frames^[I,J],W*2);
+ Dispose(Frames); Dispose(Pending);
+End;
+
 { Planar YUV420 crop, preserving cadence, pixel aspect and plane samples. }
 Procedure CropY4M(Const Source,Target:String);
 Var At,Limit,FrameSize,PlaneAt,P,LeftToCopy:LongInt;
@@ -9843,6 +10458,7 @@ Begin
  WriteLn(' D. = Demuxage (lecture)');
  WriteLn(' .E = Muxage (ecriture)');
  WriteLn(' --');
+ WriteLn(' D  4xm             4X Movie (video versions 0..4 vers Y4M)');
  WriteLn(' D  aiff            AIFF/AIFF-C PCM (alias: aif, aifc)');
  WriteLn(' D  asf             ASF, audio WMA2 seulement (alias: wma, wmv)');
  WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3 (copie); FFV1 v0/1 (profil limite)');
@@ -9914,6 +10530,7 @@ Procedure Help;Begin
  WriteLn(' -c copy                        Changement de conteneur, pas de r'+#130+'encodage vid'+#130'o.');
  WriteLn(' -codecs                        Liste des codecs support'+#130+'s');
  WriteLn(' -comment TEXTE                 Commentaire MP3, WAV, AVI, MP4.');
+ WriteLn(' 4xm: -i entree.4xm -an sortie.y4m (audio ignore).');
  WriteLn(' -croptop N, -cropbottom N       Retirer N pixels en haut/en bas.');
  WriteLn(' -cropleft N, -cropright N       Retirer N pixels a gauche/a droite.');
  WriteLn(' -f wav|mp3|aiff|voc|libopenmpt Avant -i; -f wav|mp3 avant sortie');
@@ -10073,7 +10690,7 @@ BEGIN
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
  AspectNum:=0; AspectDen:=1;
- HasCrop:=False; CropTop:=0; CropBottom:=0; CropLeft:=0; CropRight:=0;
+ Decoded4XM:=False; HasCrop:=False; CropTop:=0; CropBottom:=0; CropLeft:=0; CropRight:=0;
  NoAudio:=False; VideoCodec:=''; VideoFrames:=0; ImageWidth:=0; ImageHeight:=0;
  {$IFDEF MSWINDOWS}
   NetSession:=Nil; NetRequest:=Nil;
@@ -10101,20 +10718,22 @@ BEGIN
   Else If Argument='-codecs' Then Begin
    WriteLn('Codecs:');
    WriteLn(' D = decodage, E = encodage, A = audio, V = video');
+   WriteLn('D V    4xm             4X Movie');
    WriteLn('DEV    flv             Flash Video (FLV1/Sorenson Spark, images intra)');
    WriteLn('DEV    ffv1            FFmpeg codec #1 (v0/1, range defaut, YUV420 8 bits)');
    WriteLn(' EV    gif             GIF (palette RGB 3/3/2, LZW, une image)');
    WriteLn('D V    h264            H264 (premiere IDR CAVLC 8 bits 4:2:0 progressive)');
    WriteLn('D A    mp1             MP1 (MPEG audio layer 1)');
    WriteLn('DEA    mp3             MP3 (decodeur Layer III; encodeur MPEG-1 CBR 32..320k)');
+   WriteLn('DEV    mpeg1video      MPEG-1 video (encodeur I/B; decodeur I/P/B)');
+   WriteLn(' EV    mpeg2video      MPEG-2 video (encodeur progressif I/B)');
+   WriteLn(' EV    mpeg4           MPEG-4 Part 2 (Y4M, I/P/B, options -4mv/-bf)');   
    WriteLn('DEA    pcm_s16le       PCM signe 16 bits little-endian');
    WriteLn('D A    pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
    WriteLn(' EV    png             PNG (RGB24, sans compression)');
-   WriteLn('D A    wmav2           WMA2 (44100/48000 Hz, VLC, blocs fixes, sans reservoir/bruit)');
-   WriteLn(' EV    mpeg2video      MPEG-2 video (encodeur progressif I/B)');
-   WriteLn('DEV    mpeg1video      MPEG-1 video (encodeur I/B; decodeur I/P/B)');
-   WriteLn(' EV    mpeg4           MPEG-4 Part 2 (Y4M, I/P/B, options -4mv/-bf)');
-   WriteLn('Copie seulement: h264, vp9, aac, opus (voir limites).'); Halt(0);
+   WriteLn('D A    wmav2           WMA2 (44100/48000 Hz, VLC, blocs fixes, sans reservoir/bruit)');   
+   WriteLn('Copie seulement: h264, vp9, aac, opus (voir limites).'); 
+   Halt(0);
   End
   Else If Argument='-y' Then Overwrite:=True Else
   If Argument='-n' Then NoOverwrite:=True Else
@@ -10272,6 +10891,16 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If InputFormat='4xm' Then Begin
+  If NoVideo Or (VideoCodec='copy') Or (AudioCodec<>'') Or HasBitrate Or (RequestedRate<>0) Or
+   (RequestedChannels<>0) Or (ImageWidth<>0) Or (VideoFrames<>0) Or IsHTTP(InputPath) Then
+   Fail('4xm: video locale decodee, sans copie ni conversion audio requise.');
+  If Not ((OutputFormat='yuv4mpegpipe') Or (VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or
+   (VideoCodec='mpeg2video') Or (VideoCodec='ffv1') Or (VideoCodec='flv') Or FourMV) Then
+   Fail('4xm: sortie Y4M ou encodeur video natif requis.');
+  Temps[6]:=NewTemporary; Decode4XM(Intermediate,Temps[6]); Intermediate:=Temps[6];
+  InputFormat:='yuv4mpegpipe'; Decoded4XM:=True;
+ End;
  If HasCrop Then Begin
   If NoVideo Or (VideoCodec='copy') Or (AudioCodec='copy') Then Fail('Crop: decodage/reencodage requis; incompatible avec copy ou -vn.');
   If Not ((InputFormat='yuv4mpegpipe') Or
@@ -10348,12 +10977,12 @@ BEGIN
    (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
    (VideoFrames<>0) Or (ImageWidth<>0) Then Fail('FFV1: video locale sans filtres ni options audio requise.');
   If InputFormat='yuv4mpegpipe' Then Begin
-   If Not ((HasCrop And (OutputFormat='yuv4mpegpipe') And ((VideoCodec='') Or (VideoCodec='rawvideo'))) Or ((OutputFormat='avi') And (VideoCodec='ffv1')) Or
+   If Not (((HasCrop Or Decoded4XM) And (OutputFormat='yuv4mpegpipe') And ((VideoCodec='') Or (VideoCodec='rawvideo'))) Or ((OutputFormat='avi') And (VideoCodec='ffv1')) Or
     ((OutputFormat='flv') And (VideoCodec='flv'))) Then Fail('Y4M: ffv1 vers AVI ou flv vers FLV requis.');
   End Else If ((InputFormat<>'avi') And (InputFormat<>'flv')) Or (OutputFormat<>'yuv4mpegpipe') Or
    ((VideoCodec<>'') And (VideoCodec<>'rawvideo')) Then Fail('Decodage: AVI FFV1 ou FLV1 intra vers Y4M requis.');
   Temps[2]:=NewTemporary;
-  If HasCrop And (InputFormat='yuv4mpegpipe') And (OutputFormat='yuv4mpegpipe') Then CopyFile(Intermediate,Temps[2])
+  If (HasCrop Or Decoded4XM) And (InputFormat='yuv4mpegpipe') And (OutputFormat='yuv4mpegpipe') Then CopyFile(Intermediate,Temps[2])
   Else RemuxVideo(Intermediate,Temps[2],InputFormat,OutputFormat);
   Commit(Temps[2]); Temps[2]:=''; WriteLn('Video creee: ',OutputPath); Halt(0);
  End;
