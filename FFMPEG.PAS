@@ -3320,7 +3320,7 @@ Type
  End;
 
 Var
- Temps: Array[0..4] Of String;
+ Temps: Array[0..6] Of String;
  SavedExit: Pointer;
  InputPath,OutputPath,InputFormat,OutputFormat,AudioCodec,PendingFormat: String;
  RequestedRate: LongInt;
@@ -3350,6 +3350,7 @@ Var
  CommentUTF8: Array[0..764] Of Byte;
  CommentWideSize,CommentUTF8Size: Integer;
  VideoFrames,ImageWidth,ImageHeight: Integer;
+ HasCrop:Boolean; CropTop,CropBottom,CropLeft,CropRight:Integer;
  {$IFDEF MSWINDOWS}
   NetSession,NetRequest: Pointer;
  {$ENDIF}
@@ -3392,7 +3393,7 @@ Begin
  If OutputActive Then Begin
  {$I-}Close(ActiveOutput); Code := IOResult;{$I+} OutputActive := False;
  End;
- For J := 0 To 4 Do If Temps[J]<>'' Then If Exists(Temps[J]) Then Begin
+ For J := 0 To 6 Do If Temps[J]<>'' Then If Exists(Temps[J]) Then Begin
   Assign(F,Temps[J]); {$I-}Erase(F); Code := IOResult;{$I+}
   If Code<>0 Then WriteLn('Temporaire a supprimer: ',Temps[J]);
  End;
@@ -3450,7 +3451,7 @@ Begin
  For Attempt:=1 To 100 Do Begin
   Str(Random(30000),Digits); Name:=Folder+'FFP'+Digits+'.TMP';
   Used:=Exists(Name);
-  For K:=0 To 4 Do If Lower(Temps[K])=Lower(Name) Then Used:=True;
+  For K:=0 To 6 Do If Lower(Temps[K])=Lower(Name) Then Used:=True;
   If Not Used Then Begin
    NewTemporary:=Name; Exit;
   End;
@@ -5334,6 +5335,11 @@ Var
    RGB[Index,2]:=Clip(ASR(LR*L+KB*U+128,8),0,255);
   End;
  Begin
+  If HasCrop Then Begin
+   If (CropLeft+CropRight>=VisibleW) Or (CropTop+CropBottom>=VisibleH) Then Bad('Crop: bandes trop grandes.');
+   Inc(CropX,CropLeft); Inc(CropY,CropTop);
+   Dec(VisibleW,CropLeft+CropRight); Dec(VisibleH,CropTop+CropBottom);
+  End;
   If OutW=0 Then Begin OutW:=VisibleW; OutH:=VisibleH; End;
   New(PNGBuffer); PNGCount:=0; AdlerA:=1; AdlerB:=0;
   OpenWrite(Target); IsGIF:=VideoCodec='gif';
@@ -9721,6 +9727,76 @@ Begin
  CloseRead; CloseWrite;
 End;
 
+{ Planar YUV420 crop, preserving cadence, pixel aspect and plane samples. }
+Procedure CropY4M(Const Source,Target:String);
+Var At,Limit,FrameSize,PlaneAt,P,LeftToCopy:LongInt;
+ W,H,NW,NH,PW,PH,CW,CH,L,T,Plane,Y,Take,J,Code:Integer;
+ Line,Token,Extra,Header,S:String; B:Byte; Buffer:Array[0..4095] Of Byte;
+ Frames:LongInt;
+Function LineAt:String;
+Var R:String;
+Begin
+ R:='';
+ Repeat
+  If At>=Limit Then Fail('Crop: ligne Y4M tronquee.');
+  ReadAt(At,B,1); Inc(At); If B=10 Then Break;
+  If (B=13) Or (Length(R)>=254) Then Fail('Crop: ligne Y4M incorrecte.');
+  R:=R+Chr(B);
+ Until False;
+ LineAt:=R;
+End;
+Procedure PutLine(V:String);
+Begin If Length(V)>0 Then WriteBytes(V[1],Length(V)); B:=10; WriteBytes(B,1); End;
+Begin
+ If Odd(CropTop) Or Odd(CropBottom) Or Odd(CropLeft) Or Odd(CropRight) Then
+  Fail('Crop YUV420: bandes paires requises pour conserver la chrominance.');
+ OpenRead(Source); Limit:=InputSize; At:=0; W:=0; H:=0; Extra:=''; Frames:=0;
+ Line:=LineAt; If Copy(Line,1,10)<>'YUV4MPEG2 ' Then Fail('Crop: Y4M requis.'); Delete(Line,1,10);
+ While Line<>'' Do Begin
+  While (Line<>'') And (Line[1]=' ') Do Delete(Line,1,1); If Line='' Then Break;
+  J:=Pos(' ',Line); If J=0 Then J:=Length(Line)+1;
+  Token:=Copy(Line,1,J-1); Delete(Line,1,J);
+  If Token[1] In ['W','H'] Then Begin
+   Val(Copy(Token,2,255),P,Code); If (Code<>0) Or (P<2) Or (P>8192) Or Odd(P) Then Fail('Crop: dimensions Y4M paires 2..8192 requises.');
+   If Token[1]='W' Then Begin If W<>0 Then Fail('Crop: largeur dupliquee.'); W:=P; End
+   Else Begin If H<>0 Then Fail('Crop: hauteur dupliquee.'); H:=P; End;
+  End Else Begin
+   If (Token[1]='C') And (Token<>'C420') And (Token<>'C420jpeg') Then Fail('Crop: YUV420 8 bits requis.');
+   If (Token[1]='I') And (Token<>'Ip') Then Fail('Crop: video progressive requise.');
+   If Not ((Token[1]='A') And (AspectNum>0) And (OutputFormat='yuv4mpegpipe')) Then Extra:=Extra+' '+Token;
+  End;
+ End;
+ If (W=0) Or (H=0) Then Fail('Crop: dimensions absentes.');
+ NW:=W-CropLeft-CropRight; NH:=H-CropTop-CropBottom;
+ If (NW<2) Or (NH<2) Then Fail('Crop: les bandes suppriment toute l''image.');
+ Str(NW,S); Header:='YUV4MPEG2 W'+S; Str(NH,S); Header:=Header+' H'+S;
+ If Length(Header)+Length(Extra)>210 Then Fail('Crop: en-tete Y4M trop long.'); Header:=Header+Extra;
+ If (AspectNum>0) And (OutputFormat='yuv4mpegpipe') Then Begin
+  If (AspectNum*1.0*NH>2147483647.0) Or (AspectDen*1.0*NW>2147483647.0) Then Fail('Crop: ratio de sortie trop grand.');
+  Str(LongInt(AspectNum)*NH,S); Header:=Header+' A'+S;
+  Str(LongInt(AspectDen)*NW,S); Header:=Header+':'+S;
+ End;
+ OpenWrite(Target); PutLine(Header); FrameSize:=LongInt(W)*H*3 Div 2;
+ While At<Limit Do Begin
+  Line:=LineAt; If (Line<>'FRAME') And (Copy(Line,1,6)<>'FRAME ') Then Fail('Crop: marqueur FRAME requis.');
+  If FrameSize>Limit-At Then Fail('Crop: image Y4M tronquee.'); PutLine(Line); PlaneAt:=At;
+  For Plane:=0 To 2 Do Begin
+   PW:=W; PH:=H; CW:=NW; CH:=NH; L:=CropLeft; T:=CropTop;
+   If Plane<>0 Then Begin PW:=PW Div 2; PH:=PH Div 2; CW:=CW Div 2; CH:=CH Div 2; L:=L Div 2; T:=T Div 2; End;
+   For Y:=0 To CH-1 Do Begin
+    P:=PlaneAt+LongInt(Y+T)*PW+L; LeftToCopy:=CW;
+    While LeftToCopy>0 Do Begin
+     Take:=4096; If LeftToCopy<Take Then Take:=LeftToCopy;
+     ReadAt(P,Buffer,Take); WriteBytes(Buffer,Take); Inc(P,Take); Dec(LeftToCopy,Take);
+    End;
+   End;
+   Inc(PlaneAt,LongInt(PW)*PH);
+  End;
+  Inc(At,FrameSize); Inc(Frames);
+ End;
+ If Frames=0 Then Fail('Crop: aucune image.'); CloseRead; CloseWrite;
+End;
+
 Procedure Commit(Const Stage: String);
 Var
  F: File;
@@ -9728,6 +9804,9 @@ Var
  Code,RestoreCode: Integer;
 Begin
  Backup:=''; Ready:=Stage;
+ If HasCrop And (OutputFormat='yuv4mpegpipe') And (InputFormat<>'yuv4mpegpipe') Then Begin
+  Temps[6]:=NewTemporary; CropY4M(Stage,Temps[6]); Ready:=Temps[6];
+ End;
  If (HasAlbum Or HasComment) And ((OutputFormat='mp3') Or (OutputFormat='wav')) Then Begin
   Temps[4]:=NewTemporary; WriteAudioAlbum(Stage,Temps[4]); Ready:=Temps[4];
  End;
@@ -9750,7 +9829,7 @@ Begin
  If Ready<>Stage Then Begin
   Assign(F,Stage); {$I-}Erase(F); Code:=IOResult;{$I+}
   If Code<>0 Then WriteLn('Temporaire a supprimer: ',Stage);
-  Temps[4]:='';
+  Temps[4]:=''; Temps[6]:='';
  End;
  If Backup<>'' Then Begin
   Assign(F,Backup); {$I-}Erase(F); Code:=IOResult;{$I+}
@@ -9835,6 +9914,8 @@ Procedure Help;Begin
  WriteLn(' -c copy                        Changement de conteneur, pas de r'+#130+'encodage vid'+#130'o.');
  WriteLn(' -codecs                        Liste des codecs support'+#130+'s');
  WriteLn(' -comment TEXTE                 Commentaire MP3, WAV, AVI, MP4.');
+ WriteLn(' -croptop N, -cropbottom N       Retirer N pixels en haut/en bas.');
+ WriteLn(' -cropleft N, -cropright N       Retirer N pixels a gauche/a droite.');
  WriteLn(' -f wav|mp3|aiff|voc|libopenmpt Avant -i; -f wav|mp3 avant sortie');
  WriteLn(' -formats                       Liste des formats support'+#130+'s');
  WriteLn(' -h                             Affiche l''aide de cette commande');
@@ -9992,11 +10073,12 @@ BEGIN
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
  AspectNum:=0; AspectDen:=1;
+ HasCrop:=False; CropTop:=0; CropBottom:=0; CropLeft:=0; CropRight:=0;
  NoAudio:=False; VideoCodec:=''; VideoFrames:=0; ImageWidth:=0; ImageHeight:=0;
  {$IFDEF MSWINDOWS}
   NetSession:=Nil; NetRequest:=Nil;
  {$ENDIF}
- For J:=0 To 4 Do Temps[J]:='';
+ For J:=0 To 6 Do Temps[J]:='';
  InputPath:=''; OutputPath:=''; InputFormat:=''; OutputFormat:='';
  AudioCodec:=''; PendingFormat:=''; RequestedRate:=0; RequestedChannels:=0; RequestedBitRateK:=320;
  Overwrite:=False; NoOverwrite:=False; HideBanner:=False; HasBitrate:=False;
@@ -10047,6 +10129,13 @@ BEGIN
   If Argument='-an' Then NoAudio:=True Else
   If Argument='-aspect' Then Begin
    ParseAspect(NextArgument);
+  End Else
+  If (Argument='-croptop') Or (Argument='-cropbottom') Or (Argument='-cropleft') Or (Argument='-cropright') Then Begin
+   Value:=NextArgument; Val(Value,Number,Code);
+   If (Code<>0) Or (Number<0) Or (Number>8192) Then Fail('Crop: nombre entier de pixels 0..8192 requis.');
+   HasCrop:=True;
+   If Argument='-croptop' Then CropTop:=Number Else If Argument='-cropbottom' Then CropBottom:=Number
+   Else If Argument='-cropleft' Then CropLeft:=Number Else CropRight:=Number;
   End Else
   If Argument='-4mv' Then Begin
    FourMV:=True;
@@ -10183,6 +10272,16 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If HasCrop Then Begin
+  If NoVideo Or (VideoCodec='copy') Or (AudioCodec='copy') Then Fail('Crop: decodage/reencodage requis; incompatible avec copy ou -vn.');
+  If Not ((InputFormat='yuv4mpegpipe') Or
+   ((OutputFormat='yuv4mpegpipe') And ((InputFormat='avi') Or (InputFormat='flv') Or (InputFormat='mpeg1video') Or (InputFormat='mpeg'))) Or
+   ((InputFormat='flv') And ((VideoCodec='png') Or (VideoCodec='gif') Or (OutputFormat='png') Or (OutputFormat='gif') Or (OutputFormat='image2')))) Then
+   Fail('Crop: Y4M, decodage natif vers Y4M ou extraction PNG/GIF depuis FLV requis.');
+  If InputFormat='yuv4mpegpipe' Then Begin
+   Temps[5]:=NewTemporary; CropY4M(Intermediate,Temps[5]); Intermediate:=Temps[5];
+  End;
+ End;
  If HasBFrames Or HasBQuant Then Begin
   If (InputFormat<>'yuv4mpegpipe') Or
    Not ((VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or (VideoCodec='mpeg2video') Or
@@ -10249,11 +10348,13 @@ BEGIN
    (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
    (VideoFrames<>0) Or (ImageWidth<>0) Then Fail('FFV1: video locale sans filtres ni options audio requise.');
   If InputFormat='yuv4mpegpipe' Then Begin
-   If Not (((OutputFormat='avi') And (VideoCodec='ffv1')) Or
+   If Not ((HasCrop And (OutputFormat='yuv4mpegpipe') And ((VideoCodec='') Or (VideoCodec='rawvideo'))) Or ((OutputFormat='avi') And (VideoCodec='ffv1')) Or
     ((OutputFormat='flv') And (VideoCodec='flv'))) Then Fail('Y4M: ffv1 vers AVI ou flv vers FLV requis.');
   End Else If ((InputFormat<>'avi') And (InputFormat<>'flv')) Or (OutputFormat<>'yuv4mpegpipe') Or
    ((VideoCodec<>'') And (VideoCodec<>'rawvideo')) Then Fail('Decodage: AVI FFV1 ou FLV1 intra vers Y4M requis.');
-  Temps[2]:=NewTemporary; RemuxVideo(Intermediate,Temps[2],InputFormat,OutputFormat);
+  Temps[2]:=NewTemporary;
+  If HasCrop And (InputFormat='yuv4mpegpipe') And (OutputFormat='yuv4mpegpipe') Then CopyFile(Intermediate,Temps[2])
+  Else RemuxVideo(Intermediate,Temps[2],InputFormat,OutputFormat);
   Commit(Temps[2]); Temps[2]:=''; WriteLn('Video creee: ',OutputPath); Halt(0);
  End;
  If (InputFormat='m4v') Or (OutputFormat='m4v') Then Begin
