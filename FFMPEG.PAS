@@ -3307,6 +3307,13 @@ Begin
  Convert;
 End;
 
+Type
+ TVideoRateTrial=Record
+  Q,Low,High,Best: Integer;
+  Done: Boolean;
+  Budget: Double;
+ End;
+
 Var
  Temps: Array[0..4] Of String;
  SavedExit: Pointer;
@@ -3322,7 +3329,10 @@ Var
  HLSListOpen,AllStreams,NoVideo,NoAudio: Boolean;
  VideoCodec: String;
  AspectNum,AspectDen: LongInt;
- HasAlbum,FourMV: Boolean;
+ HasAlbum,FourMV,HasVideoBitrate: Boolean;
+ VideoBitrate: LongInt;
+ VideoRateBits,VideoRateDuration: Double;
+ VideoRateLimited: LongInt;
  AlbumName: String;
  AlbumWide: Array[0..254] Of Word;
  AlbumUTF8: Array[0..764] Of Byte;
@@ -3499,6 +3509,46 @@ Begin
  {$I-}N:=FileSize(ActiveInput); Code:=IOResult;{$I+}
  If (Code<>0) Or (N<0) Then Fail('Taille entree invalide ou superieure a 2 Go.');
  InputSize:=N;
+End;
+
+{ Native video rate control: search QP 4..31 to fit each frame budget. }
+Function VideoOutPosition: LongInt;
+Var Code: Integer; P: LongInt;
+Begin
+ {$I-}P:=FilePos(ActiveOutput); Code:=IOResult;{$I+}
+ If (Code<>0) Or (P<0) Then Fail('Position de sortie video incorrecte.'); VideoOutPosition:=P;
+End;
+Procedure VideoRewind(P: LongInt);
+Var Code: Integer;
+Begin {$I-}Seek(ActiveOutput,P); Code:=IOResult;{$I+}
+ If Code<>0 Then Fail('Reprise encodage video impossible.'); End;
+Procedure VideoRateStart;
+Begin VideoRateBits:=0; VideoRateDuration:=0; VideoRateLimited:=0; End;
+Procedure VideoTrialStart(Var R: TVideoRateTrial; Seconds: Double);
+Begin
+ R.Q:=4; R.Low:=4; R.High:=31; R.Best:=0; R.Done:=False; R.Budget:=VideoBitrate*Seconds;
+End;
+Function VideoTrialAgain(Var R: TVideoRateTrial; Bytes: LongInt): Boolean;
+Begin
+ VideoTrialAgain:=False; If R.Done Then Exit;
+ If Bytes*8.0<=R.Budget Then Begin R.Best:=R.Q; R.High:=R.Q-1; End Else R.Low:=R.Q+1;
+ If R.Low<=R.High Then Begin R.Q:=(R.Low+R.High) Div 2; VideoTrialAgain:=True; End Else
+ If (R.Best<>0) And (R.Best<>R.Q) Then Begin R.Q:=R.Best; R.Done:=True; VideoTrialAgain:=True; End;
+End;
+Procedure VideoRateAccept(Bytes: LongInt; Seconds: Double);
+Var Code: Integer;
+Begin
+ { Remove the tail of a larger trial before the next picture or muxing. }
+ {$I-}Truncate(ActiveOutput); Code:=IOResult;{$I+}
+ If Code<>0 Then Fail('Finalisation encodage video impossible.');
+ VideoRateBits:=VideoRateBits+Bytes*8.0; VideoRateDuration:=VideoRateDuration+Seconds;
+ If Bytes*8.0>VideoBitrate*Seconds Then Inc(VideoRateLimited);
+End;
+Procedure VideoRateReport;
+Begin
+ If HideBanner Or (VideoRateDuration<=0) Then Exit;
+ WriteLn('Debit video cible: ',VideoBitrate,' bit/s; obtenu: ',VideoRateBits/VideoRateDuration:0:0,' bit/s.');
+ If VideoRateLimited>0 Then WriteLn(VideoRateLimited,' image(s): cible depassee a la quantification maximale.');
 End;
 
 Function Probe(Const Name: String): String;
@@ -5925,7 +5975,7 @@ Var
  FFRange,FFLow,FFCount,FFPos,FFEnd: LongInt;
  FFEncoding,FFConfigured: Boolean;
  LVEncoding: Boolean; LVPos,LVEnd: LongInt;
- LVByte,LVCount,LVVersion,LVQP: Integer;
+ LVByte,LVCount,LVVersion,LVQP,LVEncodeQP: Integer;
  Tracks: PTracks;
  TrackCount: Integer;
  FileLimit: LongInt;
@@ -7481,7 +7531,7 @@ Begin
   Fail('FLV1: changement de dimensions non pris en charge.');
  Tracks^[T].Width:=W; Tracks^[T].Height:=H;
  If LVBits(2,0)<>0 Then Fail('FLV1: seules images intra implementees; images P non prises en charge.');
- D:=LVBits(1,0); LVQP:=LVBits(5,4);
+ D:=LVBits(1,0); LVQP:=LVBits(5,LVEncodeQP);
  If LVQP=0 Then Fail('FLV1: quantification nulle.');
  While LVBits(1,0)<>0 Do D:=LVBits(8,0);
 End;
@@ -7693,18 +7743,23 @@ Begin
 End;
 
 Procedure WriteFLV1;
-Var V: PSample; At,Finish,N,TS: LongInt; J: Integer;
+Var V: PSample; At,Finish,N,TS: LongInt; J: Integer; Trial:TVideoRateTrial; Seconds:Double;
 Begin
+ VideoRateStart;
  If TrackCount<>1 Then Fail('FLV1: une seule piste requise.');
  LE:=False; WTag('FLV'+#1); W8(1); W32(9); W32(0); V:=Tracks^[1].First;
  While V<>Nil Do Begin
-  At:=OutPos; W8(9); Zero(3); TS:=Ticks(V^.Time*1000.0/Tracks^[1].Scale);
+  At:=OutPos; Seconds:=V^.Duration*1.0/Tracks^[1].Scale; VideoTrialStart(Trial,Seconds);
+  Repeat
+  SeekOut(At); LVEncodeQP:=Trial.Q; W8(9); Zero(3); TS:=Ticks(V^.Time*1000.0/Tracks^[1].Scale);
   W8((TS Shr 16) And 255); W8((TS Shr 8) And 255); W8(TS And 255); W8((TS Shr 24) And 255); Zero(3);
   W8($12); LVFrame(1,V,True); Finish:=OutPos; N:=Finish-At-11;
   If N>$FFFFFF Then Fail('FLV1: image trop volumineuse.');
   SeekOut(At+1); For J:=2 Downto 0 Do W8((N Shr (J*8)) And 255);
-  SeekOut(Finish); W32(N+11); V:=V^.Next;
- End;
+  SeekOut(Finish); W32(N+11);
+  Until Not VideoTrialAgain(Trial,OutPos-At);
+  VideoRateAccept(OutPos-At,Seconds); V:=V^.Next;
+ End; VideoRateReport;
 End;
 
 Procedure ReadY4M;
@@ -8692,6 +8747,7 @@ Type
  TRow=Array[0..639] Of Byte; PRow=^TRow;
  TFrames=Array[0..2,0..2,0..479] Of PRow; PFrames=^TFrames;
 Var
+ Trial:TVideoRateTrial; FrameStart,FrameBytes:LongInt;
  Frames:PFrames;
  Cache:Array[0..4095] Of Byte; CacheAt,CacheSize:LongInt;
  W,H,MBW,MBH,Plane,BX,BY,MBX,MBY,Cur,Past,Future,Refs:Integer;
@@ -8971,7 +9027,7 @@ Begin
   End;
   RateCode:=0; For J:=1 To 8 Do If Num*Rates[J,1]=Den*Rates[J,0] Then RateCode:=J;
   If RateCode=0 Then Fail('MPEG1: cadence standard 23.976/24/25/29.97/30/50/59.94/60 requise.');
-  Allocate; OpenWrite(Target); StartCode($B3); PutBits(12,W); PutBits(12,H); PutBits(4,1); PutBits(4,RateCode);
+  Allocate; VideoRateStart; OpenWrite(Target); StartCode($B3); PutBits(12,W); PutBits(12,H); PutBits(4,1); PutBits(4,RateCode);
   PutBits(18,$3FFFF); PutBits(1,1); PutBits(10,20); PutBits(1,0); PutBits(1,0); PutBits(1,0); QP:=4;
   While At<Limit Do Begin
    Line:=ReadLine; If Line<>'FRAME' Then Fail('MPEG1: marqueur FRAME simple requis.');
@@ -8983,12 +9039,17 @@ Begin
     End;
     For Y:=CH[P] To Heights[P]-1 Do Move(Frames^[Cur,P,CH[P]-1]^,Frames^[Cur,P,Y]^,Widths[P]);
    End;
+   Align; FrameStart:=VideoOutPosition; VideoTrialStart(Trial,Den*1.0/Num);
+   Repeat
+   VideoRewind(FrameStart); WriteCount:=0; WriteByte:=0; QP:=Trial.Q;
    StartCode(0); PutBits(10,FrameCount Mod 1024); PutBits(3,1); PutBits(16,65535); PutBits(1,0);
    For MBY:=0 To MBH-1 Do Begin
     StartCode(MBY+1); PutBits(5,QP); PutBits(1,0); For P:=0 To 2 Do LastDC[P]:=128;
     For MBX:=0 To MBW-1 Do Begin PutBits(1,1); PutBits(1,1); For B:=0 To 5 Do EncodeBlock(B); End;
    End;
-   Inc(FrameCount);
+   Align; FrameBytes:=VideoOutPosition-FrameStart;
+   Until Not VideoTrialAgain(Trial,FrameBytes);
+   VideoRateAccept(FrameBytes,Den*1.0/Num); Inc(FrameCount);
   End;
   If FrameCount=0 Then Fail('MPEG1: aucune image.'); StartCode($B7);
  End Else Begin
@@ -9068,13 +9129,13 @@ Begin
   FinishPicture; If Refs>0 Then Emit(Future);
   If PictureCount=0 Then Fail('MPEG1: aucune image decodee.');
  End;
- CloseRead; CloseWrite;
+ CloseRead; CloseWrite; If Encoding Then VideoRateReport;
  If Allocated Then Begin For J:=0 To 2 Do For P:=0 To 2 Do For Y:=0 To Heights[P]-1 Do FreeMem(Frames^[J,P,Y],Widths[P]); Dispose(Frames); End;
 End;
 
 
 { Native bounded MPEG-4 Part 2 encoder. Y4M 420, I/P, integer-pel SAD,
-  optional INTER4V, H.263 quantization QP=4, ESC3 coefficient coding.
+  optional INTER4V, H.263 adaptive quantization, ESC3 coefficient coding.
   Syntax references: FFmpeg mpeg4videoenc.c, h263.c and h263data.c (LGPL). }
 Procedure EncodeMPEG4(Const Source,Target: String);
 Const
@@ -9100,6 +9161,7 @@ Type
  TDC=Array[0..2,0..60,0..80] Of Integer; PDC=^TDC;
  TMotion=Array[0..60,0..81,0..1] Of Integer; PMotion=^TMotion;
 Var
+ Trial:TVideoRateTrial; FrameStart,FrameBytes,SavedMB4:LongInt; QP:Integer;
  Frames:PFrames; DCP:PDC; Mot:PMotion;
  W,H,Plane,Cur,Ref,Y,X,J,K,Code,MBX,MBY,B,BX,BY,GX,GY,CP,CBP: Integer;
  Widths,Heights: Array[0..2] Of Integer;
@@ -9195,12 +9257,21 @@ Begin
   MotionValue(Value-Prediction); Mot^[GY,GX,I]:=Value;
  End;
 End;
+Function DCScale(Plane: Integer): Integer;
+Begin
+ If QP<5 Then DCScale:=8 Else
+ If Plane=0 Then Begin
+  If QP<9 Then DCScale:=QP*2 Else If QP<25 Then DCScale:=QP+8 Else DCScale:=QP*2-16;
+ End Else If QP<25 Then DCScale:=(QP+13) Div 2 Else DCScale:=QP-6;
+End;
 Procedure WriteDC(Value,Plane,X,Y: Integer);
 Var A,B,C,P,D,N,L: Integer;
 Begin
  A:=DCP^[Plane,Y,X-1]; B:=DCP^[Plane,Y-1,X-1]; C:=DCP^[Plane,Y-1,X];
  If Abs(A-B)<Abs(B-C) Then P:=C Else P:=A;
- D:=Value-P; DCP^[Plane,Y,X]:=Value; N:=0; L:=Abs(D);
+ P:=(P+DCScale(Plane) Div 2) Div DCScale(Plane);
+ D:=Value-P; DCP^[Plane,Y,X]:=Value*DCScale(Plane);
+ If DCP^[Plane,Y,X]>2047 Then DCP^[Plane,Y,X]:=2047; N:=0; L:=Abs(D);
  While L>0 Do Begin Inc(N); L:=L Shr 1; End;
  P:=0; If Plane>0 Then P:=1; Bits(DC[P,N,1],DC[P,N,0]);
  If N>0 Then Begin L:=D; If D<0 Then L:=(LongInt(1) Shl N)-1+D; Bits(N,L); End;
@@ -9218,8 +9289,8 @@ Begin
  End;
  For Y:=0 To 7 Do For X:=0 To 7 Do Begin
   V:=0; For U:=0 To 7 Do V:=V+C[Y,U]*Temp[U,X];
-  If Intra And (Y=0) And (X=0) Then N:=Clip(Round(V/8),255) Else Begin
-   N:=Trunc((Abs(V)-3)/8); If N<0 Then N:=0; If N>2047 Then N:=2047; If V<0 Then N:=-N;
+  If Intra And (Y=0) And (X=0) Then N:=Clip(Round(V/DCScale(Plane)),255) Else Begin
+   N:=Trunc((Abs(V)-(QP-1))/(2*QP)); If N<0 Then N:=0; If N>2047 Then N:=2047; If V<0 Then N:=-N;
    If N<>0 Then CBP:=CBP Or (1 Shl (5-Block));
   End;
   Coeff[Block,Y*8+X]:=N;
@@ -9227,8 +9298,8 @@ Begin
  { Reconstruct the reference with the same quantizer and a local IDCT. }
  For Y:=0 To 7 Do For X:=0 To 7 Do Begin
   N:=Coeff[Block,Y*8+X];
-  If Intra And (Y=0) And (X=0) Then N:=N*8 Else
-  If N>0 Then N:=N*8+3 Else If N<0 Then N:=N*8-3;
+  If Intra And (Y=0) And (X=0) Then N:=N*DCScale(Plane) Else
+  If N>0 Then N:=N*2*QP+((QP-1) Or 1) Else If N<0 Then N:=N*2*QP-((QP-1) Or 1);
   If N< -2048 Then N:=-2048 Else If N>2047 Then N:=2047;
   Values[Y,X]:=N;
  End;
@@ -9286,7 +9357,7 @@ Begin
  For Cur:=0 To 2 Do For Plane:=0 To 2 Do For Y:=0 To Heights[Plane]-1 Do GetMem(Frames^[Cur,Plane,Y],Widths[Plane]);
  For Y:=0 To 7 Do For X:=0 To 7 Do Begin C[Y,X]:=Cos((2*X+1)*Y*3.141592653589793/16)/2;
   If Y=0 Then C[Y,X]:=C[Y,X]/Sqrt(2); End;
- OpenWrite(Target); BitCount:=0; BitByte:=0; NBits:=1;
+ VideoRateStart; OpenWrite(Target); BitCount:=0; BitByte:=0; NBits:=1;
  While (LongInt(1) Shl NBits)<Num Do Inc(NBits);
  StartCode($B0); Bits(8,5); StartCode(0); StartCode($20);
  Bits(1,0); Bits(8,1); Bits(1,0); Bits(4,1); Bits(1,1); Bits(2,1); Bits(1,1); Bits(1,0);
@@ -9303,12 +9374,15 @@ Begin
    ReadAt(PlaneBase,Frames^[2,Plane,Y]^,Widths[Plane]); Inc(PlaneBase,Widths[Plane]);
   End;
   Intra:=FrameNo Mod 12=0;
+  FrameStart:=VideoOutPosition; SavedMB4:=MB4Count; VideoTrialStart(Trial,Den*1.0/Num);
+  Repeat
+  QP:=Trial.Q; VideoRewind(FrameStart); BitCount:=0; BitByte:=0; MB4Count:=SavedMB4;
   FillChar(Mot^,SizeOf(Mot^),0);
-  For Plane:=0 To 2 Do For Y:=0 To 60 Do For X:=0 To 80 Do DCP^[Plane,Y,X]:=128;
+  For Plane:=0 To 2 Do For Y:=0 To 60 Do For X:=0 To 80 Do DCP^[Plane,Y,X]:=1024;
   StartCode($B6); If Intra Then Bits(2,0) Else Bits(2,1);
-  Second:=Time Div Num; For J:=1 To Second-LastSecond Do Bits(1,1); LastSecond:=Second;
+  Second:=Time Div Num; For J:=1 To Second-LastSecond Do Bits(1,1);
   Bits(1,0); Bits(1,1); Bits(NBits,Time Mod Num); Bits(1,1); Bits(1,1);
-  If Not Intra Then Bits(1,0); Bits(3,0); Bits(5,4); If Not Intra Then Bits(3,1);
+  If Not Intra Then Bits(1,0); Bits(3,0); Bits(5,QP); If Not Intra Then Bits(3,1);
   For MBY:=0 To H Div 16-1 Do For MBX:=0 To W Div 16-1 Do Begin
    If Not Intra Then Begin
     If FourMV Then For B:=0 To 3 Do Begin Geometry(B); SearchMotion(BX,BY,8,MX[B],MY[B]); End
@@ -9335,10 +9409,13 @@ Begin
    End;
    For B:=0 To 5 Do WriteBlock(B);
   End;
-  Stuff; Inc(FrameNo); If Time>2147483647-Den Then Fail('MPEG4: duree excessive.'); Inc(Time,Den);
+  Stuff; FrameBytes:=VideoOutPosition-FrameStart;
+  Until Not VideoTrialAgain(Trial,FrameBytes);
+  VideoRateAccept(FrameBytes,Den*1.0/Num); LastSecond:=Second;
+  Inc(FrameNo); If Time>2147483647-Den Then Fail('MPEG4: duree excessive.'); Inc(Time,Den);
   J:=Cur; Cur:=Ref; Ref:=J;
  End;
- If FrameNo=0 Then Fail('MPEG4: aucune image.'); CloseRead; CloseWrite;
+ If FrameNo=0 Then Fail('MPEG4: aucune image.'); CloseRead; CloseWrite; VideoRateReport;
  For Cur:=0 To 2 Do For Plane:=0 To 2 Do For Y:=0 To Heights[Plane]-1 Do FreeMem(Frames^[Cur,Plane,Y],Widths[Plane]);
  Dispose(Frames); Dispose(DCP); Dispose(Mot);
  If Not HideBanner Then WriteLn('MPEG4: ',FrameNo,' images, ',MB4Count,' macroblocs INTER4V.');
@@ -9554,8 +9631,9 @@ Procedure Help;Begin
  WriteLn;
  WriteLn(' /?                             Affiche l''aide de cette commande.');
  WriteLn(' -c:v mpeg1video                 Y4M vers M1V (intra); M1V/MPEG1 vers Y4M.');
+ WriteLn(' -b DEBIT, -b:v DEBIT            Debit video cible, defaut 200k (bits/s; k, M).');
  WriteLn(' -4mv                           MPEG4: quatre vecteurs 8x8 par macrobloc P.');
- WriteLn(' -c:v mpeg4                      Y4M 420 vers M4V/AVI/MP4, images I/P, QP=4.');
+ WriteLn(' -c:v mpeg4                      Y4M 420 vers M4V/AVI/MP4, images I/P, debit cible -b.');
  WriteLn(' -ac 1|2                        Canaux de sortie (-ac apr'+#138+'s -i)');
  WriteLn(' -album NOM                     Nom de l''album (MP3, WAV, AVI, MP4).');
  WriteLn(' -an                            Ne pas '+#130+'crire les pistes audio (sortie vid'+#130+'o uniquement).');
@@ -9586,6 +9664,28 @@ Var
 Function NextArgument: String;Begin
  Inc(I); If I>ParamCount Then Fail('Valeur manquante pour '+Argument);
  NextArgument:=ParamStr(I);
+End;
+
+Procedure ParseVideoBitrate(S: String);
+Var J,Decimals: Integer; Multiplier,V,Scale: Double; Dot,Digit: Boolean;
+Begin
+ Multiplier:=1; If S='' Then Fail('-b: debit manquant.');
+ If S[Length(S)] In ['k','K','m','M'] Then Begin
+  Multiplier:=1000; If S[Length(S)] In ['m','M'] Then Multiplier:=1000000;
+  Delete(S,Length(S),1);
+ End;
+ V:=0; Scale:=1; Dot:=False; Digit:=False; Decimals:=0;
+ For J:=1 To Length(S) Do Begin
+  If S[J]='.' Then Begin If Dot Then Fail('-b: debit invalide.'); Dot:=True; End Else
+  If S[J] In ['0'..'9'] Then Begin
+   Digit:=True; V:=V*10+Ord(S[J])-48;
+   If Dot Then Begin Scale:=Scale*10; Inc(Decimals); End;
+   If (V>1E15) Or (Decimals>6) Then Fail('-b: debit hors limites.');
+  End Else Fail('-b: nombre positif attendu (200000, 200k, 1.5M).');
+ End;
+ V:=V*Multiplier/Scale;
+ If Not Digit Or (V<1) Or (V>100000000) Or (V<>Trunc(V)) Then Fail('-b: 1..100000000 bits/s entiers requis.');
+ VideoBitrate:=Trunc(V); HasVideoBitrate:=True;
 End;
 
 Procedure PrepareAlbum;
@@ -9649,6 +9749,7 @@ Begin
 End;
 
 BEGIN
+ HasVideoBitrate:=False; VideoBitrate:=200000;
  FourMV:=False; HasAlbum:=False; AlbumName:=''; AlbumWideSize:=0; AlbumUTF8Size:=0;
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
@@ -9757,6 +9858,7 @@ BEGIN
     RequestedChannels:=Number;
    End;
   End
+  Else If (Argument='-b') Or (Argument='-b:v') Then ParseVideoBitrate(NextArgument)
   Else If (Argument='-b:a') Or (Argument='-ab') Then Begin
    If InputPath='' Then Fail('Debit de sortie attendu apres -i.');
    Value:=Lower(NextArgument);
@@ -9820,6 +9922,12 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If HasVideoBitrate Then Begin
+  If (InputFormat<>'yuv4mpegpipe') Or
+   Not ((VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or (VideoCodec='flv') Or
+    (FourMV And (VideoCodec='')) Or ((VideoCodec='') And (OutputFormat='mpeg1video'))) Then
+   Fail('-b exige un encodage video Y4M vers MPEG4, MPEG1 ou FLV1; incompatible avec copy et FFV1.');
+ End;
  If HasAlbum And (OutputFormat<>'mp3') And (OutputFormat<>'wav') And
   (OutputFormat<>'avi') And (OutputFormat<>'mp4') Then
   Fail('-album: sorties MP3, WAV, AVI et MP4 uniquement.');
