@@ -3334,10 +3334,10 @@ Var
  HLSListOpen,AllStreams,NoVideo,NoAudio: Boolean;
  VideoCodec: String;
  AspectNum,AspectDen: LongInt;
- HasAlbum,FourMV,HasVideoBitrate,HasBFrames: Boolean;
+ HasAlbum,FourMV,HasVideoBitrate,HasBFrames,HasVideoTolerance: Boolean;
  BFrames:Integer;
- VideoBitrate: LongInt;
- VideoRateBits,VideoRateDuration: Double;
+ VideoBitrate,VideoTolerance: LongInt;
+ VideoRateBits,VideoRateDuration,VideoFrameBudget: Double;
  VideoRateLimited: LongInt;
  AlbumName: String;
  AlbumWide: Array[0..254] Of Word;
@@ -3555,8 +3555,17 @@ Begin {$I-}Seek(ActiveOutput,P); Code:=IOResult;{$I+}
 Procedure VideoRateStart;
 Begin VideoRateBits:=0; VideoRateDuration:=0; VideoRateLimited:=0; End;
 Procedure VideoTrialStart(Var R: TVideoRateTrial; Seconds: Double);
+Var Compensation:Double;
 Begin
- R.Q:=4; R.Low:=4; R.High:=31; R.Best:=0; R.Done:=False; R.Budget:=VideoBitrate*Seconds;
+ { One-pass accumulated-rate feedback, following FFmpeg ratecontrol.c.
+   Zero tolerance selects the strict per-picture budget without division. }
+ Compensation:=1;
+ If VideoTolerance>0 Then Begin
+  Compensation:=1-(VideoRateBits-VideoBitrate*VideoRateDuration)/VideoTolerance;
+  If Compensation<0.001 Then Compensation:=0.001;
+ End;
+ VideoFrameBudget:=VideoBitrate*Seconds*Compensation;
+ R.Q:=4; R.Low:=4; R.High:=31; R.Best:=0; R.Done:=False; R.Budget:=VideoFrameBudget;
 End;
 Function VideoTrialAgain(Var R: TVideoRateTrial; Bytes: LongInt): Boolean;
 Begin
@@ -3572,11 +3581,12 @@ Begin
  {$I-}Truncate(ActiveOutput); Code:=IOResult;{$I+}
  If Code<>0 Then Fail('Finalisation encodage video impossible.');
  VideoRateBits:=VideoRateBits+Bytes*8.0; VideoRateDuration:=VideoRateDuration+Seconds;
- If Bytes*8.0>VideoBitrate*Seconds Then Inc(VideoRateLimited);
+ If Bytes*8.0>VideoFrameBudget Then Inc(VideoRateLimited);
 End;
 Procedure VideoRateReport;
 Begin
  If HideBanner Or (VideoRateDuration<=0) Then Exit;
+ WriteLn('Tolerance video: ',VideoTolerance,' bits/s.');
  WriteLn('Debit video cible: ',VideoBitrate,' bit/s; obtenu: ',VideoRateBits/VideoRateDuration:0:0,' bit/s.');
  If VideoRateLimited>0 Then WriteLn(VideoRateLimited,' image(s): cible depassee a la quantification maximale.');
 End;
@@ -9738,6 +9748,7 @@ Procedure Help;Begin
  WriteLn(' /?                             Affiche l''aide de cette commande.');
  WriteLn(' -c:v mpeg1video|mpeg2video      Y4M vers M1V/M2V (I/B); M1V/MPEG1 vers Y4M.');
  WriteLn(' -bf N                          0..16 images B entre references MPEG (defaut 0).');
+ WriteLn(' -bt TOLERANCE                  Tolerance video, defaut 4000k; 0: budget strict.');
  WriteLn(' -b DEBIT, -b:v DEBIT            Debit video cible, defaut 200k (bits/s; k, M).');
  WriteLn(' -4mv                           MPEG4: quatre vecteurs 8x8 par macrobloc P.');
  WriteLn(' -c:v mpeg4                      Y4M 420 vers M4V/AVI/MP4, images I/P, debit cible -b.');
@@ -9773,26 +9784,26 @@ Function NextArgument: String;Begin
  NextArgument:=ParamStr(I);
 End;
 
-Procedure ParseVideoBitrate(S: String);
+Function ParseVideoRate(S,OptionName:String; Minimum,Maximum:LongInt):LongInt;
 Var J,Decimals: Integer; Multiplier,V,Scale: Double; Dot,Digit: Boolean;
 Begin
- Multiplier:=1; If S='' Then Fail('-b: debit manquant.');
+ Multiplier:=1; If S='' Then Fail(OptionName+': debit manquant.');
  If S[Length(S)] In ['k','K','m','M'] Then Begin
   Multiplier:=1000; If S[Length(S)] In ['m','M'] Then Multiplier:=1000000;
   Delete(S,Length(S),1);
  End;
  V:=0; Scale:=1; Dot:=False; Digit:=False; Decimals:=0;
  For J:=1 To Length(S) Do Begin
-  If S[J]='.' Then Begin If Dot Then Fail('-b: debit invalide.'); Dot:=True; End Else
+  If S[J]='.' Then Begin If Dot Then Fail(OptionName+': debit invalide.'); Dot:=True; End Else
   If S[J] In ['0'..'9'] Then Begin
    Digit:=True; V:=V*10+Ord(S[J])-48;
    If Dot Then Begin Scale:=Scale*10; Inc(Decimals); End;
-   If (V>1E15) Or (Decimals>6) Then Fail('-b: debit hors limites.');
-  End Else Fail('-b: nombre positif attendu (200000, 200k, 1.5M).');
+   If (V>1E15) Or (Decimals>6) Then Fail(OptionName+': debit hors limites.');
+  End Else Fail(OptionName+': nombre positif attendu (200000, 200k, 1.5M).');
  End;
  V:=V*Multiplier/Scale;
- If Not Digit Or (V<1) Or (V>100000000) Or (V<>Trunc(V)) Then Fail('-b: 1..100000000 bits/s entiers requis.');
- VideoBitrate:=Trunc(V); HasVideoBitrate:=True;
+ If Not Digit Or (V<Minimum) Or (V>Maximum) Or (V<>Trunc(V)) Then Fail(OptionName+': valeur entiere hors limites.');
+ ParseVideoRate:=Trunc(V);
 End;
 
 Procedure PrepareAlbum;
@@ -9858,6 +9869,7 @@ End;
 BEGIN
  HasBFrames:=False; BFrames:=0;
  HasVideoBitrate:=False; VideoBitrate:=200000;
+ HasVideoTolerance:=False; VideoTolerance:=4000000;
  FourMV:=False; HasAlbum:=False; AlbumName:=''; AlbumWideSize:=0; AlbumUTF8Size:=0;
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
@@ -9972,7 +9984,12 @@ BEGIN
    If (Code<>0) Or (Number<0) Or (Number>16) Then Fail('-bf: nombre entier 0..16 requis.');
    BFrames:=Number; HasBFrames:=True;
   End
-  Else If (Argument='-b') Or (Argument='-b:v') Then ParseVideoBitrate(NextArgument)
+  Else If (Argument='-b') Or (Argument='-b:v') Then Begin
+   VideoBitrate:=ParseVideoRate(NextArgument,'-b',1,100000000); HasVideoBitrate:=True;
+  End
+  Else If Argument='-bt' Then Begin
+   VideoTolerance:=ParseVideoRate(NextArgument,'-bt',0,2147483647); HasVideoTolerance:=True;
+  End
   Else If (Argument='-b:a') Or (Argument='-ab') Then Begin
    If InputPath='' Then Fail('Debit de sortie attendu apres -i.');
    Value:=Lower(NextArgument);
@@ -10043,11 +10060,11 @@ BEGIN
      ((OutputFormat='mpeg1video') Or (OutputFormat='mpeg2video')))) Then
    Fail('-bf exige un encodage Y4M vers MPEG-1, MPEG-2 ou MPEG-4; incompatible avec copy.');
  End;
- If HasVideoBitrate Then Begin
+ If HasVideoBitrate Or HasVideoTolerance Then Begin
   If (InputFormat<>'yuv4mpegpipe') Or
    Not ((VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or (VideoCodec='mpeg2video') Or (VideoCodec='flv') Or
     (FourMV And (VideoCodec='')) Or ((VideoCodec='') And ((OutputFormat='mpeg1video') Or (OutputFormat='mpeg2video')))) Then
-   Fail('-b exige un encodage video Y4M vers MPEG4, MPEG1, MPEG2 ou FLV1; incompatible avec copy et FFV1.');
+   Fail('-b/-bt exige un encodage video Y4M vers MPEG4, MPEG1, MPEG2 ou FLV1; incompatible avec copy et FFV1.');
  End;
  If HasAlbum And (OutputFormat<>'mp3') And (OutputFormat<>'wav') And
   (OutputFormat<>'avi') And (OutputFormat<>'mp4') Then
