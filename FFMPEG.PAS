@@ -6615,9 +6615,21 @@ Begin
      End
      Else If (Kind='XVID') Or (Kind='FMP4') Or (Kind='DIVX') Or (Kind='DX50') Then Codec:=
      'mp4v'
+     Else If (Kind='AASC') Or (Kind='AAS4') Then Begin
+      Codec:=Kind; BPDepth:=U16(B+14,True);
+      If (BPDepth<>8) And (BPDepth<>16) And (BPDepth<>24) Then Fail('aasc: profondeur 8/16/24 requise.');
+      If U16(B+12,True)<>1 Then Fail('aasc: un seul plan requis.');
+     End
      Else If Kind='FFV1' Then Codec:='FFV1'
      Else Fail('Codec AVI video non pris en charge: '+Kind);
-     ConfigFrom(T,B+40,N-40);
+     If (Codec='AASC') Or (Codec='AAS4') Then Begin
+      A:=Number(B,True); If (A<40) Or (A>N) Then Fail('aasc: taille BITMAPINFO incorrecte.');
+      If BPDepth=8 Then Begin
+       Units:=Number(B+32,True); If Units=0 Then Units:=256;
+       If (Units>256) Or (Units*4>N-A) Then Fail('aasc: palette AVI tronquee.');
+       ConfigFrom(T,B+A,Units*4);
+      End;
+     End Else ConfigFrom(T,B+40,N-40);
     End Else
     Begin
      If NoAudio Then Codec:='skip' Else Begin
@@ -6643,6 +6655,7 @@ Begin
     Units:=1;
     If Not Video And (DShowAlign>0) Then Units:=(N+DShowAlign-1) Div DShowAlign;
     If N=0 Then Begin
+     If (Last=Nil) And ((Codec='AASC') Or (Codec='AAS4')) Then Fail('aasc: premiere image AVI vide.');
      If Last<>Nil Then Last^.Duration:=Ticks((AVIUnits+Units*1.0)*DefaultDuration*Scale/
      InputScale)-Last^.Time;
     End Else V:=AddSample(Stream,B,N,Ticks(AVIUnits*1.0*DefaultDuration*Scale/InputScale),
@@ -8034,12 +8047,111 @@ End;
 
 
 Procedure WriteY4M;
-Var T: Integer; V: PSample; Line,A,B,C,D: String; RN,RD,G:LongInt;
+Type
+ TAARow=Array[0..12291] Of Byte; PAARow=^TAARow;
+ TAARows=Array[0..4095] Of PAARow; PAARows=^TAARows;
+Var T,Y,AAStride: Integer; V: PSample; Line,A,B,C,D: String; RN,RD,G,AARepeat,AAIndex:LongInt;
+ AARows:PAARows; AAOutput:PAARow; IsAASC:Boolean;
+{ Autodesk RLE: FFmpeg aasc.c/msrledec.c, LGPL-2.1-or-later.
+  RLE commands count BYTES even for RGB555/BGR24. Previous rows persist. }
+Procedure AAFrame(Sample:PSample);
+Var At,Finish,Stride,Compression:LongInt;
+ X,Y,N,V,J,RowSize,P,CW,CH,DX,DY,XX,YY:Integer;
+ R,G,B,Sum,Value:LongInt; Ended:Boolean;
+Function NextByte:Byte;
+Begin If At>=Finish Then Fail('aasc: commande RLE tronquee.'); NextByte:=ByteAt(At); Inc(At); End;
+Procedure Pixel(X,Y:Integer; Var R,G,B:LongInt);
+Var A,V:Integer;
 Begin
+ A:=X*(Tracks^[T].BPDepth Div 8);
+ Case Tracks^[T].BPDepth Of
+  8:Begin V:=AARows^[Y]^[A]*4; B:=Tracks^[T].Config[V]; G:=Tracks^[T].Config[V+1]; R:=Tracks^[T].Config[V+2]; End;
+  16:Begin
+   V:=AARows^[Y]^[A]+(Integer(AARows^[Y]^[A+1] And 127) Shl 8);
+   R:=(V Shr 10) And 31; G:=(V Shr 5) And 31; B:=V And 31;
+   R:=(R Shl 3) Or (R Shr 2); G:=(G Shl 3) Or (G Shr 2); B:=(B Shl 3) Or (B Shr 2);
+  End;
+  24:Begin B:=AARows^[Y]^[A]; G:=AARows^[Y]^[A+1]; R:=AARows^[Y]^[A+2]; End;
+ End;
+End;
+Function Shift8(V:LongInt):LongInt;
+Begin If V>=0 Then Shift8:=V Div 256 Else Shift8:=-1-((-1-V) Div 256); End;
+Begin
+ At:=Sample^.Pos; Finish:=At+Sample^.Size;
+ If Sample^.Size<4 Then Fail('aasc: trame trop courte.');
+ With Tracks^[T] Do Begin
+  RowSize:=Width*(BPDepth Div 8);
+  If Codec='AASC' Then Begin Compression:=Number(At,True); Inc(At,4); End Else Compression:=1;
+  If Compression=0 Then Begin
+   { Autodesk raw stride, deliberately not the ordinary DIB stride. }
+   Stride:=(LongInt(RowSize)+(BPDepth Div 8)) And Not LongInt(BPDepth Div 8);
+   If Stride*Height>Finish-At Then Fail('aasc: image brute tronquee.');
+   For Y:=Height-1 Downto 0 Do Begin ReadAt(At,AARows^[Y]^,RowSize); Inc(At,Stride); End;
+  End Else If Compression=1 Then Begin
+   X:=0; Y:=Height-1; Ended:=False;
+   While At<Finish Do Begin
+    N:=NextByte; V:=NextByte;
+    If N<>0 Then Begin
+     If (Y<0) Or (N>AAStride-X) Then Fail('aasc: repetition hors ligne.');
+     For J:=1 To N Do Begin AARows^[Y]^[X]:=V; Inc(X); End;
+    End Else If V=0 Then Begin
+     Dec(Y); X:=0; If Y < -1 Then Fail('aasc: fin de ligne hors image.');
+    End Else If V=1 Then Begin Ended:=True; Break; End
+    Else If V=2 Then Begin
+     N:=NextByte; J:=NextByte; Inc(X,N); Dec(Y,J);
+     If (Y<0) Or (X>=AAStride) Then Fail('aasc: deplacement hors image.');
+    End Else Begin
+     N:=V; If (Y<0) Or (N>AAStride-X) Then Fail('aasc: sequence litterale hors ligne.');
+     For J:=1 To N Do Begin AARows^[Y]^[X]:=NextByte; Inc(X); End;
+     If Odd(N) Then V:=NextByte;
+    End;
+   End;
+   If Not Ended Then Fail('aasc: marqueur de fin image absent.');
+  End Else Fail('aasc: compression inconnue.');
+  {$IFDEF TEST_AASC_RGB}
+  For Y:=0 To Height-1 Do Begin
+   For X:=0 To Width-1 Do Begin Pixel(X,Y,R,G,B); AAOutput^[X*3]:=R; AAOutput^[X*3+1]:=G; AAOutput^[X*3+2]:=B; End;
+   WriteBytes(AAOutput^,Width*3);
+  End;
+  {$ELSE}
+  For P:=0 To 2 Do Begin
+   CW:=Width; CH:=Height; If P<>0 Then Begin CW:=(CW+1) Div 2; CH:=(CH+1) Div 2; End;
+   For Y:=0 To CH-1 Do Begin
+    For X:=0 To CW-1 Do Begin
+     If P=0 Then Begin Pixel(X,Y,R,G,B); AAOutput^[X]:=16+((66*R+129*G+25*B+128) Div 256); End
+     Else Begin
+      Sum:=0;
+      For DY:=0 To 1 Do For DX:=0 To 1 Do Begin
+       XX:=X*2+DX; YY:=Y*2+DY; If XX>=Width Then XX:=Width-1; If YY>=Height Then YY:=Height-1;
+       Pixel(XX,YY,R,G,B);
+       If P=1 Then Value:=-38*R-74*G+112*B Else Value:=112*R-94*G-18*B;
+       Inc(Sum,128+Shift8(Value+128));
+      End;
+      AAOutput^[X]:=(Sum+2) Div 4;
+     End;
+    End;
+    WriteBytes(AAOutput^,CW);
+   End;
+  End;
+  {$ENDIF}
+ End;
+End;
+Begin
+ AARows:=Nil; AAOutput:=Nil;
  If TrackCount<>1 Then Fail('FFV1: AVI avec une seule piste video requis.'); T:=1;
  With Tracks^[T] Do Begin
-  If (Codec<>'8BPS') And (((Codec<>'FFV1') And (Codec<>'FLV1')) Or (ConfigSize<>0)) Then Fail('Y4M: FFV1 v0/1 ou FLV1 intra requis.');
-  If (Width>4096) Or (Height>4096) Then Fail('FFV1: dimensions maximales 4096.');
+  IsAASC:=(Codec='AASC') Or (Codec='AAS4');
+  If Not IsAASC And (Codec<>'8BPS') And (((Codec<>'FFV1') And (Codec<>'FLV1')) Or (ConfigSize<>0)) Then Fail('Y4M: FFV1 v0/1 ou FLV1 intra requis.');
+  If (Width>4096) Or (Height>4096) Then Fail('Video: dimensions maximales 4096.');
+  If IsAASC Then Begin
+   If StartDelay<>0 Then Fail('aasc: retard initial non pris en charge.');
+   AAStride:=(Width*(BPDepth Div 8)+3) And Not 3;
+   {$IFNDEF FPC}
+   If MemAvail<LongInt(AAStride)*Height+SizeOf(TAARows)+SizeOf(TAARow)+8192 Then Fail('aasc: memoire DOS insuffisante.');
+   {$ENDIF}
+   New(AARows); New(AAOutput);
+   For Y:=0 To Height-1 Do Begin GetMem(AARows^[Y],AAStride); FillChar(AARows^[Y]^,AAStride,0); End;
+  End;
   If Codec='8BPS' Then Begin
    If (First^.Duration<=0) Or (StartDelay<>0) Then Fail('8bps: cadence constante sans retard requise.');
    V:=First; While V<>Nil Do Begin
@@ -8054,11 +8166,20 @@ Begin
    Str(SARNum,A); Str(SARDen,B);
    Line:=Copy(Line,1,Pos(' A1:1',Line))+'A'+A+':'+B+' C420jpeg'+#10;
   End;
-  {$IFNDEF TEST_8BPS_RGBA}WriteBytes(Line[1],Length(Line));{$ENDIF} V:=First;
+  {$IFNDEF TEST_8BPS_RGBA}{$IFNDEF TEST_AASC_RGB}WriteBytes(Line[1],Length(Line));{$ENDIF}{$ENDIF} V:=First;
   While V<>Nil Do Begin
-   Line:='FRAME'+#10; {$IFNDEF TEST_8BPS_RGBA}WriteBytes(Line[1],Length(Line));{$ENDIF}
-   If Codec='8BPS' Then BPFrame(T,V) Else If Codec='FLV1' Then LVFrame(T,V,False) Else FFFrame(T,V,False); V:=V^.Next;
+   AARepeat:=1;
+   If IsAASC Then Begin
+    AARepeat:=Round(V^.Duration*1.0*InputScale/(Scale*1.0*DefaultDuration));
+    If (AARepeat<1) Or (Abs(V^.Duration-AARepeat*1.0*DefaultDuration*Scale/InputScale)>1.01) Then Fail('aasc: duree image incompatible avec la cadence AVI.');
+   End;
+   For AAIndex:=1 To AARepeat Do Begin
+    Line:='FRAME'+#10; {$IFNDEF TEST_8BPS_RGBA}{$IFNDEF TEST_AASC_RGB}WriteBytes(Line[1],Length(Line));{$ENDIF}{$ENDIF}
+    If IsAASC Then AAFrame(V) Else If Codec='8BPS' Then BPFrame(T,V) Else If Codec='FLV1' Then LVFrame(T,V,False) Else FFFrame(T,V,False);
+   End;
+   V:=V^.Next;
   End;
+  If IsAASC Then Begin For Y:=0 To Height-1 Do FreeMem(AARows^[Y],AAStride); Dispose(AARows); Dispose(AAOutput); End;
  End;
 End;
 
@@ -8621,6 +8742,7 @@ Begin
  If TrackCount=0 Then Fail('Aucune piste video/audio.');
  For T:=1 To TrackCount Do With Tracks^[T] Do Begin
   If First=Nil Then Fail('Piste vide non prise en charge.');
+  If ((Codec='AASC') Or (Codec='AAS4')) And (OutKind<>'yuv4mpegpipe') Then Fail('aasc: decodage vers Y4M requis, pas de copie.');
   If (Codec='8BPS') And (OutKind<>'yuv4mpegpipe') Then Fail('8bps: decodage vers Y4M requis, pas de copie.');
   If Video Then Begin
    If (Width<1) Or (Height<1) Or (Width>32767) Or (Height>32767) Then Fail(
@@ -8701,7 +8823,7 @@ Begin
   Time:=V^.Time*1.0+V^.Duration; V:=V^.Next;
  End;
  Duration:=Ticks(Time);
- If (InKind='avi') And Video And (Codec<>'FFV1') Then ReconstructAVI(T);
+ If (InKind='avi') And Video And (Codec<>'FFV1') And (Codec<>'AASC') And (Codec<>'AAS4') Then ReconstructAVI(T);
  If (Codec='FFV1') And (InKind<>'yuv4mpegpipe') And (OutKind<>'yuv4mpegpipe') Then
   Fail('FFV1: sortie Y4M requise pour le decodage.');
 End;
@@ -11262,7 +11384,7 @@ Begin
  WriteLn(' D  iff             IFF 8SVX, Fibonacci/exponentiel (alias: 8svx, svx)');
  WriteLn(' D  aiff            AIFF/AIFF-C PCM (alias: aif, aifc)');
  WriteLn(' D  asf             ASF, audio WMA2 seulement (alias: wma, wmv)');
- WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3 (copie); FFV1 v0/1 (profil limite)');
+ WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3 (copie); decodeurs FFV1, Autodesk RLE');
  WriteLn(' DE flv             FLV1 intra natif; extraction image H264 CAVLC');
  WriteLn('  E gif             GIF, une image, palette 256 couleurs');
  WriteLn(' D  hls             HLS fMP4 VOD (alias: m3u8); copie vers MP4');
@@ -11333,6 +11455,7 @@ Procedure Help;Begin
  WriteLn(' -comment TEXTE                 Commentaire MP3, WAV, AVI, MP4.');
  WriteLn(' aac: -i entree.aac sortie.wav (AAC-LC ADTS mono/stereo).');
  WriteLn(' 8svx_fib/exp: -i entree.8svx sortie.wav (mono/stereo, compressions 1/2).');
+ WriteLn(' aasc: -i entree.avi -an sortie.y4m (Autodesk RLE natif).');
  WriteLn(' 8bps: -i entree.mov -an sortie.y4m (alpha non conserve dans Y4M).');
  WriteLn(' 4xm: -i entree.4xm -an sortie.y4m (audio ignore).');
  WriteLn(' -croptop N, -cropbottom N       Retirer N pixels en haut/en bas.');
@@ -11527,6 +11650,7 @@ BEGIN
    WriteLn('D A    8svx_fib        8SVX fibonacci');
    WriteLn('D A    8svx_exp        8SVX exponential');
    WriteLn('D A    aac             Advanced Audio Coding (AAC-LC ADTS mono/stereo)');
+   WriteLn('D V D  aasc            Autodesk RLE (AVI AASC/AAS4, 8/16/24 bits)');
    WriteLn('DEV    flv             Flash Video (FLV1/Sorenson Spark, images intra)');
    WriteLn('DEV    ffv1            FFmpeg codec #1 (v0/1, range defaut, YUV420 8 bits)');
    WriteLn(' EV    gif             GIF (palette RGB 3/3/2, LZW, une image)');
@@ -11699,13 +11823,13 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
- If (InputFormat='mp4') And ((OutputFormat='yuv4mpegpipe') Or (VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or
+ If ((InputFormat='mp4') Or (InputFormat='avi')) And ((OutputFormat='yuv4mpegpipe') Or (VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or
   (VideoCodec='mpeg2video') Or (VideoCodec='ffv1') Or (VideoCodec='flv') Or FourMV) Then Begin
   If NoVideo Or (VideoCodec='copy') Or (AudioCodec<>'') Or HasBitrate Or (RequestedRate<>0) Or
    (RequestedChannels<>0) Or (ImageWidth<>0) Or (VideoFrames<>0) Or IsHTTP(InputPath) Then
-   Fail('8bps: decodage video local sans copie ni conversion audio requis.');
+   Fail('Decodage video local sans copie ni conversion audio requis.');
   NoAudio:=True; Temps[6]:=NewTemporary;
-  RemuxVideo(Intermediate,Temps[6],'mp4','yuv4mpegpipe'); Intermediate:=Temps[6];
+  RemuxVideo(Intermediate,Temps[6],InputFormat,'yuv4mpegpipe'); Intermediate:=Temps[6];
   InputFormat:='yuv4mpegpipe'; DecodedVideo:=True;
  End;
  If InputFormat='4xm' Then Begin
