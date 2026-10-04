@@ -3350,7 +3350,7 @@ Var
  CommentUTF8: Array[0..764] Of Byte;
  CommentWideSize,CommentUTF8Size: Integer;
  VideoFrames,ImageWidth,ImageHeight: Integer;
- HasCrop,Decoded4XM:Boolean; CropTop,CropBottom,CropLeft,CropRight:Integer;
+ HasCrop,DecodedVideo:Boolean; CropTop,CropBottom,CropLeft,CropRight:Integer;
  {$IFDEF MSWINDOWS}
   NetSession,NetRequest: Pointer;
  {$ENDIF}
@@ -3428,7 +3428,9 @@ End;
 
 Function FormatName(S: String): String;Begin
  S:=Lower(S); If (S='aif') Or (S='aifc') Then S:='aiff';
+ If (S='8svx') Or (S='svx') Then S:='iff';
  If S='mod' Then S:='libopenmpt';
+ If (S='mov') Or (S='qt') Then S:='mp4';
  If S='m3u8' Then S:='hls';
  If (S='mpg') Or (S='mpe') Then S:='mpeg';
  If S='y4m' Then S:='yuv4mpegpipe';
@@ -3676,6 +3678,10 @@ Begin
  End;
  If N>=12 Then If (B[0]=82) And (B[1]=73) And (B[2]=70) And (B[3]=70) And
   (B[8]=52) And (B[9]=88) And (B[10]=77) And (B[11]=86) Then Begin Probe:='4xm'; Exit; End;
+ If N>=8 Then Begin
+  Tag:=''; For J:=4 To 7 Do Tag:=Tag+Chr(B[J]);
+  If (Tag='moov') Or (Tag='mdat') Or (Tag='wide') Or (Tag='free') Or (Tag='skip') Then Begin Probe:='mp4'; Exit; End;
+ End;
  If N>=12 Then Begin
   If (B[4]=102) And (B[5]=116) And (B[6]=121) And (B[7]=112) Then Begin
    Probe:='mp4'; Exit;
@@ -3702,6 +3708,8 @@ Begin
    Probe:='aiff'; Exit;
   End;
  End;
+ If N>=12 Then If (B[0]=70) And (B[1]=79) And (B[2]=82) And (B[3]=77) And
+  (B[8]=56) And (B[9]=83) And (B[10]=86) And (B[11]=88) Then Begin Probe:='iff'; Exit; End;
  If N>=26 Then If (B[0]=67) And (B[1]=114) And (B[2]=101) And (B[19]=$1A) Then Begin
   Probe:='voc'; Exit;
  End;
@@ -6044,7 +6052,7 @@ Type
   Codec: String[4];
   Video,AnnexB: Boolean;
   Config: Array[0..MaxConfig-1] Of Byte;
-  ConfigSize,NALBytes: Integer;
+  ConfigSize,NALBytes,BPDepth: Integer;
   First,Last,Cursor: PSample;
   Stsz,Stsc,Stco,Stts,Ctts,Stss,Entry,EditAt,AVIStep,HeaderStart,StartDelay,
   DShowAlign,SARNum,SARDen: LongInt;
@@ -6241,8 +6249,41 @@ Begin
 End;
 
 Procedure MPEntry(T: Integer; At,Limit: LongInt);
+Const BPPalette:Array[0..767] Of Byte=(
+$FF,$FF,$FF,$FF,$FF,$CC,$FF,$FF,$99,$FF,$FF,$66,$FF,$FF,$33,$FF,$FF,$00,$FF,$CC,$FF,$FF,$CC,$CC,
+$FF,$CC,$99,$FF,$CC,$66,$FF,$CC,$33,$FF,$CC,$00,$FF,$99,$FF,$FF,$99,$CC,$FF,$99,$99,$FF,$99,$66,
+$FF,$99,$33,$FF,$99,$00,$FF,$66,$FF,$FF,$66,$CC,$FF,$66,$99,$FF,$66,$66,$FF,$66,$33,$FF,$66,$00,
+$FF,$33,$FF,$FF,$33,$CC,$FF,$33,$99,$FF,$33,$66,$FF,$33,$33,$FF,$33,$00,$FF,$00,$FF,$FF,$00,$CC,
+$FF,$00,$99,$FF,$00,$66,$FF,$00,$33,$FF,$00,$00,$CC,$FF,$FF,$CC,$FF,$CC,$CC,$FF,$99,$CC,$FF,$66,
+$CC,$FF,$33,$CC,$FF,$00,$CC,$CC,$FF,$CC,$CC,$CC,$CC,$CC,$99,$CC,$CC,$66,$CC,$CC,$33,$CC,$CC,$00,
+$CC,$99,$FF,$CC,$99,$CC,$CC,$99,$99,$CC,$99,$66,$CC,$99,$33,$CC,$99,$00,$CC,$66,$FF,$CC,$66,$CC,
+$CC,$66,$99,$CC,$66,$66,$CC,$66,$33,$CC,$66,$00,$CC,$33,$FF,$CC,$33,$CC,$CC,$33,$99,$CC,$33,$66,
+$CC,$33,$33,$CC,$33,$00,$CC,$00,$FF,$CC,$00,$CC,$CC,$00,$99,$CC,$00,$66,$CC,$00,$33,$CC,$00,$00,
+$99,$FF,$FF,$99,$FF,$CC,$99,$FF,$99,$99,$FF,$66,$99,$FF,$33,$99,$FF,$00,$99,$CC,$FF,$99,$CC,$CC,
+$99,$CC,$99,$99,$CC,$66,$99,$CC,$33,$99,$CC,$00,$99,$99,$FF,$99,$99,$CC,$99,$99,$99,$99,$99,$66,
+$99,$99,$33,$99,$99,$00,$99,$66,$FF,$99,$66,$CC,$99,$66,$99,$99,$66,$66,$99,$66,$33,$99,$66,$00,
+$99,$33,$FF,$99,$33,$CC,$99,$33,$99,$99,$33,$66,$99,$33,$33,$99,$33,$00,$99,$00,$FF,$99,$00,$CC,
+$99,$00,$99,$99,$00,$66,$99,$00,$33,$99,$00,$00,$66,$FF,$FF,$66,$FF,$CC,$66,$FF,$99,$66,$FF,$66,
+$66,$FF,$33,$66,$FF,$00,$66,$CC,$FF,$66,$CC,$CC,$66,$CC,$99,$66,$CC,$66,$66,$CC,$33,$66,$CC,$00,
+$66,$99,$FF,$66,$99,$CC,$66,$99,$99,$66,$99,$66,$66,$99,$33,$66,$99,$00,$66,$66,$FF,$66,$66,$CC,
+$66,$66,$99,$66,$66,$66,$66,$66,$33,$66,$66,$00,$66,$33,$FF,$66,$33,$CC,$66,$33,$99,$66,$33,$66,
+$66,$33,$33,$66,$33,$00,$66,$00,$FF,$66,$00,$CC,$66,$00,$99,$66,$00,$66,$66,$00,$33,$66,$00,$00,
+$33,$FF,$FF,$33,$FF,$CC,$33,$FF,$99,$33,$FF,$66,$33,$FF,$33,$33,$FF,$00,$33,$CC,$FF,$33,$CC,$CC,
+$33,$CC,$99,$33,$CC,$66,$33,$CC,$33,$33,$CC,$00,$33,$99,$FF,$33,$99,$CC,$33,$99,$99,$33,$99,$66,
+$33,$99,$33,$33,$99,$00,$33,$66,$FF,$33,$66,$CC,$33,$66,$99,$33,$66,$66,$33,$66,$33,$33,$66,$00,
+$33,$33,$FF,$33,$33,$CC,$33,$33,$99,$33,$33,$66,$33,$33,$33,$33,$33,$00,$33,$00,$FF,$33,$00,$CC,
+$33,$00,$99,$33,$00,$66,$33,$00,$33,$33,$00,$00,$00,$FF,$FF,$00,$FF,$CC,$00,$FF,$99,$00,$FF,$66,
+$00,$FF,$33,$00,$FF,$00,$00,$CC,$FF,$00,$CC,$CC,$00,$CC,$99,$00,$CC,$66,$00,$CC,$33,$00,$CC,$00,
+$00,$99,$FF,$00,$99,$CC,$00,$99,$99,$00,$99,$66,$00,$99,$33,$00,$99,$00,$00,$66,$FF,$00,$66,$CC,
+$00,$66,$99,$00,$66,$66,$00,$66,$33,$00,$66,$00,$00,$33,$FF,$00,$33,$CC,$00,$33,$99,$00,$33,$66,
+$00,$33,$33,$00,$33,$00,$00,$00,$FF,$00,$00,$CC,$00,$00,$99,$00,$00,$66,$00,$00,$33,$EE,$00,$00,
+$DD,$00,$00,$BB,$00,$00,$AA,$00,$00,$88,$00,$00,$77,$00,$00,$55,$00,$00,$44,$00,$00,$22,$00,$00,
+$11,$00,$00,$00,$EE,$00,$00,$DD,$00,$00,$BB,$00,$00,$AA,$00,$00,$88,$00,$00,$77,$00,$00,$55,$00,
+$00,$44,$00,$00,$22,$00,$00,$11,$00,$00,$00,$EE,$00,$00,$DD,$00,$00,$BB,$00,$00,$AA,$00,$00,$88,
+$00,$00,$77,$00,$00,$55,$00,$00,$44,$00,$00,$22,$00,$00,$11,$EE,$EE,$EE,$DD,$DD,$DD,$BB,$BB,$BB,
+$AA,$AA,$AA,$88,$88,$88,$77,$77,$77,$55,$55,$55,$44,$44,$44,$22,$22,$22,$11,$11,$11,$00,$00,$00);
 Var
- B,E,C,D,F: LongInt;
+ B,E,C,D,F,Depth,TableID,StartColor,EndColor,K: LongInt;
  Name: String[4];
 Begin
  MPBox(At,Limit,B,E); Name:=Tag(At+4); Tracks^[T].Codec:=Name;
@@ -6251,8 +6292,26 @@ Begin
   If Video Then Begin
    If E-At<86 Then Fail('Entree video MP4 tronquee.');
    Width:=U16(At+32,False); Height:=U16(At+34,False); C:=At+86;
-   If (Name<>'avc1') And (Name<>'mp4v') And (Name<>'vp09') Then Fail(
+   If (Name<>'avc1') And (Name<>'mp4v') And (Name<>'vp09') And (Name<>'8BPS') Then Fail(
    'Codec video MP4 non pris en charge: '+Name);
+   If Name='8BPS' Then Begin
+    Scale:=InputScale;
+    Depth:=U16(At+82,False); TableID:=U16(At+84,False); BPDepth:=Depth;
+    If Depth=40 Then BPDepth:=8;
+    If (BPDepth<>8) And (BPDepth<>24) And (BPDepth<>32) Then Fail('8bps: profondeurs 8, 24 ou 32 bits requises.');
+    If BPDepth=8 Then Begin
+     ConfigSize:=768; FillChar(Config,768,0);
+     If TableID<>0 Then Begin
+      For K:=0 To 767 Do If Depth=40 Then Config[K]:=255-K Div 3 Else Config[K]:=BPPalette[K];
+     End Else Begin
+      If E-C<8 Then Fail('8bps: palette tronquee.'); StartColor:=Number(C,False); EndColor:=U16(C+6,False); Inc(C,8);
+      If (StartColor>EndColor) Or (EndColor>255) Or (EndColor-StartColor+1>(E-C) Div 8) Then Fail('8bps: palette invalide.');
+      For K:=StartColor To EndColor Do Begin
+       Config[K*3]:=ByteAt(C+2); Config[K*3+1]:=ByteAt(C+4); Config[K*3+2]:=ByteAt(C+6); Inc(C,8);
+      End;
+     End;
+    End;
+   End;
   End Else
   Begin
    If E-At<36 Then Fail('Entree audio MP4 tronquee.');
@@ -6475,7 +6534,7 @@ Procedure ReadMP4;
 Var
  A,B,E,C,D,F,T,N: LongInt;
 Begin
- Moov:=Child(0,FileLimit,'moov'); If Moov=0 Then Fail('MP4 sans moov.');
+ Moov:=Child(0,FileLimit,'moov'); If (Moov=0) And (Tag(4)<>'moov') Then Fail('MP4 sans moov.');
  MPBox(Moov,FileLimit,B,E); C:=Child(B,E,'mvhd');
  If C=0 Then Fail('Horloge mvhd MP4 absente.');
  If ByteAt(C+8)=0 Then MovieScale:=Number(C+20,False) Else
@@ -7885,23 +7944,118 @@ Begin
  End;
 End;
 
+{ QuickTime 8BPS planar RLE, adapted from FFmpeg libavcodec/8bps.c,
+  Copyright Roberto Togni (2003), LGPL-2.1-or-later. }
+Procedure BPFrame(T:Integer; Sample:PSample);
+Type
+ TBPRow=Array[0..4095] Of Byte; PBPRow=^TBPRow;
+ TBPPlane=Array[0..4095] Of PBPRow; PBPPlane=^TBPPlane;
+ TBPOutput=Array[0..16383] Of Byte; PBPOutput=^TBPOutput;
+Var
+ Planes:Array[0..3] Of PBPPlane; Row:PBPOutput;
+ W,H,Count,P,Y,X,N,Run,J,V,DX,DY,CW,CH,XX,YY:Integer;
+ At,Finish,RowEnd,TableEnd:LongInt; R,G,B,A,Sum,C:LongInt;
+Function NextByte:Byte;
+Begin If At>=RowEnd Then Fail('8bps: ligne RLE tronquee.'); NextByte:=ByteAt(At); Inc(At); End;
+Procedure Pixel(X,Y:Integer; Var R,G,B,A:LongInt);
+Var Index:Integer;
+Begin
+ A:=255;
+ If Count=1 Then Begin
+  Index:=Planes[0]^[Y]^[X]*3; R:=Tracks^[T].Config[Index]; G:=Tracks^[T].Config[Index+1]; B:=Tracks^[T].Config[Index+2];
+ End Else Begin
+  R:=Planes[0]^[Y]^[X]; G:=Planes[1]^[Y]^[X]; B:=Planes[2]^[Y]^[X];
+  If Count=4 Then A:=Planes[3]^[Y]^[X];
+ End;
+End;
+Function Shift8(Value:LongInt):LongInt;
+Begin If Value>=0 Then Shift8:=Value Div 256 Else Shift8:=-1-((-1-Value) Div 256); End;
+Begin
+ W:=Tracks^[T].Width; H:=Tracks^[T].Height;
+ If (W<1) Or (W>4096) Or (H<1) Or (H>4096) Then Fail('8bps: dimensions 1..4096 requises.');
+ Count:=Tracks^[T].BPDepth Div 8;
+ If (Count<>1) And (Count<>3) And (Count<>4) Then Fail('8bps: profondeur invalide.');
+ At:=Sample^.Pos; Finish:=At+Sample^.Size; TableEnd:=At+LongInt(Count)*H*2;
+ If TableEnd>Finish Then Fail('8bps: table des longueurs tronquee.');
+ {$IFNDEF FPC}
+ If MemAvail<LongInt(W)*H*Count+LongInt(SizeOf(TBPPlane))*Count+SizeOf(TBPOutput)+8192 Then Fail('8bps: memoire DOS insuffisante.');
+ {$ENDIF}
+ New(Row); At:=TableEnd;
+ For P:=0 To Count-1 Do Begin
+  New(Planes[P]);
+  For Y:=0 To H-1 Do Begin
+   GetMem(Planes[P]^[Y],W); N:=U16(Sample^.Pos+(LongInt(P)*H+Y)*2,False);
+   If N>Finish-At Then Fail('8bps: ligne hors paquet.'); RowEnd:=At+N; X:=0;
+   While At<RowEnd Do Begin
+    Run:=NextByte;
+    If Run<=127 Then Begin
+     Inc(Run); If (Run>W-X) Or (Run>RowEnd-At) Then Fail('8bps: sequence litterale hors ligne.');
+     For J:=1 To Run Do Begin Planes[P]^[Y]^[X]:=NextByte; Inc(X); End;
+    End Else Begin
+     Run:=257-Run; If Run>W-X Then Fail('8bps: repetition hors ligne.'); V:=NextByte;
+     For J:=1 To Run Do Begin Planes[P]^[Y]^[X]:=V; Inc(X); End;
+    End;
+   End;
+   If X<>W Then Fail('8bps: ligne decodee incomplete.');
+  End;
+ End;
+ If At<>Finish Then Fail('8bps: octets excedentaires apres les plans.');
+ {$IFDEF TEST_8BPS_RGBA}
+ For Y:=0 To H-1 Do Begin
+  For X:=0 To W-1 Do Begin Pixel(X,Y,R,G,B,A); Row^[X*4]:=R; Row^[X*4+1]:=G; Row^[X*4+2]:=B; Row^[X*4+3]:=A; End;
+  WriteBytes(Row^,W*4);
+ End;
+ {$ELSE}
+ For P:=0 To 2 Do Begin
+  CW:=W; CH:=H; If P<>0 Then Begin CW:=(W+1) Div 2; CH:=(H+1) Div 2; End;
+  For Y:=0 To CH-1 Do Begin
+   For X:=0 To CW-1 Do Begin
+    If P=0 Then Begin Pixel(X,Y,R,G,B,A); Row^[X]:=16+((66*R+129*G+25*B+128) Div 256); End
+    Else Begin
+     Sum:=0;
+     For DY:=0 To 1 Do For DX:=0 To 1 Do Begin
+      XX:=X*2+DX; YY:=Y*2+DY; If XX>=W Then XX:=W-1; If YY>=H Then YY:=H-1;
+      Pixel(XX,YY,R,G,B,A);
+      If P=1 Then C:=-38*R-74*G+112*B Else C:=112*R-94*G-18*B;
+      Inc(Sum,128+Shift8(C+128));
+     End;
+     Row^[X]:=(Sum+2) Div 4;
+    End;
+   End;
+   WriteBytes(Row^,CW);
+  End;
+ End;
+ {$ENDIF}
+ For P:=0 To Count-1 Do Begin For Y:=0 To H-1 Do FreeMem(Planes[P]^[Y],W); Dispose(Planes[P]); End;
+ Dispose(Row);
+End;
+
+
 Procedure WriteY4M;
-Var T: Integer; V: PSample; Line,A,B,C,D: String;
+Var T: Integer; V: PSample; Line,A,B,C,D: String; RN,RD,G:LongInt;
 Begin
  If TrackCount<>1 Then Fail('FFV1: AVI avec une seule piste video requis.'); T:=1;
  With Tracks^[T] Do Begin
-  If ((Codec<>'FFV1') And (Codec<>'FLV1')) Or (ConfigSize<>0) Then Fail('Y4M: FFV1 v0/1 ou FLV1 intra requis.');
+  If (Codec<>'8BPS') And (((Codec<>'FFV1') And (Codec<>'FLV1')) Or (ConfigSize<>0)) Then Fail('Y4M: FFV1 v0/1 ou FLV1 intra requis.');
   If (Width>4096) Or (Height>4096) Then Fail('FFV1: dimensions maximales 4096.');
-  Str(Width,A); Str(Height,B); Str(InputScale,C); Str(DefaultDuration,D);
+  If Codec='8BPS' Then Begin
+   If (First^.Duration<=0) Or (StartDelay<>0) Then Fail('8bps: cadence constante sans retard requise.');
+   V:=First; While V<>Nil Do Begin
+    If (V^.Duration<>First^.Duration) Or (V^.Composition<>0) Then Fail('8bps: cadence variable ou reordonnancement non pris en charge.'); V:=V^.Next;
+   End;
+  End;
+  Str(Width,A); Str(Height,B);
+  If Codec='8BPS' Then Begin RN:=Scale; RD:=First^.Duration; G:=RatioGCD(RN,RD); Str(RN Div G,C); Str(RD Div G,D); End
+  Else Begin Str(InputScale,C); Str(DefaultDuration,D); End;
   Line:='YUV4MPEG2 W'+A+' H'+B+' F'+C+':'+D+' Ip A1:1 C420jpeg'+#10;
-  If AspectNum>0 Then Begin
+  If (AspectNum>0) Or ((Codec='8BPS') And (SARNum>0) And (SARDen>0)) Then Begin
    Str(SARNum,A); Str(SARDen,B);
    Line:=Copy(Line,1,Pos(' A1:1',Line))+'A'+A+':'+B+' C420jpeg'+#10;
   End;
-  WriteBytes(Line[1],Length(Line)); V:=First;
+  {$IFNDEF TEST_8BPS_RGBA}WriteBytes(Line[1],Length(Line));{$ENDIF} V:=First;
   While V<>Nil Do Begin
-   Line:='FRAME'+#10; WriteBytes(Line[1],Length(Line));
-   If Codec='FLV1' Then LVFrame(T,V,False) Else FFFrame(T,V,False); V:=V^.Next;
+   Line:='FRAME'+#10; {$IFNDEF TEST_8BPS_RGBA}WriteBytes(Line[1],Length(Line));{$ENDIF}
+   If Codec='8BPS' Then BPFrame(T,V) Else If Codec='FLV1' Then LVFrame(T,V,False) Else FFFrame(T,V,False); V:=V^.Next;
   End;
  End;
 End;
@@ -8465,6 +8619,7 @@ Begin
  If TrackCount=0 Then Fail('Aucune piste video/audio.');
  For T:=1 To TrackCount Do With Tracks^[T] Do Begin
   If First=Nil Then Fail('Piste vide non prise en charge.');
+  If (Codec='8BPS') And (OutKind<>'yuv4mpegpipe') Then Fail('8bps: decodage vers Y4M requis, pas de copie.');
   If Video Then Begin
    If (Width<1) Or (Height<1) Or (Width>32767) Or (Height>32767) Then Fail(
    'Dimensions video invalides.');
@@ -8596,6 +8751,91 @@ Begin
  If FFRows<>Nil Then Dispose(FFRows);
 End;
 { END NATIVE VIDEO CONTAINERS }
+
+{ IFF 8SVX exponential delta audio. Adapted from FFmpeg 8svx.c/iff.c,
+  LGPL-2.1-or-later; see THIRD_PARTY_NOTICES.md. }
+Procedure Decode8SVXExp(Const Source,Target:String);
+Const Delta:Array[0..15] Of Integer=(-128,-64,-32,-16,-8,-4,-2,-1,0,1,2,4,8,16,32,64);
+Type
+ TBuffers=Record Input:Array[0..1,0..2047] Of Byte; Output:Array[0..16383] Of Byte; End;
+ PBuffers=^TBuffers;
+Var
+ Buffers:PBuffers; Header:Array[0..19] Of Byte;
+ At,Limit,N,Finish,BodyAt,BodySize,ChanSize,Rate,Written,Offset,Chan:LongInt;
+ Channels,C,J,Half,Take,Code,Used,Value:Integer; State:Array[0..1] Of Integer;
+ HasVHDR,HasBODY,HasCHAN:Boolean; Kind:String[4];
+Function BE32(P:Integer):LongInt;
+Begin
+ If Header[P]>=128 Then Fail('8svx_exp: taille superieure a 2 Go.');
+ BE32:=LongInt(Header[P])*16777216+LongInt(Header[P+1])*65536+LongInt(Header[P+2])*256+Header[P+3];
+End;
+Function Tag:String;
+Var S:String; I:Integer;
+Begin S:=''; For I:=0 To 3 Do S:=S+Chr(Header[I]); Tag:=S; End;
+Procedure PutTag(S:String);
+Begin WriteBytes(S[1],4); End;
+Procedure Put32(V:LongInt);
+Var I:Integer;
+Begin For I:=0 To 3 Do Begin Header[I]:=V And 255; V:=V Shr 8; End; WriteBytes(Header,4); End;
+Procedure Put16(V:Word);
+Begin Header[0]:=V And 255; Header[1]:=V Shr 8; WriteBytes(Header,2); End;
+Begin
+ OpenRead(Source); Limit:=InputSize;
+ If Limit<12 Then Fail('8svx_exp: entete FORM tronquee.');
+ ReadAt(0,Header,12); If (Tag<>'FORM') Or (Header[8]<>56) Or (Header[9]<>83) Or (Header[10]<>86) Or (Header[11]<>88) Then
+  Fail('8svx_exp: signature FORM/8SVX requise.');
+ If BE32(4)<>Limit-8 Then Fail('8svx_exp: taille FORM incoherente.');
+ HasVHDR:=False; HasBODY:=False; HasCHAN:=False; Channels:=1; BodyAt:=0; BodySize:=0; Rate:=0; At:=12;
+ While At<Limit Do Begin
+  If Limit-At<8 Then Fail('8svx_exp: entete de bloc tronquee.');
+  ReadAt(At,Header,8); Kind:=Tag; N:=BE32(4); Inc(At,8);
+  If N>Limit-At Then Fail('8svx_exp: bloc hors FORM.'); Finish:=At+N;
+  If Odd(N) Then Begin If Finish>=Limit Then Fail('8svx_exp: bourrage IFF absent.'); Inc(Finish); End;
+  If Kind='VHDR' Then Begin
+   If HasVHDR Or (N<20) Then Fail('8svx_exp: VHDR absent, duplique ou tronque.');
+   ReadAt(At,Header,20); Rate:=LongInt(Header[12])*256+Header[13];
+   If Rate=0 Then Fail('8svx_exp: frequence nulle.');
+   If Header[15]<>2 Then Fail('8svx_exp: compression exponentielle 2 requise.');
+   HasVHDR:=True;
+  End Else If Kind='BODY' Then Begin
+   If HasBODY Then Fail('8svx_exp: un seul bloc BODY requis.');
+   BodyAt:=At; BodySize:=N; HasBODY:=True;
+  End Else If Kind='CHAN' Then Begin
+   If HasCHAN Or (N<>4) Then Fail('8svx_exp: bloc CHAN incorrect.');
+   ReadAt(At,Header,4); Chan:=BE32(0);
+   If (Chan<>0) And (Chan<>2) And (Chan<>4) And (Chan<>6) Then Fail('8svx_exp: masque CHAN non pris en charge.');
+   If Chan=6 Then Channels:=2; HasCHAN:=True;
+  End;
+  At:=Finish;
+ End;
+ If Not HasVHDR Or Not HasBODY Then Fail('8svx_exp: VHDR et BODY requis.');
+ If (BodySize Mod Channels<>0) Or (BodySize<Channels*3) Then Fail('8svx_exp: donnees de canaux tronquees.');
+ ChanSize:=BodySize Div Channels;
+ If ChanSize-2>2147483600 Div (Channels*4) Then Fail('8svx_exp: sortie PCM superieure a 2 Go.');
+ Written:=(ChanSize-2)*4*Channels;
+ For C:=0 To Channels-1 Do Begin
+  ReadAt(BodyAt+LongInt(C)*ChanSize,Header,2);
+  State[C]:=(Integer(Header[1])+128) And 255;
+ End;
+ New(Buffers); OpenWrite(Target);
+ PutTag('RIFF'); Put32(36+Written); PutTag('WAVE'); PutTag('fmt '); Put32(16);
+ Put16(1); Put16(Channels); Put32(Rate); Put32(Rate*Channels*2); Put16(Channels*2); Put16(16);
+ PutTag('data'); Put32(Written); Offset:=2;
+ While Offset<ChanSize Do Begin
+  Take:=2048; If ChanSize-Offset<Take Then Take:=ChanSize-Offset;
+  For C:=0 To Channels-1 Do ReadAt(BodyAt+LongInt(C)*ChanSize+Offset,Buffers^.Input[C],Take);
+  Used:=0;
+  For J:=0 To Take-1 Do For Half:=0 To 1 Do For C:=0 To Channels-1 Do Begin
+   Code:=Buffers^.Input[C,J]; If Half=0 Then Code:=Code And 15 Else Code:=Code Shr 4;
+   Value:=State[C]+Delta[Code]; If Value<0 Then Value:=0; If Value>255 Then Value:=255; State[C]:=Value;
+   N:=(LongInt(Value)-128)*256; If N<0 Then Inc(N,65536);
+   Buffers^.Output[Used]:=N And 255; Buffers^.Output[Used+1]:=N Shr 8; Inc(Used,2);
+  End;
+  WriteBytes(Buffers^.Output,Used); Inc(Offset,Take);
+ End;
+ Dispose(Buffers); CloseRead; CloseWrite;
+End;
+
 
 Procedure NormalizeWave(Const Source,Target: String; ForMP3: Boolean);
 Type
@@ -10459,6 +10699,7 @@ Begin
  WriteLn(' .E = Muxage (ecriture)');
  WriteLn(' --');
  WriteLn(' D  4xm             4X Movie (video versions 0..4 vers Y4M)');
+ WriteLn(' D  iff             IFF 8SVX, audio exponentiel (alias: 8svx, svx)');
  WriteLn(' D  aiff            AIFF/AIFF-C PCM (alias: aif, aifc)');
  WriteLn(' D  asf             ASF, audio WMA2 seulement (alias: wma, wmv)');
  WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3 (copie); FFV1 v0/1 (profil limite)');
@@ -10471,7 +10712,7 @@ Begin
  WriteLn(' DE m4v             raw MPEG-4 video format (MPEG-4 Part 2)');
  WriteLn(' D  mp1             MPEG audio Layer I');
  WriteLn(' DE mp3             MPEG Layer III; encodage MPEG-1 CBR 32..320 kbit/s');
- WriteLn(' DE mp4             MP4 H264/MPEG4, AAC/MP3, VP9/Opus; copie de flux');
+ WriteLn(' DE mp4             MP4: copie H264/MPEG4, AAC/MP3, VP9/Opus; MOV: decodeur 8BPS');
  WriteLn(' DE mpeg            MPEG-1 System format (copie PES / muxage MP3)');
  WriteLn(' DE mpeg1video      raw MPEG-1 video (encodage I/B; decodage I/P/B; alias: m1v)');
  WriteLn('  E mpeg2video      raw MPEG-2 video (encodage I/B; copie MPEG System; alias: m2v)');
@@ -10530,10 +10771,12 @@ Procedure Help;Begin
  WriteLn(' -c copy                        Changement de conteneur, pas de r'+#130+'encodage vid'+#130'o.');
  WriteLn(' -codecs                        Liste des codecs support'+#130+'s');
  WriteLn(' -comment TEXTE                 Commentaire MP3, WAV, AVI, MP4.');
+ WriteLn(' 8svx_exp: -i entree.8svx sortie.wav (mono/stereo, compression 2).');
+ WriteLn(' 8bps: -i entree.mov -an sortie.y4m (alpha non conserve dans Y4M).');
  WriteLn(' 4xm: -i entree.4xm -an sortie.y4m (audio ignore).');
  WriteLn(' -croptop N, -cropbottom N       Retirer N pixels en haut/en bas.');
  WriteLn(' -cropleft N, -cropright N       Retirer N pixels a gauche/a droite.');
- WriteLn(' -f wav|mp3|aiff|voc|libopenmpt Avant -i; -f wav|mp3 avant sortie');
+ WriteLn(' -f wav|mp3|aiff|voc|iff|libopenmpt Avant -i; -f wav|mp3 avant sortie');
  WriteLn(' -formats                       Liste des formats support'+#130+'s');
  WriteLn(' -h                             Affiche l''aide de cette commande');
  WriteLn(' -hls_base_url URL_ORIGINE      R'+#130+'sout les URI d''une liste locale.');
@@ -10690,7 +10933,7 @@ BEGIN
  InputActive:=False; OutputActive:=False;
  HLSListOpen:=False; AllStreams:=False; NoVideo:=False; HLSBase:='';
  AspectNum:=0; AspectDen:=1;
- Decoded4XM:=False; HasCrop:=False; CropTop:=0; CropBottom:=0; CropLeft:=0; CropRight:=0;
+ DecodedVideo:=False; HasCrop:=False; CropTop:=0; CropBottom:=0; CropLeft:=0; CropRight:=0;
  NoAudio:=False; VideoCodec:=''; VideoFrames:=0; ImageWidth:=0; ImageHeight:=0;
  {$IFDEF MSWINDOWS}
   NetSession:=Nil; NetRequest:=Nil;
@@ -10718,6 +10961,8 @@ BEGIN
   Else If Argument='-codecs' Then Begin
    WriteLn('Codecs:');
    WriteLn(' D = decodage, E = encodage, A = audio, V = video');
+   WriteLn('D V    8bps            QuickTime 8BPS video (8/24/32 bits)');
+   WriteLn('D A    8svx_exp        8SVX exponential');
    WriteLn('D V    4xm             4X Movie');
    WriteLn('DEV    flv             Flash Video (FLV1/Sorenson Spark, images intra)');
    WriteLn('DEV    ffv1            FFmpeg codec #1 (v0/1, range defaut, YUV420 8 bits)');
@@ -10891,6 +11136,15 @@ BEGIN
  'Format impose incompatible avec la signature du fichier.');
  If InputFormat='' Then Fail('Format entree non reconnu ou non pris en charge.');
  If OutputFormat='' Then OutputFormat:=FormatName(Extension(OutputPath));
+ If (InputFormat='mp4') And ((OutputFormat='yuv4mpegpipe') Or (VideoCodec='mpeg4') Or (VideoCodec='mpeg1video') Or
+  (VideoCodec='mpeg2video') Or (VideoCodec='ffv1') Or (VideoCodec='flv') Or FourMV) Then Begin
+  If NoVideo Or (VideoCodec='copy') Or (AudioCodec<>'') Or HasBitrate Or (RequestedRate<>0) Or
+   (RequestedChannels<>0) Or (ImageWidth<>0) Or (VideoFrames<>0) Or IsHTTP(InputPath) Then
+   Fail('8bps: decodage video local sans copie ni conversion audio requis.');
+  NoAudio:=True; Temps[6]:=NewTemporary;
+  RemuxVideo(Intermediate,Temps[6],'mp4','yuv4mpegpipe'); Intermediate:=Temps[6];
+  InputFormat:='yuv4mpegpipe'; DecodedVideo:=True;
+ End;
  If InputFormat='4xm' Then Begin
   If NoVideo Or (VideoCodec='copy') Or (AudioCodec<>'') Or HasBitrate Or (RequestedRate<>0) Or
    (RequestedChannels<>0) Or (ImageWidth<>0) Or (VideoFrames<>0) Or IsHTTP(InputPath) Then
@@ -10899,7 +11153,7 @@ BEGIN
    (VideoCodec='mpeg2video') Or (VideoCodec='ffv1') Or (VideoCodec='flv') Or FourMV) Then
    Fail('4xm: sortie Y4M ou encodeur video natif requis.');
   Temps[6]:=NewTemporary; Decode4XM(Intermediate,Temps[6]); Intermediate:=Temps[6];
-  InputFormat:='yuv4mpegpipe'; Decoded4XM:=True;
+  InputFormat:='yuv4mpegpipe'; DecodedVideo:=True;
  End;
  If HasCrop Then Begin
   If NoVideo Or (VideoCodec='copy') Or (AudioCodec='copy') Then Fail('Crop: decodage/reencodage requis; incompatible avec copy ou -vn.');
@@ -10977,12 +11231,12 @@ BEGIN
    (RequestedRate<>0) Or (RequestedChannels<>0) Or HasBitrate Or
    (VideoFrames<>0) Or (ImageWidth<>0) Then Fail('FFV1: video locale sans filtres ni options audio requise.');
   If InputFormat='yuv4mpegpipe' Then Begin
-   If Not (((HasCrop Or Decoded4XM) And (OutputFormat='yuv4mpegpipe') And ((VideoCodec='') Or (VideoCodec='rawvideo'))) Or ((OutputFormat='avi') And (VideoCodec='ffv1')) Or
+   If Not (((HasCrop Or DecodedVideo) And (OutputFormat='yuv4mpegpipe') And ((VideoCodec='') Or (VideoCodec='rawvideo'))) Or ((OutputFormat='avi') And (VideoCodec='ffv1')) Or
     ((OutputFormat='flv') And (VideoCodec='flv'))) Then Fail('Y4M: ffv1 vers AVI ou flv vers FLV requis.');
   End Else If ((InputFormat<>'avi') And (InputFormat<>'flv')) Or (OutputFormat<>'yuv4mpegpipe') Or
    ((VideoCodec<>'') And (VideoCodec<>'rawvideo')) Then Fail('Decodage: AVI FFV1 ou FLV1 intra vers Y4M requis.');
   Temps[2]:=NewTemporary;
-  If (HasCrop Or Decoded4XM) And (InputFormat='yuv4mpegpipe') And (OutputFormat='yuv4mpegpipe') Then CopyFile(Intermediate,Temps[2])
+  If (HasCrop Or DecodedVideo) And (InputFormat='yuv4mpegpipe') And (OutputFormat='yuv4mpegpipe') Then CopyFile(Intermediate,Temps[2])
   Else RemuxVideo(Intermediate,Temps[2],InputFormat,OutputFormat);
   Commit(Temps[2]); Temps[2]:=''; WriteLn('Video creee: ',OutputPath); Halt(0);
  End;
@@ -11094,6 +11348,7 @@ BEGIN
     DecodeWMA2Spool(Temps[3],Temps[0]);
    End Else
    If (InputFormat='mp3') Or (InputFormat='mp1') Then DecodeMP3(InputPath,Temps[0]) Else
+   If InputFormat='iff' Then Decode8SVXExp(InputPath,Temps[0]) Else
    If InputFormat='aiff' Then DecodeAIFF(InputPath,Temps[0]) Else
    If InputFormat='voc' Then DecodeVOC(InputPath,Temps[0]) Else
    If InputFormat='libopenmpt' Then DecodeMOD(InputPath,Temps[0])
