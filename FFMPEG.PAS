@@ -3429,6 +3429,7 @@ End;
 Function FormatName(S: String): String;Begin
  S:=Lower(S); If (S='aif') Or (S='aifc') Then S:='aiff';
  If (S='8svx') Or (S='svx') Then S:='iff';
+ If S='adts' Then S:='aac';
  If S='mod' Then S:='libopenmpt';
  If (S='mov') Or (S='qt') Then S:='mp4';
  If S='m3u8' Then S:='hls';
@@ -3713,6 +3714,7 @@ Begin
  If N>=26 Then If (B[0]=67) And (B[1]=114) And (B[2]=101) And (B[19]=$1A) Then Begin
   Probe:='voc'; Exit;
  End;
+ If N>=7 Then If (B[0]=$FF) And ((B[1] And $F6)=$F0) Then Begin Probe:='aac'; Exit; End;
  If N>=4 Then If (B[0]=$FF) And ((B[1] And $E6)=$E6) Then Begin
   Probe:='mp1'; Exit;
  End;
@@ -8752,21 +8754,577 @@ Begin
 End;
 { END NATIVE VIDEO CONTAINERS }
 
-{ IFF 8SVX exponential delta audio. Adapted from FFmpeg 8svx.c/iff.c,
+{ Native AAC-LC ADTS decoder. Tables/tools adapted from FFmpeg aactab.c,
+  aacdec.c, aacdec_proc_template.c and aacdec_dsp_template.c.
   LGPL-2.1-or-later; see THIRD_PARTY_NOTICES.md. }
-Procedure Decode8SVXExp(Const Source,Target:String);
-Const Delta:Array[0..15] Of Integer=(-128,-64,-32,-16,-8,-4,-2,-1,0,1,2,4,8,16,32,64);
+Procedure DecodeAAC(Const Source,Target:String);
+Const
+ APi=3.14159265358979323846;
+Roots:Array[0..11] Of Integer=(
+ 0,120,200,280,360,440,520,600,663,726,894,1062);
+HuffLeft:Array[0..1349] Of Integer=(
+ -61,92,90,87,83,79,74,72,67,62,56,52,44,14,18,16,17,-1,42,21,
+ -2,-20,29,24,27,26,-120,28,-11,110,113,32,-119,-8,-9,39,37,-12,-15,40,
+ -17,-21,-24,-91,49,48,-89,-26,-29,51,-27,-87,55,97,-31,-85,60,58,-86,-37,
+ -84,-38,66,65,-83,-82,-81,70,71,-43,-46,-45,73,-75,78,77,-74,-73,-50,82,
+ -52,-71,-53,86,-68,-54,-67,89,-56,-57,-63,-58,-60,-62,95,-77,-78,-88,99,100,
+ -98,-93,103,-95,-97,-99,107,-101,-103,-104,116,119,-111,114,-107,-109,117,-112,-114,-116,
+ -41,158,139,153,148,131,136,145,129,130,-1,132,133,-22,135,-19,143,138,-12,172,
+ 141,142,-5,144,-6,170,152,-73,167,162,151,-8,-81,154,194,-11,157,-13,159,160,
+ -68,-15,192,-26,165,-17,-18,168,169,-74,171,-61,173,174,-59,199,-24,-25,-63,-28,
+ 189,-44,-71,187,-34,186,-35,-48,-77,-42,-39,-40,-66,-65,-53,-62,-55,-60,-76,-70,
+ 238,220,209,216,229,206,207,-21,-57,246,257,261,-16,227,215,-55,235,218,226,-6,
+ 221,222,237,-65,256,-81,-8,245,-9,230,255,-10,242,234,-31,236,-12,-13,239,-41,
+ -68,-14,244,-29,-17,-63,273,275,-20,-74,-60,262,253,-50,-35,-54,-25,278,-72,260,
+ -28,-30,269,-32,268,-69,267,-58,-37,-38,272,-49,-47,-45,-64,-48,-77,-78,-62,-75,
+ -1,282,283,-28,291,286,332,335,-38,-55,-10,292,-37,294,295,296,-6,298,312,-67,
+ -49,-8,314,304,305,336,-9,308,-13,313,-19,-31,-46,-22,324,337,317,-35,328,326,
+ 330,322,-54,-21,347,-23,327,-25,329,-26,331,-27,-29,349,-30,-41,-65,-44,-47,340,
+ -36,342,-39,-68,-45,346,-48,-58,-71,-76,-73,357,354,-57,-72,-62,-75,-66,-70,-81,
+ 361,392,414,-37,365,376,391,-2,374,377,371,382,415,-3,375,-4,-5,394,416,390,
+ -22,-19,397,-30,408,398,405,388,389,-9,-56,-29,393,-41,395,-17,-15,-16,399,400,
+ -18,-21,403,-23,-24,435,439,-25,426,432,433,-70,413,-81,-32,-34,417,-35,419,-36,
+ -38,-47,423,425,-50,-68,434,-71,-58,-48,438,-49,-51,-52,-53,-66,-79,-75,-67,-72,
+ -41,508,506,493,478,474,459,456,453,468,471,470,-81,467,490,-64,472,458,-3,463,
+ 461,462,-4,464,-37,513,-6,-71,469,-8,-73,-74,473,-65,491,476,477,-12,482,480,
+ 481,-13,483,-14,485,-15,518,-16,-17,-18,-19,501,-21,497,495,496,-22,498,-23,500,
+ -24,-25,-26,-76,-69,-30,510,-31,509,-32,-49,-34,-47,-54,-38,-59,-42,-55,-70,-78,
+ 580,567,552,548,535,532,542,597,531,541,-1,-8,533,534,-7,545,537,576,-6,540,
+ -5,-81,594,-45,-10,560,547,-65,556,550,-70,-12,565,558,555,-13,557,-68,559,-15,
+ -16,-17,-63,596,-56,574,-21,568,-31,595,-24,572,573,-23,-57,-75,-28,-47,588,-30,
+ 589,582,-32,-33,-67,593,-36,-38,-52,591,-40,-41,-59,-54,-77,-58,-62,598,-64,-72,
+ -1,602,-9,604,-10,628,-17,608,629,610,-4,612,613,639,-5,616,640,-43,619,641,
+ 636,622,-31,643,625,650,-32,-57,-18,630,-26,632,-13,-14,654,-15,-51,-19,-20,-28,
+ -35,646,-44,648,645,-52,-30,-49,649,-58,-46,652,656,-61,-50,-59,-54,658,-48,-60,
+ 661,-63,-56,664,692,668,-19,-1,-11,670,671,672,-3,674,675,676,-4,698,714,-45,
+ 700,682,683,684,-53,703,687,720,-7,725,722,-8,-10,-18,-12,705,697,-13,707,-14,
+ 708,702,-50,704,-16,-20,-21,-42,718,-23,711,-59,-28,-29,-30,716,-31,-32,-38,-39,
+ -49,-46,-48,-54,-55,-63,-1,728,-14,730,-15,779,-27,734,735,800,-17,-40,780,782,
+ 816,-5,743,744,783,838,-56,-6,785,750,751,-93,753,754,789,756,757,-8,759,-47,
+ 761,762,809,764,765,-10,797,820,769,-148,812,772,773,836,775,-12,847,778,-13,-28,
+ 801,-18,-31,802,-20,786,787,-66,-45,790,-23,806,793,794,-24,832,-111,843,799,-38,
+ -41,-30,-67,804,-46,-107,807,808,-36,845,-110,-134,813,833,815,-39,-55,-48,831,-49,
+ 821,-50,823,853,-51,826,867,-162,829,-106,-58,-61,-158,881,-63,-125,837,-137,-68,-69,
+ 841,-79,-84,878,-73,-74,-101,848,-138,-82,-132,-122,-86,-144,-89,856,857,869,-164,876,
+ -104,-105,863,-95,-98,866,-149,-113,-102,-139,-121,-114,873,874,875,-115,-116,-117,-123,880,
+ -129,-131,883,884,-141,-142,893,888,-143,-159,-161,-165,-156,-167,900,896,897,898,953,-1,
+ 949,902,903,-2,980,906,-27,996,-4,954,983,1005,-80,914,957,916,917,1015,-93,920,
+ 921,1018,1029,999,-36,926,969,928,929,930,-8,1023,-149,934,1002,1037,937,-158,976,940,
+ 941,942,-11,1060,-12,1048,1053,948,-168,952,-28,-29,-15,-18,982,956,-19,958,959,-20,
+ 961,-106,988,964,-22,966,1009,968,-23,1011,1043,972,-137,993,1013,-25,977,995,-115,-128,
+ -30,-31,-32,1006,-81,1007,987,-47,989,-60,1021,992,-37,994,-148,-163,-44,-42,-69,-49,
+ -50,-136,1024,1058,-162,-82,-70,-59,-109,1045,-62,1035,-63,-138,-65,-95,-71,-72,1019,-73,
+ -74,1042,-75,-76,1051,-150,1027,1059,-103,1030,-120,-84,-85,-98,-87,-88,-102,1038,-90,1040,
+ -91,-108,-100,-146,-101,-111,-112,-116,1052,-157,-145,-126,-129,1057,-130,-139,-144,-166,-161,-152,
+ -153,-167,1063,1064,1065,-1,1133,-2,1134,1070,1071,-38,1178,1074,-52,1076,1077,1140,1143,1231,
+ 1081,-5,1083,1084,1085,1237,1264,-6,1089,1090,1253,1155,-174,1094,1095,1129,1097,1098,1099,-8,
+ 1101,1102,1103,1104,1163,-9,1226,1298,1283,-154,1172,1112,1113,1315,1314,-11,1117,1118,1331,-222,
+ 1333,1122,-254,-15,1322,1126,-14,1346,-16,1197,1307,1279,-17,-289,1135,-20,1137,-21,-55,-70,
+ 1141,1180,-23,1144,1212,-24,1147,1184,1274,1285,-34,1152,1153,1154,-221,-128,1157,1292,1159,-191,
+ 1266,1336,-29,-30,1165,1166,1167,1223,-31,1208,1171,-260,1271,1174,1284,1329,-33,-54,1179,-71,
+ -40,1211,1233,-41,1185,1348,-281,1234,1189,1190,-43,1192,1193,-127,1241,1196,-45,1198,-225,1200,
+ 1201,1202,-196,1335,-48,1258,1328,-49,1270,-50,-72,-57,-106,1214,-122,1289,-60,1252,-61,-62,
+ 1221,1222,-129,-189,1225,-131,1295,1228,-101,1230,-68,1261,-69,-74,1235,1236,-76,1332,-125,1305,
+ -78,1304,-159,1244,-80,1246,1247,-243,-165,-87,-91,-108,-94,1260,-95,-96,-273,-98,1310,-180,
+ -103,-107,1303,-109,-110,-224,1267,-147,1269,-116,-206,1311,1319,-215,1275,-119,-120,-123,-124,-130,
+ 1281,-132,-133,-257,-135,-282,1337,-211,-138,-140,-141,-143,1293,-175,-258,1297,-231,-246,1338,-263,
+ 1320,1302,-200,-153,-173,-157,-176,-193,-192,-163,-164,1312,-167,-168,-216,1340,-249,-179,-182,-184,
+ 1321,-185,1325,-186,-187,-188,-194,-195,-197,-199,-232,-203,-287,1345,-237,-226,-241,-210,-213,-214,
+ -218,1344,-269,-250,-236,-239,-270,-266,-280,-276);
+HuffRight:Array[0..1349] Of Integer=(
+ 1,2,3,4,5,6,7,8,9,10,11,12,13,22,15,98,106,105,19,20,
+ -3,-4,23,35,25,33,-5,109,-6,30,31,34,-7,-16,-10,36,38,-13,-14,41,
+ -19,-18,43,-22,45,46,47,-23,-25,50,-28,-30,53,54,-32,-33,57,59,-34,-35,
+ 61,-36,63,64,-39,-40,-41,68,69,-42,-44,-80,94,-47,75,76,-48,-49,-72,80,
+ 81,-51,-70,84,85,-69,-55,88,-66,-65,91,-64,93,-59,96,-76,-79,-90,102,101,
+ -92,-94,104,-96,-105,-100,108,-102,-118,-121,111,112,-106,115,-108,-110,118,-113,-115,-117,
+ 121,122,123,124,125,126,127,128,134,178,-75,175,179,-2,196,-3,137,166,-4,140,
+ 164,193,-29,198,-10,146,147,-7,149,150,197,-30,-9,156,155,-69,161,-67,180,191,
+ -14,-31,163,-16,182,-45,-72,183,195,-20,177,-21,185,190,-23,176,-80,-57,-27,-54,
+ 181,-32,-33,184,-56,188,-43,-36,-37,-38,-47,-50,-46,-49,-51,-52,-79,-58,-64,-78,
+ 201,202,203,204,205,213,224,208,-1,210,211,212,-2,214,279,-3,217,259,219,-4,
+ 232,264,223,-5,225,-7,-18,228,-73,266,231,-52,233,276,-11,249,-56,-59,251,240,
+ 241,-42,243,-15,-51,-19,247,248,-34,250,-22,252,270,254,-23,-24,-27,258,-26,274,
+ -70,-80,263,-44,265,-33,277,-36,-71,-40,271,-39,-43,-67,-46,-66,-53,-61,-76,-79,
+ 281,284,290,-2,285,293,287,288,289,-3,-4,307,-5,302,297,300,-64,309,299,-7,
+ 301,-17,303,318,333,306,-18,311,-11,310,-12,-14,-15,-16,315,316,343,-20,319,320,
+ 321,345,323,-61,325,-43,339,-24,341,350,348,-80,-40,334,-56,-32,-33,338,-34,358,
+ -74,344,-59,-42,-77,351,355,-50,-51,-52,-53,352,353,356,-60,-69,-63,359,-79,-78,
+ 364,362,363,-1,368,366,367,-11,369,370,384,372,373,381,422,-10,-31,378,379,380,
+ -6,-7,383,-8,385,386,387,412,401,-61,-12,-13,420,-14,402,396,-43,-20,418,404,
+ -74,-57,421,-33,-62,406,407,-73,409,410,411,-26,436,-27,-28,-55,428,-64,429,-80,
+ -40,-39,430,424,-42,-44,427,-45,-46,-60,431,-59,-69,-76,-77,-54,437,-63,-65,-78,
+ 441,442,443,444,445,446,447,448,449,450,451,452,-1,454,455,-2,457,517,-79,460,
+ 465,503,-45,519,-5,466,-46,-7,489,-72,-9,-10,488,-11,475,486,502,-66,479,484,
+ 504,-53,514,-68,512,-67,487,-20,-27,-80,-75,492,-57,494,499,505,-60,515,-43,511,
+ -58,-61,-56,-28,-29,-52,507,-51,516,-50,-33,-48,-35,-36,-44,-39,-40,-63,-62,-77,
+ 521,522,523,524,525,526,527,528,529,530,-73,-2,539,562,-3,536,585,538,-4,575,
+ -79,-9,543,544,-18,546,561,-11,549,563,551,-26,553,554,577,-53,587,-14,584,-69,
+ -71,-46,-19,564,-20,566,-61,571,569,570,-22,578,592,-34,-25,-27,-78,-29,579,-43,
+ 581,583,-51,-49,-35,586,-37,-44,-39,590,-42,-50,-48,-76,-55,-60,-66,599,-74,-80,
+ 601,603,-2,607,605,606,-3,611,609,631,638,618,615,614,-33,634,617,-6,623,620,
+ 621,647,-7,624,651,626,627,-8,-11,637,-12,633,-34,-42,635,-36,-16,-25,-27,-21,
+ -22,642,-23,644,659,-24,-29,-37,655,-38,-39,657,653,-40,-41,-45,-47,660,-62,-53,
+ 662,-55,-64,669,665,666,667,-17,-2,673,695,694,-26,680,677,713,-36,678,679,-5,
+ 681,685,710,719,-6,686,689,688,-62,690,691,-64,693,-9,-27,696,706,-35,699,-44,
+ 701,715,-15,717,-47,712,-25,-22,709,-51,723,-24,-34,-43,-37,721,-52,724,-33,-58,
+ -40,-41,-57,-60,-61,-56,727,729,-2,733,731,732,-3,742,738,736,737,-4,739,740,
+ 741,-53,752,748,745,746,747,-33,749,803,805,-7,760,791,755,758,817,-120,850,-9,
+ 770,766,763,795,851,-146,767,768,864,-11,771,855,776,774,854,-163,777,871,-151,-16,
+ 781,-54,-19,784,-44,828,788,-21,-22,840,-94,792,818,842,-96,796,-25,798,889,-26,
+ -29,-42,-32,830,-34,-35,862,861,-71,810,811,-37,822,814,835,-124,-43,-59,819,-145,
+ 852,-75,825,824,-76,865,827,-52,839,-57,-119,-60,-62,834,-87,-64,846,-65,-80,-81,
+ 849,-70,-72,844,-97,-118,-77,868,-78,-108,-83,-85,-112,-88,-157,872,859,858,-90,860,
+ -91,-92,870,-133,-160,890,-99,-100,-126,-103,-109,-127,882,879,877,-140,-152,-128,-135,885,
+ -130,-136,886,891,-153,-166,887,892,-155,-147,-150,-154,-169,-168,895,913,909,907,899,-56,
+ 901,904,997,-17,905,981,-3,908,-57,910,911,912,-5,919,915,962,960,918,-6,925,
+ 965,922,923,924,-7,933,927,973,931,1001,-113,932,-9,938,935,936,1014,-10,939,945,
+ 943,1056,-104,944,-155,946,947,1061,-13,950,951,-14,-16,-54,955,998,-67,985,1016,-46,
+ 1041,-21,963,1008,-48,990,967,1046,-99,970,971,1050,-24,974,975,-159,1026,978,979,-26,
+ -43,-55,-68,984,-33,986,1017,-34,1032,-35,991,1000,-132,1036,-38,-39,-40,-41,-45,-119,
+ -124,-51,1003,1004,-52,-53,-58,1031,-61,1010,-133,1012,-92,-64,-127,-66,-83,-107,1020,-110,
+ 1033,1022,-135,-114,1025,-77,1039,1028,-78,1034,-79,-94,-97,-86,-121,-105,-89,1055,-118,1047,
+ -140,-96,-134,1044,-147,-122,-123,-165,1049,-117,-125,-160,-142,1054,-156,-131,-141,-143,-151,-164,
+ -154,-169,1075,1068,1066,-19,1067,-36,1069,1072,1138,-3,1073,1249,-4,1082,1146,1078,1079,1080,
+ 1250,-51,1093,1088,1151,1086,1087,1290,1156,1194,1091,1092,-7,1100,1164,1096,1160,1203,1326,-65,
+ 1110,1106,1169,1280,1105,-229,1107,1108,1109,-10,1111,1116,1124,1114,1115,-217,1120,1341,1119,-12,
+ 1121,1127,1123,-13,1125,1347,-251,1128,-271,1130,1131,1132,-82,-18,1136,-37,1177,-53,1139,-22,
+ 1181,1142,-89,1229,1145,-85,1187,1148,1149,1150,-25,1191,1217,1288,-26,-27,1220,1158,1276,-28,
+ 1161,1162,-81,-230,1199,1245,1224,1168,-207,1170,1248,-32,1173,1300,1175,1176,-183,-35,1210,-39,
+ -73,1182,1183,-104,1213,1186,-42,1188,1215,1324,-93,1239,1291,-44,1195,1219,-160,1256,-46,1205,
+ 1268,1309,-47,1204,-227,1206,1207,-115,1209,-261,-56,-90,-58,1251,-59,1216,-86,1218,-142,-112,
+ 1243,1255,-63,-64,1257,-66,1227,1318,-67,1349,-278,1232,-75,-105,1262,1278,-284,1238,-77,1240,
+ -111,1242,-79,1265,-190,1286,1327,-83,-84,-88,-102,-92,-238,1254,-144,-172,-97,-99,1259,-100,
+ -158,-279,1263,-170,-126,-113,1317,-114,1294,-181,-117,1272,1273,-118,1277,-283,-177,-121,-285,-146,
+ 1282,-212,-259,-134,1313,-136,1287,-137,-255,-139,-288,-156,1306,-145,-148,1296,-149,-150,1299,-151,
+ 1301,1343,-152,-274,-155,-272,-161,1308,-162,-244,-245,1339,-166,-264,-169,1316,-171,-178,-198,-248,
+ 1330,-233,1323,-235,-286,-219,-223,-242,-240,-202,-201,-252,-204,1334,-205,-208,-209,-228,-262,-247,
+ -265,1342,-220,-234,-268,-253,-256,-267,-275,-277);
+LongBands:Array[0..12] Of Integer=(
+ 41,41,47,49,49,51,47,47,43,43,43,40,40);
+LongOffsets:Array[0..12,0..51] Of Integer=(
+ (0,4,8,12,16,20,24,28,32,36,40,44,48,52,56,64,72,80,88,96,108,120,132,144,156,172,188,212,240,276,320,384,448,512,576,640,704,768,832,896,960,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024),
+ (0,4,8,12,16,20,24,28,32,36,40,44,48,52,56,64,72,80,88,96,108,120,132,144,156,172,188,212,240,276,320,384,448,512,576,640,704,768,832,896,960,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024),
+ (0,4,8,12,16,20,24,28,32,36,40,44,48,52,56,64,72,80,88,100,112,124,140,156,172,192,216,240,268,304,344,384,424,464,504,544,584,624,664,704,744,784,824,864,904,944,984,1024,1024,1024,1024,1024),
+ (0,4,8,12,16,20,24,28,32,36,40,48,56,64,72,80,88,96,108,120,132,144,160,176,196,216,240,264,292,320,352,384,416,448,480,512,544,576,608,640,672,704,736,768,800,832,864,896,928,1024,1024,1024),
+ (0,4,8,12,16,20,24,28,32,36,40,48,56,64,72,80,88,96,108,120,132,144,160,176,196,216,240,264,292,320,352,384,416,448,480,512,544,576,608,640,672,704,736,768,800,832,864,896,928,1024,1024,1024),
+ (0,4,8,12,16,20,24,28,32,36,40,48,56,64,72,80,88,96,108,120,132,144,160,176,196,216,240,264,292,320,352,384,416,448,480,512,544,576,608,640,672,704,736,768,800,832,864,896,928,960,992,1024),
+ (0,4,8,12,16,20,24,28,32,36,40,44,52,60,68,76,84,92,100,108,116,124,136,148,160,172,188,204,220,240,260,284,308,336,364,396,432,468,508,552,600,652,704,768,832,896,960,1024,1024,1024,1024,1024),
+ (0,4,8,12,16,20,24,28,32,36,40,44,52,60,68,76,84,92,100,108,116,124,136,148,160,172,188,204,220,240,260,284,308,336,364,396,432,468,508,552,600,652,704,768,832,896,960,1024,1024,1024,1024,1024),
+ (0,8,16,24,32,40,48,56,64,72,80,88,100,112,124,136,148,160,172,184,196,212,228,244,260,280,300,320,344,368,396,424,456,492,532,572,616,664,716,772,832,896,960,1024,1024,1024,1024,1024,1024,1024,1024,1024),
+ (0,8,16,24,32,40,48,56,64,72,80,88,100,112,124,136,148,160,172,184,196,212,228,244,260,280,300,320,344,368,396,424,456,492,532,572,616,664,716,772,832,896,960,1024,1024,1024,1024,1024,1024,1024,1024,1024),
+ (0,8,16,24,32,40,48,56,64,72,80,88,100,112,124,136,148,160,172,184,196,212,228,244,260,280,300,320,344,368,396,424,456,492,532,572,616,664,716,772,832,896,960,1024,1024,1024,1024,1024,1024,1024,1024,1024),
+ (0,12,24,36,48,60,72,84,96,108,120,132,144,156,172,188,204,220,236,252,268,288,308,328,348,372,396,420,448,476,508,544,580,620,664,712,764,820,880,944,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024),
+ (0,12,24,36,48,60,72,84,96,108,120,132,144,156,172,188,204,220,236,252,268,288,308,328,348,372,396,420,448,476,508,544,580,620,664,712,764,820,880,944,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024,1024));
+LongTNS:Array[0..12] Of Integer=(
+ 31,31,34,40,42,51,46,46,42,42,42,39,39);
+ShortBands:Array[0..12] Of Integer=(
+ 12,12,12,14,14,14,15,15,15,15,15,15,15);
+ShortOffsets:Array[0..12,0..51] Of Integer=(
+ (0,4,8,12,16,20,24,32,40,48,64,92,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,32,40,48,64,92,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,32,40,48,64,92,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,28,36,44,56,68,80,96,112,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,28,36,44,56,68,80,96,112,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,28,36,44,56,68,80,96,112,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,28,36,44,52,64,76,92,108,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,28,36,44,52,64,76,92,108,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,28,32,40,48,60,72,88,108,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,28,32,40,48,60,72,88,108,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,28,32,40,48,60,72,88,108,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,28,36,44,52,60,72,88,108,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128),
+ (0,4,8,12,16,20,24,28,36,44,52,60,72,88,108,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128));
+ShortTNS:Array[0..12] Of Integer=(
+ 9,9,10,14,14,14,14,14,14,14,14,14,14);
+Rates:Array[0..12] Of LongInt=(
+ 96000,88200,64000,48000,44100,32000,24000,22050,16000,12000,11025,8000,7350);
+Type
+ TInfo=Record Seq,Shape,MaxBand,Groups,Windows,Bands,TNSMax:Integer;
+  GroupLen:Array[0..7] Of Integer; Off:Array[0..51] Of Integer; End;
+ TFilter=Record Len,Order,Direction:Integer; Coef:Array[0..11] Of Double; End;
+ TChannel=Record
+  Info:TInfo; PrevShape:Integer;
+  Book:Array[0..119] Of Integer; Scale:Array[0..119] Of Double;
+  Spec,Overlap:Array[0..1023] Of Double;
+  Filters:Array[0..7,0..2] Of TFilter; NFilter:Array[0..7] Of Integer;
+ End;
+ PChannel=^TChannel;
+ TWork=Record
+  Data:Array[0..8191] Of Byte; PCM:Array[0..4095] Of Byte;
+  Time:Array[0..2047] Of Double; Block:Array[0..2047] Of Double;
+  WinLong:Array[0..1,0..1023] Of Double;
+  WinShort:Array[0..1,0..127] Of Double;
+  MS:Array[0..119] Of Boolean;
+ End;
+ PWork=^TWork;
+Var
+ Work:PWork; Ch:Array[0..1] Of PChannel;
+ Pos,Limit,BitPos,BitLimit,Written,FrameCount,TagSize,Rate:LongInt;
+ Header:Array[0..9] Of Byte;
+ Channels,RateIndex,FrameSize,HeaderSize,Kind,I,J,C,Count,MSPresent:Integer;
+ NoiseLo,NoiseHi:Word; Common,GotAudio:Boolean;
+Procedure Bad(Const S:String); Begin Fail('aac: '+S); End;
+Function Bits(N:Integer):LongInt;
+Var V:LongInt; K:Integer;
+Begin
+ If (N<0) Or (N>24) Or (N>BitLimit-BitPos) Then Bad('Donnees de trame tronquees.');
+ V:=0; For K:=1 To N Do Begin
+  V:=V*2+((Work^.Data[BitPos Div 8] Shr (7-(BitPos Mod 8))) And 1); Inc(BitPos);
+ End; Bits:=V;
+End;
+Function Huff(Book:Integer):Integer;
+Var Node,Depth:Integer;
+Begin
+ Node:=Roots[Book]; Depth:=0;
+ Repeat
+  If Bits(1)=0 Then Node:=HuffLeft[Node] Else Node:=HuffRight[Node]; Inc(Depth);
+  If (Depth>20) Or (Node=0) Then Bad('Code Huffman incorrect.');
+ Until Node<0;
+ Huff:=-Node-1;
+End;
+Function Power2(X:Double):Double; Begin Power2:=Exp(X*0.69314718055994530942); End;
+Function Dequant(V:Integer):Double;
+Begin If V=0 Then Dequant:=0 Else If V<0 Then Dequant:=-Exp(Ln(-V)*4/3) Else Dequant:=Exp(Ln(V)*4/3); End;
+Function Noise:Double;
+Var A,B:LongInt;
+Begin
+ { Unsigned LCG modulo 2^32 using 16-bit limbs, also with overflow checks. }
+ A:=LongInt(NoiseLo)*26125+62303;
+ B:=((A Shr 16)+LongInt(NoiseHi)*26125+LongInt(NoiseLo)*25+15470) And 65535;
+ NoiseLo:=A And 65535; NoiseHi:=B;
+ If B>=32768 Then B:=B-65536;
+ Noise:=B*65536.0+NoiseLo;
+End;
+Procedure ReadInfo(Var Q:TInfo);
+Var K:Integer;
+Begin
+ FillChar(Q,SizeOf(Q),0);
+ If Bits(1)<>0 Then Bad('Bit ICS reserve non nul.');
+ Q.Seq:=Bits(2); Q.Shape:=Bits(1); Q.Groups:=1; Q.GroupLen[0]:=1;
+ If Q.Seq=2 Then Begin
+  Q.MaxBand:=Bits(4); Q.Windows:=8; Q.Bands:=ShortBands[RateIndex]; Q.TNSMax:=ShortTNS[RateIndex];
+  For K:=0 To 6 Do If Bits(1)<>0 Then Inc(Q.GroupLen[Q.Groups-1]) Else Begin Inc(Q.Groups); Q.GroupLen[Q.Groups-1]:=1; End;
+  For K:=0 To 51 Do Q.Off[K]:=ShortOffsets[RateIndex,K];
+ End Else Begin
+  Q.MaxBand:=Bits(6); Q.Windows:=1; Q.Bands:=LongBands[RateIndex]; Q.TNSMax:=LongTNS[RateIndex];
+  For K:=0 To 51 Do Q.Off[K]:=LongOffsets[RateIndex,K];
+  If Bits(1)<>0 Then Bad('Prediction interdite en AAC-LC.');
+ End;
+ If Q.MaxBand>Q.Bands Then Bad('Nombre de bandes ICS incorrect.');
+End;
+Procedure DecodeChannel(Index:Integer; Shared:Boolean);
+Var
+ P:PChannel; G,B,At,Stop,CB,L,Part,Esc,GlobalGain,SF,NS,ISF,K,W,Base,StartWin,Size:Integer;
+ N,V,Dim,Radix,D,T,Width,Res,Comp,NF,PulseCount,PulseBand:Integer;
+ Values:Array[0..3] Of Integer; PulsePos,PulseAmp:Array[0..3] Of Integer;
+ FirstNoise:Boolean; Energy,Scale,X:Double;
+Begin
+ P:=Ch[Index]; GlobalGain:=Bits(8); If Not Shared Then ReadInfo(P^.Info);
+ FillChar(P^.Spec,SizeOf(P^.Spec),0); FillChar(P^.Book,SizeOf(P^.Book),0);
+ FillChar(P^.NFilter,SizeOf(P^.NFilter),0);
+ With P^.Info Do Begin
+  If Seq=2 Then L:=3 Else L:=5; Esc:=(1 Shl L)-1;
+  For G:=0 To Groups-1 Do Begin
+   B:=0;
+   While B<MaxBand Do Begin
+    CB:=Bits(4); If CB=12 Then Bad('Livre spectral reserve.'); Stop:=B;
+    Repeat Part:=Bits(L); Inc(Stop,Part); If Stop>MaxBand Then Bad('Section spectrale hors limites.'); Until Part<>Esc;
+    If Stop=B Then Bad('Section spectrale vide.');
+    While B<Stop Do Begin P^.Book[G*MaxBand+B]:=CB; Inc(B); End;
+   End;
+  End;
+  SF:=GlobalGain; NS:=GlobalGain-90; ISF:=0; FirstNoise:=True;
+  For At:=0 To Groups*MaxBand-1 Do Begin
+   CB:=P^.Book[At]; Scale:=0;
+   Case CB Of
+    0: ;
+    14,15:Begin Inc(ISF,Huff(0)-60); If ISF < -155 Then ISF:=-155; If ISF>100 Then ISF:=100; Scale:=Power2(-ISF/4); End;
+    13:Begin
+     If FirstNoise Then Begin Inc(NS,Bits(9)-256); FirstNoise:=False; End Else Inc(NS,Huff(0)-60);
+     If NS < -100 Then NS:=-100; If NS>155 Then NS:=155; Scale:=Power2(NS/4);
+    End;
+    Else Begin Inc(SF,Huff(0)-60); If (SF<0) Or (SF>255) Then Bad('Facteur echelle hors limites.'); Scale:=Power2((SF-100)/4); End;
+   End;
+   P^.Scale[At]:=Scale;
+  End;
+  PulseCount:=0;
+  If Bits(1)<>0 Then Begin
+   If Seq=2 Then Bad('Impulsions interdites avec fenetres courtes.');
+   PulseCount:=Bits(2)+1; PulseBand:=Bits(6); If PulseBand>=Bands Then Bad('Bande impulsion incorrecte.');
+   K:=Off[PulseBand]; For B:=0 To PulseCount-1 Do Begin Inc(K,Bits(5)); If K>=1024 Then Bad('Impulsion hors limites.'); PulsePos[B]:=K; PulseAmp[B]:=Bits(4); End;
+  End;
+  If Bits(1)<>0 Then For W:=0 To Windows-1 Do Begin
+   If Seq=2 Then NF:=Bits(1) Else NF:=Bits(2); P^.NFilter[W]:=NF;
+   If NF>0 Then Begin
+    Res:=Bits(1)+3;
+    For B:=0 To NF-1 Do With P^.Filters[W,B] Do Begin
+     If Seq=2 Then Begin Len:=Bits(4); Order:=Bits(3); End Else Begin Len:=Bits(6); Order:=Bits(5); End;
+     If (Order>12) Or ((Seq=2) And (Order>7)) Then Bad('Ordre TNS incorrect.');
+     If Order>0 Then Begin
+      Direction:=Bits(1); Comp:=Bits(1); Width:=Res-Comp;
+      For K:=0 To Order-1 Do Begin
+       V:=Bits(Width); If V>=(1 Shl (Width-1)) Then Dec(V,1 Shl Width);
+       If V>=0 Then X:=(1 Shl (Res-1))-0.5 Else X:=(1 Shl (Res-1))+0.5;
+       Coef[K]:=-Sin(V*APi/(2*X));
+      End;
+     End;
+    End;
+   End;
+  End;
+  If Bits(1)<>0 Then Bad('Gain control SSR non pris en charge.');
+  StartWin:=0;
+  For G:=0 To Groups-1 Do Begin
+   For B:=0 To MaxBand-1 Do Begin
+    At:=G*MaxBand+B; CB:=P^.Book[At]; Scale:=P^.Scale[At]; Size:=Off[B+1]-Off[B];
+    For W:=0 To GroupLen[G]-1 Do Begin
+     Base:=(StartWin+W)*128+Off[B];
+     If CB=13 Then Begin
+      Energy:=0; For K:=0 To Size-1 Do Begin X:=Noise; P^.Spec[Base+K]:=X; Energy:=Energy+X*X; End;
+      If Energy>0 Then For K:=0 To Size-1 Do P^.Spec[Base+K]:=P^.Spec[Base+K]*Scale/Sqrt(Energy);
+     End Else If (CB>0) And (CB<12) Then Begin
+      If CB<=4 Then Begin Dim:=4; Radix:=3; End Else Begin Dim:=2; If CB<=6 Then Radix:=9 Else If CB<=8 Then Radix:=8 Else If CB<=10 Then Radix:=13 Else Radix:=17; End;
+      If Size Mod Dim<>0 Then Bad('Largeur bande spectrale incorrecte.');
+      K:=0;
+      While K<Size Do Begin
+       N:=Huff(CB);
+       For D:=Dim-1 Downto 0 Do Begin Values[D]:=N Mod Radix; N:=N Div Radix; End;
+       If CB<=2 Then For D:=0 To Dim-1 Do Dec(Values[D])
+       Else If CB<=6 Then Begin
+        If CB>=5 Then For D:=0 To Dim-1 Do Dec(Values[D],4)
+        Else For D:=0 To Dim-1 Do If Values[D]<>0 Then If Bits(1)<>0 Then Values[D]:=-Values[D];
+       End Else For D:=0 To Dim-1 Do If Values[D]<>0 Then If Bits(1)<>0 Then Values[D]:=-Values[D];
+       If CB=11 Then For D:=0 To Dim-1 Do If Abs(Values[D])=16 Then Begin
+        Width:=4; While Bits(1)<>0 Do Begin Inc(Width); If Width>12 Then Bad('Echappement spectral hors limites.'); End;
+        V:=(1 Shl Width)+Bits(Width); If Values[D]<0 Then V:=-V; Values[D]:=V;
+       End;
+       For D:=0 To Dim-1 Do Begin
+        V:=Values[D];
+        For T:=0 To PulseCount-1 Do If Base+K+D=PulsePos[T] Then Begin If V>0 Then Inc(V,PulseAmp[T]) Else Dec(V,PulseAmp[T]); End;
+        P^.Spec[Base+K+D]:=Dequant(V)*Scale;
+       End;
+       Inc(K,Dim);
+      End;
+     End;
+    End;
+   End;
+   Inc(StartWin,GroupLen[G]);
+  End;
+ End;
+End;
+Procedure Stereo;
+Var G,B,W,K,At,Base,Win:Integer; L,R,Scale:Double;
+Begin
+ Win:=0;
+ With Ch[1]^.Info Do For G:=0 To Groups-1 Do Begin
+  For B:=0 To MaxBand-1 Do Begin
+   At:=G*MaxBand+B;
+   For W:=0 To GroupLen[G]-1 Do Begin
+    Base:=(Win+W)*128;
+    For K:=Off[B] To Off[B+1]-1 Do Begin
+     L:=Ch[0]^.Spec[Base+K]; R:=Ch[1]^.Spec[Base+K];
+     If Common And Work^.MS[At] And (Ch[0]^.Book[At]<13) And (Ch[1]^.Book[At]<13) Then Begin
+      Ch[0]^.Spec[Base+K]:=L+R; Ch[1]^.Spec[Base+K]:=L-R;
+     End;
+     If Ch[1]^.Book[At]>=14 Then Begin
+      Scale:=Ch[1]^.Scale[At]; If Ch[1]^.Book[At]=14 Then Scale:=-Scale;
+      If (MSPresent<>0) And Work^.MS[At] Then Scale:=-Scale;
+      Ch[1]^.Spec[Base+K]:=L*Scale;
+     End;
+    End;
+   End;
+  End;
+  Inc(Win,GroupLen[G]);
+ End;
+End;
+Procedure ApplyTNS(Index:Integer);
+Var P:PChannel; W,F,Top,Bottom,MaxBand,Start,Stop,Step,K,J,M,N,Order:Integer;
+ LPC,Tmp:Array[0..11] Of Double; X:Double;
+Begin
+ P:=Ch[Index]; MaxBand:=P^.Info.MaxBand; If MaxBand>P^.Info.TNSMax Then MaxBand:=P^.Info.TNSMax;
+ For W:=0 To P^.Info.Windows-1 Do Begin
+  Bottom:=P^.Info.Bands;
+  For F:=0 To P^.NFilter[W]-1 Do Begin
+   Top:=Bottom; Dec(Bottom,P^.Filters[W,F].Len); If Bottom<0 Then Bottom:=0;
+   Order:=P^.Filters[W,F].Order;
+   If Order>0 Then Begin
+    FillChar(LPC,SizeOf(LPC),0);
+    For M:=0 To Order-1 Do Begin
+     X:=-P^.Filters[W,F].Coef[M];
+     For J:=0 To M-1 Do Tmp[J]:=LPC[J]+X*LPC[M-1-J];
+     For J:=0 To M-1 Do LPC[J]:=Tmp[J]; LPC[M]:=X;
+    End;
+    K:=Bottom; If K>MaxBand Then K:=MaxBand; Start:=P^.Info.Off[K];
+    K:=Top; If K>MaxBand Then K:=MaxBand; Stop:=P^.Info.Off[K]; N:=Stop-Start; Step:=1;
+    If P^.Filters[W,F].Direction<>0 Then Begin Start:=Stop-1; Step:=-1; End;
+    Inc(Start,W*128);
+    For M:=0 To N-1 Do Begin
+     X:=P^.Spec[Start]; K:=M; If K>Order Then K:=Order;
+     For J:=1 To K Do X:=X-LPC[J-1]*P^.Spec[Start-J*Step];
+     P^.Spec[Start]:=X; Inc(Start,Step);
+    End;
+   End;
+  End;
+ End;
+End;
+Function Bessel(X:Double):Double;
+Var Term,Sum:Double; K:Integer;
+Begin Term:=1; Sum:=1; For K:=1 To 60 Do Begin Term:=Term*X*X/(4.0*K*K); Sum:=Sum+Term; If Term<Sum*1E-16 Then Break; End; Bessel:=Sum; End;
+Procedure Windows;
+Var K,N,Which:Integer; Sum,X,Alpha:Double;
+Begin
+ For Which:=0 To 1 Do Begin
+  If Which=0 Then Begin N:=1024; Alpha:=4; End Else Begin N:=128; Alpha:=6; End;
+  Sum:=0;
+  For K:=0 To N Do Begin X:=2.0*K/N-1; Work^.Block[K]:=Bessel(APi*Alpha*Sqrt(1-X*X)); Sum:=Sum+Work^.Block[K]; End;
+  X:=0;
+  For K:=0 To N-1 Do Begin
+   X:=X+Work^.Block[K];
+   If Which=0 Then Begin Work^.WinLong[0,K]:=Sin(APi*(K+0.5)/(2*N)); Work^.WinLong[1,K]:=Sqrt(X/Sum); End
+   Else Begin Work^.WinShort[0,K]:=Sin(APi*(K+0.5)/(2*N)); Work^.WinShort[1,K]:=Sqrt(X/Sum); End;
+  End;
+ End;
+End;
+Procedure Transform(Index,Base,N:Integer);
+Var I,K:Integer; A,C0,C1,C2,Step,Sum:Double;
+Begin
+ { IMDCT with cosine recurrence: no platform DSP library. }
+ For I:=0 To 2*N-1 Do Begin
+  A:=APi/N*(I+0.5+N/2); C0:=Cos(A/2); C1:=Cos(1.5*A); Step:=2*Cos(A);
+  Sum:=Ch[Index]^.Spec[Base]*C0;
+  For K:=1 To N-1 Do Begin Sum:=Sum+Ch[Index]^.Spec[Base+K]*C1; C2:=Step*C1-C0; C0:=C1; C1:=C2; End;
+  Work^.Block[I]:=Sum/N;
+ End;
+End;
+Procedure Synthesis(Index:Integer);
+Var P:PChannel; I,W,At,Shape,Prev,Seq:Integer; V:LongInt; X,Weight:Double;
+Begin
+ P:=Ch[Index]; Shape:=P^.Info.Shape; Prev:=P^.PrevShape; Seq:=P^.Info.Seq;
+ FillChar(Work^.Time,SizeOf(Work^.Time),0);
+ If Seq=2 Then Begin
+  For W:=0 To 7 Do Begin
+   Transform(Index,W*128,128); At:=448+W*128;
+   For I:=0 To 127 Do Begin
+    If W=0 Then Weight:=Work^.WinShort[Prev,I] Else Weight:=Work^.WinShort[Shape,I];
+    Work^.Time[At+I]:=Work^.Time[At+I]+Work^.Block[I]*Weight;
+    Work^.Time[At+128+I]:=Work^.Time[At+128+I]+Work^.Block[128+I]*Work^.WinShort[Shape,127-I];
+   End;
+  End;
+ End Else Begin
+  Transform(Index,0,1024);
+  For I:=0 To 1023 Do Begin
+   If Seq=3 Then Begin If I<448 Then Weight:=0 Else If I<576 Then Weight:=Work^.WinShort[Prev,I-448] Else Weight:=1; End
+   Else Weight:=Work^.WinLong[Prev,I];
+   Work^.Time[I]:=Work^.Block[I]*Weight;
+   If Seq=1 Then Begin If I<448 Then Weight:=1 Else If I<576 Then Weight:=Work^.WinShort[Shape,575-I] Else Weight:=0; End
+   Else Weight:=Work^.WinLong[Shape,1023-I];
+   Work^.Time[I+1024]:=Work^.Block[I+1024]*Weight;
+  End;
+ End;
+ For I:=0 To 1023 Do Begin
+  X:=Work^.Time[I]+P^.Overlap[I]; P^.Overlap[I]:=Work^.Time[I+1024];
+  If X>32767 Then V:=32767 Else If X < -32768 Then V:=-32768 Else V:=Round(X);
+  If V<0 Then Inc(V,65536); At:=(I*Channels+Index)*2; Work^.PCM[At]:=V And 255; Work^.PCM[At+1]:=V Shr 8;
+ End;
+ P^.PrevShape:=Shape;
+End;
+Procedure WaveHeader;
+Var B:Array[0..43] Of Byte; S:String[4]; Code:Integer;
+ Procedure Put16(At:Integer; V:LongInt); Begin B[At]:=V And 255; B[At+1]:=(V Shr 8) And 255; End;
+ Procedure Put32(At:Integer; V:LongInt); Begin Put16(At,V); Put16(At+2,V Shr 16); End;
+Begin
+ FillChar(B,SizeOf(B),0); S:='RIFF'; Move(S[1],B[0],4); S:='WAVE'; Move(S[1],B[8],4);
+ S:='fmt '; Move(S[1],B[12],4); S:='data'; Move(S[1],B[36],4);
+ Put32(4,Written+36); Put32(16,16); Put16(20,1); Put16(22,Channels); Put32(24,Rate);
+ Put32(28,Rate*Channels*2); Put16(32,Channels*2); Put16(34,16); Put32(40,Written);
+ {$I-}Seek(ActiveOutput,0); Code:=IOResult;{$I+} If Code<>0 Then Bad('Reecriture WAV impossible.'); WriteBytes(B,44);
+End;
+Begin
+ OpenRead(Source); Limit:=InputSize; Pos:=0; Written:=0; FrameCount:=0; RateIndex:=-1; Channels:=0;
+ New(Work); FillChar(Work^,SizeOf(Work^),0); For C:=0 To 1 Do Begin New(Ch[C]); FillChar(Ch[C]^,SizeOf(TChannel),0); End;
+ NoiseLo:=$3D4C; NoiseHi:=$1F2E; Windows;
+ While Pos<Limit Do Begin
+  If Limit-Pos<7 Then Bad('En-tete ADTS tronquee.'); ReadAt(Pos,Header,7);
+  If (Header[0]=73) And (Header[1]=68) And (Header[2]=51) Then Begin
+   If Limit-Pos<10 Then Bad('ID3 tronque.'); ReadAt(Pos,Header,10);
+   If (Header[3]<2) Or (Header[3]>4) Or (Header[4]=255) Then Bad('Version ID3 incorrecte.');
+   TagSize:=0; For I:=6 To 9 Do Begin If Header[I]>127 Then Bad('Taille ID3 incorrecte.'); TagSize:=TagSize*128+Header[I]; End;
+   Inc(TagSize,10); If (Header[3]=4) And ((Header[5] And 16)<>0) Then Inc(TagSize,10);
+   If TagSize>Limit-Pos Then Bad('ID3 tronque.'); Inc(Pos,TagSize);
+  End Else Begin
+   If (Header[0]<>255) Or ((Header[1] And $F6)<>$F0) Then Bad('Synchronisation ADTS incorrecte.');
+   If Header[2] Shr 6<>1 Then Bad('Seul le profil AAC-LC est decode.');
+   I:=(Header[2] Shr 2) And 15; J:=((Header[2] And 1) Shl 2)+(Header[3] Shr 6);
+   If I>12 Then Bad('Frequence ADTS reservee.'); If (J<1) Or (J>2) Then Bad('Configuration ADTS mono/stereo 1 ou 2 requise.');
+   If RateIndex<0 Then Begin RateIndex:=I; Rate:=Rates[I]; Channels:=J; OpenWrite(Target); WaveHeader; End
+   Else If (RateIndex<>I) Or (Channels<>J) Then Bad('Changement de configuration ADTS.');
+   If Header[6] And 3<>0 Then Bad('Plusieurs blocs par trame ADTS non pris en charge.');
+   HeaderSize:=7; If Header[1] And 1=0 Then HeaderSize:=9;
+   FrameSize:=(LongInt(Header[3] And 3) Shl 11)+(Integer(Header[4]) Shl 3)+(Header[5] Shr 5);
+   If (FrameSize<=HeaderSize) Or (FrameSize>Limit-Pos) Then Bad('Taille ADTS incorrecte ou trame tronquee.');
+   ReadAt(Pos+HeaderSize,Work^.Data,FrameSize-HeaderSize); BitPos:=0; BitLimit:=LongInt(FrameSize-HeaderSize)*8;
+   GotAudio:=False; Common:=False; MSPresent:=0; FillChar(Work^.MS,SizeOf(Work^.MS),0);
+   Repeat
+    Kind:=Bits(3);
+    Case Kind Of
+     0,1:Begin
+      If GotAudio Then Bad('Plusieurs elements audio non pris en charge.'); I:=Bits(4);
+      If ((Kind=0) And (Channels<>1)) Or ((Kind=1) And (Channels<>2)) Then Bad('Element incompatible avec les canaux ADTS.');
+      If Kind=1 Then Begin
+       Common:=Bits(1)<>0;
+       If Common Then Begin
+        ReadInfo(Ch[0]^.Info); Ch[1]^.Info:=Ch[0]^.Info; MSPresent:=Bits(2); If MSPresent=3 Then Bad('Masque stereo reserve.');
+        For I:=0 To Ch[0]^.Info.Groups*Ch[0]^.Info.MaxBand-1 Do Begin
+         If MSPresent=1 Then Work^.MS[I]:=Bits(1)<>0 Else Work^.MS[I]:=MSPresent=2;
+        End;
+       End;
+      End;
+      For C:=0 To Channels-1 Do DecodeChannel(C,Common); If Channels=2 Then Stereo;
+      GotAudio:=True;
+     End;
+     4:Begin
+      I:=Bits(4); J:=Bits(1); Count:=Bits(8); If Count=255 Then Inc(Count,Bits(8));
+      If J<>0 Then BitPos:=((BitPos+7) Div 8)*8;
+      For I:=1 To Count Do J:=Bits(8);
+     End;
+     6:Begin
+      Count:=Bits(4); If Count=15 Then Count:=14+Bits(8);
+      If Count>0 Then Begin
+       I:=Bits(4); If (I=13) Or (I=14) Then Bad('Extension HE-AAC SBR/PS non prise en charge.');
+       If (I<>0) And (I<>1) Then Bad('Extension AAC non prise en charge.');
+       J:=Bits(4); For I:=2 To Count Do J:=Bits(8);
+      End;
+     End;
+     7: ;
+     Else Bad('Element AAC (PCE/couplage/LFE) non pris en charge.');
+    End;
+   Until Kind=7;
+   If Not GotAudio Then Bad('Trame sans element audio.');
+   For C:=0 To Channels-1 Do Begin ApplyTNS(C); Synthesis(C); End;
+   If Written>2147483600-Channels*2048 Then Bad('WAV trop grand.');
+   WriteBytes(Work^.PCM,Channels*2048); Inc(Written,Channels*2048); Inc(FrameCount); Inc(Pos,FrameSize);
+  End;
+ End;
+ If FrameCount=0 Then Bad('Aucune trame ADTS.');
+ WaveHeader; CloseRead; CloseWrite; For C:=0 To 1 Do Dispose(Ch[C]); Dispose(Work);
+End;
+
+{ IFF 8SVX Fibonacci/exponential delta audio. Adapted from FFmpeg 8svx.c/iff.c,
+  LGPL-2.1-or-later; see THIRD_PARTY_NOTICES.md. }
+Procedure Decode8SVX(Const Source,Target:String);
+Const Delta:Array[1..2,0..15] Of Integer=(
+ (-34,-21,-13,-8,-5,-3,-2,-1,0,1,2,3,5,8,13,21),
+ (-128,-64,-32,-16,-8,-4,-2,-1,0,1,2,4,8,16,32,64));
 Type
  TBuffers=Record Input:Array[0..1,0..2047] Of Byte; Output:Array[0..16383] Of Byte; End;
  PBuffers=^TBuffers;
 Var
  Buffers:PBuffers; Header:Array[0..19] Of Byte;
  At,Limit,N,Finish,BodyAt,BodySize,ChanSize,Rate,Written,Offset,Chan:LongInt;
- Channels,C,J,Half,Take,Code,Used,Value:Integer; State:Array[0..1] Of Integer;
+ Channels,C,J,Half,Take,Code,Used,Value,Compression:Integer; State:Array[0..1] Of Integer;
  HasVHDR,HasBODY,HasCHAN:Boolean; Kind:String[4];
 Function BE32(P:Integer):LongInt;
 Begin
- If Header[P]>=128 Then Fail('8svx_exp: taille superieure a 2 Go.');
+ If Header[P]>=128 Then Fail('8svx: taille superieure a 2 Go.');
  BE32:=LongInt(Header[P])*16777216+LongInt(Header[P+1])*65536+LongInt(Header[P+2])*256+Header[P+3];
 End;
 Function Tag:String;
@@ -8781,37 +9339,38 @@ Procedure Put16(V:Word);
 Begin Header[0]:=V And 255; Header[1]:=V Shr 8; WriteBytes(Header,2); End;
 Begin
  OpenRead(Source); Limit:=InputSize;
- If Limit<12 Then Fail('8svx_exp: entete FORM tronquee.');
+ If Limit<12 Then Fail('8svx: entete FORM tronquee.');
  ReadAt(0,Header,12); If (Tag<>'FORM') Or (Header[8]<>56) Or (Header[9]<>83) Or (Header[10]<>86) Or (Header[11]<>88) Then
-  Fail('8svx_exp: signature FORM/8SVX requise.');
- If BE32(4)<>Limit-8 Then Fail('8svx_exp: taille FORM incoherente.');
- HasVHDR:=False; HasBODY:=False; HasCHAN:=False; Channels:=1; BodyAt:=0; BodySize:=0; Rate:=0; At:=12;
+  Fail('8svx: signature FORM/8SVX requise.');
+ If BE32(4)<>Limit-8 Then Fail('8svx: taille FORM incoherente.');
+ Compression:=0; HasVHDR:=False; HasBODY:=False; HasCHAN:=False; Channels:=1; BodyAt:=0; BodySize:=0; Rate:=0; At:=12;
  While At<Limit Do Begin
-  If Limit-At<8 Then Fail('8svx_exp: entete de bloc tronquee.');
+  If Limit-At<8 Then Fail('8svx: entete de bloc tronquee.');
   ReadAt(At,Header,8); Kind:=Tag; N:=BE32(4); Inc(At,8);
-  If N>Limit-At Then Fail('8svx_exp: bloc hors FORM.'); Finish:=At+N;
-  If Odd(N) Then Begin If Finish>=Limit Then Fail('8svx_exp: bourrage IFF absent.'); Inc(Finish); End;
+  If N>Limit-At Then Fail('8svx: bloc hors FORM.'); Finish:=At+N;
+  If Odd(N) Then Begin If Finish>=Limit Then Fail('8svx: bourrage IFF absent.'); Inc(Finish); End;
   If Kind='VHDR' Then Begin
-   If HasVHDR Or (N<20) Then Fail('8svx_exp: VHDR absent, duplique ou tronque.');
+   If HasVHDR Or (N<20) Then Fail('8svx: VHDR absent, duplique ou tronque.');
    ReadAt(At,Header,20); Rate:=LongInt(Header[12])*256+Header[13];
-   If Rate=0 Then Fail('8svx_exp: frequence nulle.');
-   If Header[15]<>2 Then Fail('8svx_exp: compression exponentielle 2 requise.');
+   If Rate=0 Then Fail('8svx: frequence nulle.');
+   Compression:=Header[15];
+   If (Compression<>1) And (Compression<>2) Then Fail('8svx: compression Fibonacci 1 ou exponentielle 2 requise.');
    HasVHDR:=True;
   End Else If Kind='BODY' Then Begin
-   If HasBODY Then Fail('8svx_exp: un seul bloc BODY requis.');
+   If HasBODY Then Fail('8svx: un seul bloc BODY requis.');
    BodyAt:=At; BodySize:=N; HasBODY:=True;
   End Else If Kind='CHAN' Then Begin
-   If HasCHAN Or (N<>4) Then Fail('8svx_exp: bloc CHAN incorrect.');
+   If HasCHAN Or (N<>4) Then Fail('8svx: bloc CHAN incorrect.');
    ReadAt(At,Header,4); Chan:=BE32(0);
-   If (Chan<>0) And (Chan<>2) And (Chan<>4) And (Chan<>6) Then Fail('8svx_exp: masque CHAN non pris en charge.');
+   If (Chan<>0) And (Chan<>2) And (Chan<>4) And (Chan<>6) Then Fail('8svx: masque CHAN non pris en charge.');
    If Chan=6 Then Channels:=2; HasCHAN:=True;
   End;
   At:=Finish;
  End;
- If Not HasVHDR Or Not HasBODY Then Fail('8svx_exp: VHDR et BODY requis.');
- If (BodySize Mod Channels<>0) Or (BodySize<Channels*3) Then Fail('8svx_exp: donnees de canaux tronquees.');
+ If Not HasVHDR Or Not HasBODY Then Fail('8svx: VHDR et BODY requis.');
+ If (BodySize Mod Channels<>0) Or (BodySize<Channels*3) Then Fail('8svx: donnees de canaux tronquees.');
  ChanSize:=BodySize Div Channels;
- If ChanSize-2>2147483600 Div (Channels*4) Then Fail('8svx_exp: sortie PCM superieure a 2 Go.');
+ If ChanSize-2>2147483600 Div (Channels*4) Then Fail('8svx: sortie PCM superieure a 2 Go.');
  Written:=(ChanSize-2)*4*Channels;
  For C:=0 To Channels-1 Do Begin
   ReadAt(BodyAt+LongInt(C)*ChanSize,Header,2);
@@ -8827,7 +9386,7 @@ Begin
   Used:=0;
   For J:=0 To Take-1 Do For Half:=0 To 1 Do For C:=0 To Channels-1 Do Begin
    Code:=Buffers^.Input[C,J]; If Half=0 Then Code:=Code And 15 Else Code:=Code Shr 4;
-   Value:=State[C]+Delta[Code]; If Value<0 Then Value:=0; If Value>255 Then Value:=255; State[C]:=Value;
+   Value:=State[C]+Delta[Compression,Code]; If Value<0 Then Value:=0; If Value>255 Then Value:=255; State[C]:=Value;
    N:=(LongInt(Value)-128)*256; If N<0 Then Inc(N,65536);
    Buffers^.Output[Used]:=N And 255; Buffers^.Output[Used+1]:=N Shr 8; Inc(Used,2);
   End;
@@ -10699,7 +11258,8 @@ Begin
  WriteLn(' .E = Muxage (ecriture)');
  WriteLn(' --');
  WriteLn(' D  4xm             4X Movie (video versions 0..4 vers Y4M)');
- WriteLn(' D  iff             IFF 8SVX, audio exponentiel (alias: 8svx, svx)');
+ WriteLn(' D  aac             AAC ADTS (AAC-LC mono/stereo; alias: adts)');
+ WriteLn(' D  iff             IFF 8SVX, Fibonacci/exponentiel (alias: 8svx, svx)');
  WriteLn(' D  aiff            AIFF/AIFF-C PCM (alias: aif, aifc)');
  WriteLn(' D  asf             ASF, audio WMA2 seulement (alias: wma, wmv)');
  WriteLn(' DE avi             AVI H264/MPEG4, AAC/MP3 (copie); FFV1 v0/1 (profil limite)');
@@ -10771,7 +11331,8 @@ Procedure Help;Begin
  WriteLn(' -c copy                        Changement de conteneur, pas de r'+#130+'encodage vid'+#130'o.');
  WriteLn(' -codecs                        Liste des codecs support'+#130+'s');
  WriteLn(' -comment TEXTE                 Commentaire MP3, WAV, AVI, MP4.');
- WriteLn(' 8svx_exp: -i entree.8svx sortie.wav (mono/stereo, compression 2).');
+ WriteLn(' aac: -i entree.aac sortie.wav (AAC-LC ADTS mono/stereo).');
+ WriteLn(' 8svx_fib/exp: -i entree.8svx sortie.wav (mono/stereo, compressions 1/2).');
  WriteLn(' 8bps: -i entree.mov -an sortie.y4m (alpha non conserve dans Y4M).');
  WriteLn(' 4xm: -i entree.4xm -an sortie.y4m (audio ignore).');
  WriteLn(' -croptop N, -cropbottom N       Retirer N pixels en haut/en bas.');
@@ -10961,9 +11522,11 @@ BEGIN
   Else If Argument='-codecs' Then Begin
    WriteLn('Codecs:');
    WriteLn(' D = decodage, E = encodage, A = audio, V = video');
-   WriteLn('D V    8bps            QuickTime 8BPS video (8/24/32 bits)');
-   WriteLn('D A    8svx_exp        8SVX exponential');
    WriteLn('D V    4xm             4X Movie');
+   WriteLn('D V    8bps            QuickTime 8BPS video (8/24/32 bits)');
+   WriteLn('D A    8svx_fib        8SVX fibonacci');
+   WriteLn('D A    8svx_exp        8SVX exponential');
+   WriteLn('D A    aac             Advanced Audio Coding (AAC-LC ADTS mono/stereo)');
    WriteLn('DEV    flv             Flash Video (FLV1/Sorenson Spark, images intra)');
    WriteLn('DEV    ffv1            FFmpeg codec #1 (v0/1, range defaut, YUV420 8 bits)');
    WriteLn(' EV    gif             GIF (palette RGB 3/3/2, LZW, une image)');
@@ -10977,7 +11540,7 @@ BEGIN
    WriteLn('D A    pcm_u8, pcm_s24le, pcm_s32le, pcm_s8, pcm_s16be, pcm_s24be, pcm_s32be');
    WriteLn(' EV    png             PNG (RGB24, sans compression)');
    WriteLn('D A    wmav2           WMA2 (44100/48000 Hz, VLC, blocs fixes, sans reservoir/bruit)');   
-   WriteLn('Copie seulement: h264, vp9, aac, opus (voir limites).'); 
+   WriteLn('Copie conteneurs seulement: h264, vp9, opus; AAC hors ADTS (voir limites).');
    Halt(0);
   End
   Else If Argument='-y' Then Overwrite:=True Else
@@ -11348,7 +11911,8 @@ BEGIN
     DecodeWMA2Spool(Temps[3],Temps[0]);
    End Else
    If (InputFormat='mp3') Or (InputFormat='mp1') Then DecodeMP3(InputPath,Temps[0]) Else
-   If InputFormat='iff' Then Decode8SVXExp(InputPath,Temps[0]) Else
+   If InputFormat='aac' Then DecodeAAC(InputPath,Temps[0]) Else
+   If InputFormat='iff' Then Decode8SVX(InputPath,Temps[0]) Else
    If InputFormat='aiff' Then DecodeAIFF(InputPath,Temps[0]) Else
    If InputFormat='voc' Then DecodeVOC(InputPath,Temps[0]) Else
    If InputFormat='libopenmpt' Then DecodeMOD(InputPath,Temps[0])
