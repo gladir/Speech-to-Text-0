@@ -3714,6 +3714,7 @@ Begin
  If N>=26 Then If (B[0]=67) And (B[1]=114) And (B[2]=101) And (B[19]=$1A) Then Begin
   Probe:='voc'; Exit;
  End;
+ If N>=7 Then If (B[0]=$0B) And (B[1]=$77) Then Begin Probe:='ac3'; Exit; End;
  If N>=7 Then If (B[0]=$FF) And ((B[1] And $F6)=$F0) Then Begin Probe:='aac'; Exit; End;
  If N>=4 Then If (B[0]=$FF) And ((B[1] And $E6)=$E6) Then Begin
   Probe:='mp1'; Exit;
@@ -8876,6 +8877,650 @@ Begin
 End;
 { END NATIVE VIDEO CONTAINERS }
 
+{ Native AC-3 encoder/decoder. FFmpeg ac3.c/ac3tab.c/ac3dec.c/ac3enc.c,
+  LGPL-2.1-or-later; see THIRD_PARTY_NOTICES.md. }
+Procedure ProcessAC3(Const Source,Target:String; Encoding:Boolean; BitRateK:Integer);
+Const APi=3.14159265358979323846;
+BandStart:Array[0..50] Of Integer=(
+ 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+ 16,17,18,19,20,21,22,23,24,25,26,27,28,31,34,37,
+ 40,43,46,49,55,61,67,73,79,85,97,109,121,133,157,181,
+ 205,229,253);
+BinBand:Array[0..252] Of Byte=(
+ 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+ 16,17,18,19,20,21,22,23,24,25,26,27,28,28,28,29,
+ 29,29,30,30,30,31,31,31,32,32,32,33,33,33,34,34,
+ 34,35,35,35,35,35,35,36,36,36,36,36,36,37,37,37,
+ 37,37,37,38,38,38,38,38,38,39,39,39,39,39,39,40,
+ 40,40,40,40,40,41,41,41,41,41,41,41,41,41,41,41,
+ 41,42,42,42,42,42,42,42,42,42,42,42,42,43,43,43,
+ 43,43,43,43,43,43,43,43,43,44,44,44,44,44,44,44,
+ 44,44,44,44,44,45,45,45,45,45,45,45,45,45,45,45,
+ 45,45,45,45,45,45,45,45,45,45,45,45,45,46,46,46,
+ 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,
+ 46,46,46,46,46,47,47,47,47,47,47,47,47,47,47,47,
+ 47,47,47,47,47,47,47,47,47,47,47,47,47,48,48,48,
+ 48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,
+ 48,48,48,48,48,49,49,49,49,49,49,49,49,49,49,49,
+ 49,49,49,49,49,49,49,49,49,49,49,49,49);
+LogAdd:Array[0..259] Of Byte=(
+ 64,63,62,61,60,59,58,57,56,55,54,53,52,52,51,50,
+ 49,48,47,47,46,45,44,44,43,42,41,41,40,39,38,38,
+ 37,36,36,35,35,34,33,33,32,32,31,30,30,29,29,28,
+ 28,27,27,26,26,25,25,24,24,23,23,22,22,21,21,21,
+ 20,20,19,19,19,18,18,18,17,17,17,16,16,16,15,15,
+ 15,14,14,14,13,13,13,13,12,12,12,12,11,11,11,11,
+ 10,10,10,10,10,9,9,9,9,9,8,8,8,8,8,8,
+ 7,7,7,7,7,7,6,6,6,6,6,6,6,6,5,5,
+ 5,5,5,5,5,5,4,4,4,4,4,4,4,4,4,4,
+ 4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,2,
+ 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+ 2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+ 1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+ 0,0,0,0);
+Threshold:Array[0..149] Of Integer=(
+ 1232,1264,1408,1232,1264,1408,1088,1120,1200,1024,1040,1104,992,992,1056,960,
+ 976,1008,944,960,992,944,944,976,928,944,960,928,928,944,928,928,
+ 944,928,928,944,928,928,928,912,928,928,912,912,928,912,912,928,
+ 896,912,928,896,896,928,880,896,928,880,896,928,864,880,912,864,
+ 880,912,848,864,912,848,864,912,832,848,896,832,848,896,816,832,
+ 896,800,832,880,784,800,864,768,784,848,752,768,832,752,752,816,
+ 752,752,800,752,752,784,768,752,768,784,768,752,832,800,752,912,
+ 848,752,992,912,768,1056,992,784,1120,1056,816,1168,1104,848,1184,1184,
+ 960,1120,1168,1040,1088,1120,1136,1088,1088,1184,1312,1152,1120,2048,1584,1088,
+ 2112,2112,1104,2112,2112,1248);
+FrameWords:Array[0..113] Of Integer=(
+ 64,69,96,64,70,96,80,87,120,80,88,120,96,104,144,96,
+ 105,144,112,121,168,112,122,168,128,139,192,128,140,192,160,174,
+ 240,160,175,240,192,208,288,192,209,288,224,243,336,224,244,336,
+ 256,278,384,256,279,384,320,348,480,320,349,480,384,417,576,384,
+ 418,576,448,487,672,448,488,672,512,557,768,512,558,768,640,696,
+ 960,640,697,960,768,835,1152,768,836,1152,896,975,1344,896,976,1344,
+ 1024,1114,1536,1024,1115,1536,1152,1253,1728,1152,1254,1728,1280,1393,1920,1280,
+ 1394,1920);
+Rates:Array[0..3] Of LongInt=(
+ 48000,44100,32000,0);
+BitRates:Array[0..18] Of Integer=(
+ 32,40,48,56,64,80,96,112,128,160,192,224,256,320,384,448,
+ 512,576,640);
+BAPTable:Array[0..63] Of Byte=(
+ 0,1,1,1,1,1,2,2,3,3,3,4,4,5,5,6,
+ 6,6,6,7,7,7,7,8,8,8,8,9,9,9,9,10,
+ 10,10,10,11,11,11,11,12,12,12,12,13,13,13,13,14,
+ 14,14,14,14,14,14,14,15,15,15,15,15,15,15,15,15);
+SlowDecayTable:Array[0..3] Of Integer=(
+ 15,17,19,21);
+FastDecayTable:Array[0..3] Of Integer=(
+ 63,83,103,123);
+SlowGainTable:Array[0..3] Of Integer=(
+ 1344,1240,1144,1040);
+DBTable:Array[0..3] Of Integer=(
+ 0,1792,2304,2816);
+FloorTable:Array[0..7] Of Integer=(
+ 752,688,624,560,496,368,240,-2048);
+FastGainTable:Array[0..7] Of Integer=(
+ 128,256,384,512,640,768,896,1024);
+QBits:Array[0..15] Of Integer=(
+ 0,3,5,7,11,15,5,6,7,8,9,10,11,12,14,16);
+RematBand:Array[0..4] Of Integer=(
+ 13,25,37,61,253);
+ChannelCount:Array[0..7] Of Integer=(
+ 2,1,2,3,3,4,4,5);
+NoiseInitLo:Array[0..63] Of Word=(
+ 0,0,0,0,0,0,0,0,27486,59235,43004,45767,59034,1455,20682,32688,
+ 59627,34723,55475,36002,46200,11700,64463,31028,58037,19762,45190,6191,38385,18167,14929,47668,
+ 29477,58335,58676,62172,27601,48401,52832,44829,63054,48390,30597,56404,39566,37368,57125,39662,
+ 50451,10717,55985,24362,8973,30679,14055,58055,15074,26346,15514,18114,34086,59839,32073,53048);
+NoiseInitHi:Array[0..63] Of Word=(
+ 0,0,0,0,0,0,0,0,15159,62827,52130,38737,23327,34315,11046,37545,
+ 29461,35682,11739,7433,27237,51634,38455,54338,45968,37544,8464,9641,9106,50936,23643,59047,
+ 54873,42295,52096,60140,39867,11944,35846,26713,61785,49683,10845,58913,47307,59044,34263,37245,
+ 45398,23513,63145,50156,21013,58038,28702,21509,56779,38328,7857,13414,35748,45861,10736,51590);
+Type
+ TChannel=Record
+  Start,Stop,Strategy,FastGain,SNR,DeltaMode,Segments:Integer;
+  Expn,BAP:Array[0..255] Of Byte;
+  DOffset,DLength,DValue:Array[0..7] Of Byte;
+  Spec:Array[0..255] Of Double;
+  Delay:Array[0..127] Of Double;
+  PCM:Array[0..255] Of Double;
+  Enc:Array[0..5,0..255] Of Double;
+  Previous:Array[0..255] Of Double;
+  Coord:Array[0..17] Of Double;
+  Coupled,ShortBlock,Dither:Boolean;
+ End;
+ PChannel=^TChannel;
+ TWork=Record
+  Data:Array[0..4095] Of Byte; PCMBytes:Array[0..3071] Of Byte;
+  Win:Array[0..255] Of Double; Temp,Time:Array[0..511] Of Double;
+  NoiseLo,NoiseHi:Array[0..63] Of Word;
+ End;
+ PWork=^TWork;
+Var
+ W:PWork; Ch:Array[0..6] Of PChannel;
+ Pos,Limit,Written,FrameNumber,Rate,DataStart,DataSize,InputFrame,InputFrames:LongInt;
+ BP,BL,OldRate:LongInt;
+ FrameSize,SR,SRShift,Mode,Channels,FBW,LFE,OutChannels,BSID,BlockNo:Integer;
+ OldMode,OldLFE,SlowDecay,FastDecay,SlowGain,DBPerBit,FloorVal,FastLeak,SlowLeak:Integer;
+ CplSizes:Array[0..17] Of Integer;
+ NCpl,NRemat,NoiseIndex,BitCode,EncBW,EncSNR,C,I,Code:Integer;
+ Remat:Array[0..3] Of Boolean; Phase:Array[0..17] Of Boolean;
+ Coupling,PhaseUse,Counting:Boolean; Gain:Array[0..1] Of Double;
+ GroupValues:Array[1..4,0..2] Of Double; GroupLeft:Array[1..4] Of Integer;
+ CenterLevel,SurroundLevel:Double;
+Function MinI(A,B:Integer):Integer; Begin If A<B Then MinI:=A Else MinI:=B; End;
+Function MaxI(A,B:Integer):Integer; Begin If A>B Then MaxI:=A Else MaxI:=B; End;
+Procedure Bad(Const S:String); Begin Fail('ac3: '+S); End;
+Function Bits(N:Integer):LongInt;
+Var V:LongInt; K:Integer;
+Begin
+ If (N<0) Or (N>24) Or (N>BL-BP) Then Bad('Trame tronquee.');
+ V:=0; For K:=1 To N Do Begin V:=V*2+((W^.Data[BP Div 8] Shr (7-(BP Mod 8))) And 1); Inc(BP); End; Bits:=V;
+End;
+Procedure Put(N:Integer; V:LongInt);
+Var K:Integer;
+Begin
+ If Not Counting Then Begin
+  If N>BL-BP Then Bad('Depassement de la taille AC-3.');
+  For K:=N-1 Downto 0 Do Begin
+   If ((V Shr K) And 1)<>0 Then W^.Data[BP Div 8]:=W^.Data[BP Div 8] Or (1 Shl (7-(BP Mod 8))); Inc(BP);
+  End;
+ End Else Inc(BP,N);
+End;
+Function Pow2(N:Integer):Double; Begin Pow2:=Exp(N*0.69314718055994530942); End;
+Function CRC(First,Last:Integer):Word;
+Var R:Word; I,J:Integer; High:Boolean;
+Begin
+ R:=0; For I:=First To Last-1 Do Begin
+  R:=R Xor (Word(W^.Data[I]) Shl 8);
+  For J:=1 To 8 Do Begin High:=(R And $8000)<>0; R:=(LongInt(R)*2) And 65535; If High Then R:=R Xor $8005; End;
+ End; CRC:=R;
+End;
+Procedure FinishCRC;
+Var Split,I:Integer; R:Word;
+Begin
+ Split:=((FrameSize Div 2) Div 2+(FrameSize Div 2) Div 8)*2;
+ R:=CRC(4,Split);
+ For I:=1 To (Split-2)*8 Do If (R And 1)<>0 Then R:=((R Xor $8005) Shr 1) Or $8000 Else R:=R Shr 1;
+ W^.Data[2]:=R Shr 8; W^.Data[3]:=R And 255;
+ R:=CRC(Split,FrameSize-2);
+ If R=$0B77 Then Begin W^.Data[FrameSize-3]:=W^.Data[FrameSize-3] Xor 1; R:=R Xor $8005; End;
+ W^.Data[FrameSize-2]:=R Shr 8; W^.Data[FrameSize-1]:=R And 255;
+ If (CRC(2,Split)<>0) Or (CRC(Split,FrameSize)<>0) Then Bad('Erreur interne CRC encodeur.');
+End;
+Function RandomMant:Double;
+Var A,B,V:LongInt;
+Begin
+ A:=LongInt(W^.NoiseLo[(NoiseIndex+40) And 63])+W^.NoiseLo[(NoiseIndex+9) And 63];
+ B:=(LongInt(W^.NoiseHi[(NoiseIndex+40) And 63])+W^.NoiseHi[(NoiseIndex+9) And 63]+(A Shr 16)) And 65535;
+ W^.NoiseLo[NoiseIndex]:=A And 65535; W^.NoiseHi[NoiseIndex]:=B;
+ V:=B*256+((A And 65535) Shr 8); NoiseIndex:=(NoiseIndex+1) And 63;
+ RandomMant:=(Trunc(V*181.0/256)-5931008)/8388608.0;
+End;
+Function LowComp(A,B0,B1,Value:Integer):Integer;
+Begin If B0+256=B1 Then A:=Value Else If B0>B1 Then A:=MaxI(A-64,0); LowComp:=A; End;
+Procedure Allocate(Index:Integer);
+Var
+ P:PChannel; PSD:Array[0..255] Of Integer; BandPSD,Excite,Mask:Array[0..49] Of Integer;
+ Bin,Band,StopBand,StartBand,EndBin,V,Adr,M,LC,FL,SL,BeginBand,End1,K,S,Delta:Integer;
+Begin
+ P:=Ch[Index]; FillChar(P^.BAP,SizeOf(P^.BAP),0);
+ If (P^.Start<0) Or (P^.Stop<=P^.Start) Or (P^.Stop>253) Then Bad('Bande spectrale incorrecte.');
+ FillChar(BandPSD,SizeOf(BandPSD),0);
+ For Bin:=P^.Start To P^.Stop-1 Do PSD[Bin]:=3072-Integer(P^.Expn[Bin])*128;
+ Bin:=P^.Start; Band:=BinBand[Bin]; StartBand:=Band; StopBand:=BinBand[P^.Stop-1]+1;
+ While Bin<P^.Stop Do Begin
+  V:=PSD[Bin]; Inc(Bin); EndBin:=MinI(BandStart[Band+1],P^.Stop);
+  While Bin<EndBin Do Begin M:=MaxI(V,PSD[Bin]); Adr:=MinI(M-((V+PSD[Bin]+1) Div 2),255); V:=M+LogAdd[Adr]; Inc(Bin); End;
+  BandPSD[Band]:=V; Inc(Band);
+ End;
+ If StartBand=0 Then Begin
+  LC:=LowComp(0,BandPSD[0],BandPSD[1],384); Excite[0]:=BandPSD[0]-P^.FastGain-LC;
+  LC:=LowComp(LC,BandPSD[1],BandPSD[2],384); Excite[1]:=BandPSD[1]-P^.FastGain-LC; BeginBand:=7;
+  For Band:=2 To 6 Do Begin
+   If Not ((Index=LFE) And (Band=6)) Then LC:=LowComp(LC,BandPSD[Band],BandPSD[Band+1],384);
+   FL:=BandPSD[Band]-P^.FastGain; SL:=BandPSD[Band]-SlowGain; Excite[Band]:=FL-LC;
+   If Not ((Index=LFE) And (Band=6)) Then If BandPSD[Band]<=BandPSD[Band+1] Then Begin BeginBand:=Band+1; Break; End;
+  End;
+  End1:=MinI(StopBand,22);
+  For Band:=BeginBand To End1-1 Do Begin
+   If Not ((Index=LFE) And (Band=6)) Then Begin
+    If Band<7 Then LC:=LowComp(LC,BandPSD[Band],BandPSD[Band+1],384)
+    Else If Band<20 Then LC:=LowComp(LC,BandPSD[Band],BandPSD[Band+1],320) Else LC:=MaxI(LC-128,0);
+   End;
+   FL:=MaxI(FL-FastDecay,BandPSD[Band]-P^.FastGain); SL:=MaxI(SL-SlowDecay,BandPSD[Band]-SlowGain);
+   Excite[Band]:=MaxI(FL-LC,SL);
+  End; BeginBand:=22;
+ End Else Begin BeginBand:=StartBand; FL:=FastLeak*256+768; SL:=SlowLeak*256+768; End;
+ For Band:=BeginBand To StopBand-1 Do Begin
+  FL:=MaxI(FL-FastDecay,BandPSD[Band]-P^.FastGain); SL:=MaxI(SL-SlowDecay,BandPSD[Band]-SlowGain); Excite[Band]:=MaxI(FL,SL);
+ End;
+ For Band:=StartBand To StopBand-1 Do Begin
+  V:=DBPerBit-BandPSD[Band]; If V>0 Then Inc(Excite[Band],V Div 4);
+  Mask[Band]:=MaxI(Threshold[(Band Shr SRShift)*3+SR],Excite[Band]);
+ End;
+ If P^.DeltaMode<2 Then Begin
+  Band:=StartBand;
+  For S:=0 To P^.Segments-1 Do Begin
+   Inc(Band,P^.DOffset[S]); If (Band>=50) Or (P^.DLength[S]>50-Band) Then Bad('Allocation delta hors limites.');
+   V:=P^.DValue[S]; If V>=4 Then Delta:=(V-3)*128 Else Delta:=(V-4)*128;
+   For K:=1 To P^.DLength[S] Do Begin Inc(Mask[Band],Delta); Inc(Band); End;
+  End;
+ End;
+ If P^.SNR=-960 Then Exit;
+ For Bin:=P^.Start To P^.Stop-1 Do Begin
+  Band:=BinBand[Bin]; M:=(MaxI(Mask[Band]-P^.SNR-FloorVal,0) And $1FE0)+FloorVal;
+  V:=PSD[Bin]-M; If V<0 Then Adr:=0 Else Adr:=MinI(V Div 32,63);
+  P^.BAP[Bin]:=BAPTable[Adr];
+ End;
+End;
+Procedure Exponents(Index:Integer);
+Var P:PChannel; Size,Groups,At,V,Code,I,J,K,D:Integer; Diff:Array[0..2] Of Integer;
+Begin
+ P:=Ch[Index]; Size:=P^.Strategy; If Size=3 Then Size:=4;
+ If Index=0 Then Groups:=(P^.Stop-P^.Start) Div (3*Size)
+ Else Groups:=(P^.Stop+3*Size-4) Div (3*Size);
+ V:=Bits(4); At:=P^.Start;
+ If Index=0 Then V:=V*2 Else Begin P^.Expn[0]:=V; Inc(At); End;
+ For I:=1 To Groups Do Begin
+  Code:=Bits(7); If Code>=125 Then Bad('Exposants groupes invalides.');
+  Diff[0]:=Code Div 25; Diff[1]:=(Code Div 5) Mod 5; Diff[2]:=Code Mod 5;
+  For J:=0 To 2 Do Begin
+   Inc(V,Diff[J]-2); If (V<0) Or (V>24) Then Bad('Exposant hors limites.');
+   For K:=1 To Size Do Begin If At>=256 Then Bad('Trop dexposants.'); P^.Expn[At]:=V; Inc(At); End;
+  End;
+ End;
+ If (Index<>0) And (Index<>LFE) Then D:=Bits(2);
+End;
+Procedure Mantissas(Index:Integer);
+Var P:PChannel; K,B,Q,Levels,Count,I,Raw:Integer; V:LongInt; X:Double;
+Begin
+ P:=Ch[Index];
+ For K:=P^.Start To P^.Stop-1 Do Begin
+  B:=P^.BAP[K]; X:=0;
+  If B=0 Then Begin If P^.Dither Or (Index=0) Then X:=RandomMant; End
+  Else If (B=1) Or (B=2) Or (B=4) Then Begin
+   If GroupLeft[B]=0 Then Begin
+    Levels:=QBits[B]; If B=4 Then Count:=2 Else Count:=3;
+    If B=1 Then V:=Bits(5) Else V:=Bits(7);
+    Raw:=1; For I:=1 To Count Do Raw:=Raw*Levels; If V>=Raw Then Bad('Mantisse groupee invalide.');
+    For I:=Count-1 Downto 0 Do Begin Q:=V Mod Levels; V:=V Div Levels; GroupValues[B,I]:=(2*Q-(Levels-1))/Levels; End;
+    GroupLeft[B]:=Count;
+   End;
+   If B=4 Then Count:=2 Else Count:=3;
+   X:=GroupValues[B,Count-GroupLeft[B]]; Dec(GroupLeft[B]);
+  End Else If (B=3) Or (B=5) Then Begin
+   If B=3 Then Q:=Bits(3) Else Q:=Bits(4); Levels:=QBits[B];
+   If Q>=Levels Then Bad('Mantisse symetrique invalide.'); X:=(2*Q-(Levels-1))/Levels;
+  End Else Begin
+   Q:=QBits[B]; V:=Bits(Q); If V>=(LongInt(1) Shl (Q-1)) Then Dec(V,LongInt(1) Shl Q);
+   X:=V/Pow2(Q-1);
+  End;
+  P^.Spec[K]:=X*Pow2(-P^.Expn[K]);
+ End;
+End;
+Procedure HalfTransform(Index,N,Offset,Step:Integer);
+Var I,K:Integer; A,C0,C1,C2,F,Sum:Double;
+Begin
+ For I:=0 To N-1 Do Begin
+  A:=APi/N*(I+0.5+N); C0:=Cos(A/2); C1:=Cos(1.5*A); F:=2*Cos(A);
+  Sum:=Ch[Index]^.Spec[Offset]*C0;
+  For K:=1 To N-1 Do Begin Sum:=Sum+Ch[Index]^.Spec[Offset+K*Step]*C1; C2:=F*C1-C0; C0:=C1; C1:=C2; End;
+  W^.Temp[I]:=-2*Sum;
+ End;
+End;
+Procedure Synthesis(Index:Integer);
+Var I:Integer; S0,S1:Double;
+Begin
+ If Ch[Index]^.ShortBlock Then HalfTransform(Index,128,0,2) Else HalfTransform(Index,256,0,1);
+ For I:=0 To 127 Do Begin
+  S0:=Ch[Index]^.Delay[I]; S1:=W^.Temp[127-I];
+  Ch[Index]^.PCM[I]:=S0*W^.Win[255-I]-S1*W^.Win[I];
+  Ch[Index]^.PCM[255-I]:=S0*W^.Win[I]+S1*W^.Win[255-I];
+ End;
+ If Ch[Index]^.ShortBlock Then Begin HalfTransform(Index,128,1,2); For I:=0 To 127 Do Ch[Index]^.Delay[I]:=W^.Temp[I]; End
+ Else For I:=0 To 127 Do Ch[Index]^.Delay[I]:=W^.Temp[I+128];
+End;
+Procedure DecodeBlock;
+Var I,J,K,C,B,StartSub,EndSub,Master,E,M,Coarse,First,Have:Integer;
+ NewCoord,GotCpl:Boolean; X,Y:Double;
+Begin
+ For C:=1 To FBW Do Ch[C]^.ShortBlock:=Bits(1)<>0;
+ For C:=1 To FBW Do Ch[C]^.Dither:=Bits(1)<>0;
+ I:=0; If Mode=0 Then I:=1;
+ For J:=I Downto 0 Do If Bits(1)<>0 Then Begin
+  E:=Bits(8); Gain[J]:=Pow2((E Shr 5)-(E Shr 7)*8-5)*((E And 31)+32);
+ End Else If BlockNo=0 Then Gain[J]:=1;
+ If Bits(1)<>0 Then Begin
+  Coupling:=Bits(1)<>0;
+  For C:=1 To FBW Do Ch[C]^.Coupled:=False;
+  If Coupling Then Begin
+   If Mode<2 Then Bad('Couplage interdit en mono.');
+   Have:=0; For C:=1 To FBW Do Begin Ch[C]^.Coupled:=Bits(1)<>0; If Ch[C]^.Coupled Then Inc(Have); End;
+   If Have<2 Then Bad('Couplage exige deux canaux.');
+   PhaseUse:=False; If Mode=2 Then PhaseUse:=Bits(1)<>0;
+   StartSub:=Bits(4); EndSub:=Bits(4)+3;
+   If StartSub>=EndSub Then Bad('Bande de couplage incorrecte.');
+   Ch[0]^.Start:=StartSub*12+37; Ch[0]^.Stop:=EndSub*12+37;
+   NCpl:=1; CplSizes[0]:=12;
+   For I:=StartSub+1 To EndSub-1 Do If Bits(1)<>0 Then Inc(CplSizes[NCpl-1],12) Else Begin CplSizes[NCpl]:=12; Inc(NCpl); End;
+  End;
+ End Else If BlockNo=0 Then Bad('Strategie couplage absente.');
+ If Coupling Then Begin
+  NewCoord:=False;
+  For C:=1 To FBW Do If Ch[C]^.Coupled Then Begin
+   If Bits(1)<>0 Then Begin
+    NewCoord:=True; Master:=3*Bits(2);
+    For B:=0 To NCpl-1 Do Begin E:=Bits(4); M:=Bits(4); If E=15 Then X:=M*0.5 Else X:=(M+16)*0.25; Ch[C]^.Coord[B]:=X*Pow2(-E-Master); End;
+   End Else If BlockNo=0 Then Bad('Coordonnees couplage absentes.');
+  End;
+  If (Mode=2) And NewCoord Then For B:=0 To NCpl-1 Do Begin Phase[B]:=False; If PhaseUse Then Phase[B]:=Bits(1)<>0; End;
+ End;
+ If Mode=2 Then Begin
+  If Bits(1)<>0 Then Begin
+   NRemat:=4; If Coupling And (Ch[0]^.Start<=61) Then Begin Dec(NRemat); If Ch[0]^.Start=37 Then Dec(NRemat); End;
+   For I:=0 To NRemat-1 Do Remat[I]:=Bits(1)<>0;
+  End Else If BlockNo=0 Then NRemat:=0;
+ End;
+ First:=1; If Coupling Then First:=0;
+ For C:=First To Channels Do Begin
+  If C=LFE Then Ch[C]^.Strategy:=Bits(1) Else Ch[C]^.Strategy:=Bits(2);
+  If (BlockNo=0) And (Ch[C]^.Strategy=0) Then Bad('Exposants initiaux absents.');
+ End;
+ For C:=1 To FBW Do If Ch[C]^.Strategy<>0 Then Begin
+  Ch[C]^.Start:=0;
+  If Ch[C]^.Coupled Then Ch[C]^.Stop:=Ch[0]^.Start Else Begin
+   I:=Bits(6); If I>60 Then Bad('Bande passante incorrecte.'); Ch[C]^.Stop:=I*3+73;
+  End;
+ End;
+ For C:=First To Channels Do If Ch[C]^.Strategy<>0 Then Exponents(C);
+ If Bits(1)<>0 Then Begin
+  SlowDecay:=SlowDecayTable[Bits(2)] Shr SRShift; FastDecay:=FastDecayTable[Bits(2)] Shr SRShift;
+  SlowGain:=SlowGainTable[Bits(2)]; DBPerBit:=DBTable[Bits(2)]; FloorVal:=FloorTable[Bits(3)];
+ End Else If BlockNo=0 Then Bad('Allocation initiale absente.');
+ If Bits(1)<>0 Then Begin
+  Coarse:=(Bits(6)-15)*16;
+  For C:=First To Channels Do Begin Ch[C]^.SNR:=(Coarse+Bits(4))*4; Ch[C]^.FastGain:=FastGainTable[Bits(3)]; End;
+ End Else If BlockNo=0 Then Bad('SNR initial absent.');
+ If Coupling Then Begin
+  If Bits(1)<>0 Then Begin FastLeak:=Bits(3); SlowLeak:=Bits(3); End Else If BlockNo=0 Then Bad('Fuite couplage absente.');
+ End;
+ If Bits(1)<>0 Then Begin
+  For C:=First To FBW Do Begin Ch[C]^.DeltaMode:=Bits(2); If Ch[C]^.DeltaMode=3 Then Bad('Allocation delta reservee.'); End;
+  For C:=First To FBW Do If Ch[C]^.DeltaMode=1 Then Begin
+   Ch[C]^.Segments:=Bits(3)+1;
+   For I:=0 To Ch[C]^.Segments-1 Do Begin Ch[C]^.DOffset[I]:=Bits(5); Ch[C]^.DLength[I]:=Bits(4); Ch[C]^.DValue[I]:=Bits(3); End;
+  End;
+ End Else If BlockNo=0 Then For C:=0 To Channels Do Ch[C]^.DeltaMode:=2;
+ For C:=First To Channels Do Allocate(C);
+ If Bits(1)<>0 Then Begin I:=Bits(9); For J:=1 To I Do K:=Bits(8); End;
+ FillChar(GroupLeft,SizeOf(GroupLeft),0); GotCpl:=False;
+ For C:=0 To Channels Do FillChar(Ch[C]^.Spec,SizeOf(Ch[C]^.Spec),0);
+ For C:=1 To Channels Do Begin
+  Mantissas(C);
+  If Ch[C]^.Coupled And Not GotCpl Then Begin Mantissas(0); GotCpl:=True; End;
+ End;
+ If Coupling Then Begin
+  K:=Ch[0]^.Start;
+  For B:=0 To NCpl-1 Do Begin
+   For C:=1 To FBW Do If Ch[C]^.Coupled Then Begin
+    X:=Ch[C]^.Coord[B]; If (C=2) And Phase[B] Then X:=-X;
+    For I:=K To K+CplSizes[B]-1 Do
+     If (Ch[0]^.BAP[I]=0) And Not Ch[C]^.Dither Then Ch[C]^.Spec[I]:=0 Else Ch[C]^.Spec[I]:=Ch[0]^.Spec[I]*X;
+   End;
+   Inc(K,CplSizes[B]);
+  End;
+ End;
+ If Mode=2 Then For B:=0 To NRemat-1 Do If Remat[B] Then Begin
+  J:=MinI(MinI(Ch[1]^.Stop,Ch[2]^.Stop),RematBand[B+1]);
+  For I:=RematBand[B] To J-1 Do Begin X:=Ch[1]^.Spec[I]; Y:=Ch[2]^.Spec[I]; Ch[1]^.Spec[I]:=X+Y; Ch[2]^.Spec[I]:=X-Y; End;
+ End;
+ For C:=1 To Channels Do Begin
+  J:=0; If (Mode=0) And (C=1) Then J:=1;
+  For I:=0 To 255 Do Ch[C]^.Spec[I]:=Ch[C]^.Spec[I]*Gain[J]; Synthesis(C);
+ End;
+End;
+Procedure WindowInit;
+Var I,K:Integer; X,T,S,Total:Double;
+Begin
+ Total:=0;
+ For I:=0 To 256 Do Begin
+  X:=2.0*I/256-1; X:=25*APi*APi*(1-X*X)/4; T:=1; S:=1;
+  For K:=1 To 60 Do Begin T:=T*X/(K*1.0*K); S:=S+T; If T<S*1E-16 Then Break; End;
+  W^.Temp[I]:=S; Total:=Total+S;
+ End;
+ S:=0; For I:=0 To 255 Do Begin S:=S+W^.Temp[I]; W^.Win[I]:=Sqrt(S/Total); End;
+End;
+Procedure WriteWaveHeader;
+Var B:Array[0..43] Of Byte; S:String[4]; Err:Integer;
+ Procedure LE16(At:Integer; V:LongInt); Begin B[At]:=V And 255; B[At+1]:=(V Shr 8) And 255; End;
+ Procedure LE32(At:Integer; V:LongInt); Begin LE16(At,V); LE16(At+2,V Shr 16); End;
+Begin
+ FillChar(B,SizeOf(B),0); S:='RIFF'; Move(S[1],B[0],4); S:='WAVE'; Move(S[1],B[8],4);
+ S:='fmt '; Move(S[1],B[12],4); S:='data'; Move(S[1],B[36],4);
+ LE32(4,Written+36); LE32(16,16); LE16(20,1); LE16(22,OutChannels); LE32(24,Rate);
+ LE32(28,Rate*OutChannels*2); LE16(32,OutChannels*2); LE16(34,16); LE32(40,Written);
+ {$I-}Seek(ActiveOutput,0); Err:=IOResult;{$I+} If Err<>0 Then Bad('Position WAV incorrecte.'); WriteBytes(B,44);
+End;
+Procedure OutputBlock;
+Var I,J,At:Integer; V:LongInt; Left,Right,Center,SurL,SurR,Norm,X:Double;
+Begin
+ At:=0;
+ For I:=0 To 255 Do Begin
+  Center:=0; SurL:=0; SurR:=0; Norm:=1;
+  Case Mode Of
+   0,2:Begin Left:=Ch[1]^.PCM[I]; Right:=Ch[2]^.PCM[I]; End;
+   1:Begin Left:=Ch[1]^.PCM[I]; Right:=Left; End;
+   3,5,7:Begin Left:=Ch[1]^.PCM[I]; Center:=Ch[2]^.PCM[I]; Right:=Ch[3]^.PCM[I]; Norm:=Norm+CenterLevel; End;
+   4,6:Begin Left:=Ch[1]^.PCM[I]; Right:=Ch[2]^.PCM[I]; End;
+  End;
+  If Mode=4 Then Begin SurL:=Ch[3]^.PCM[I]; SurR:=SurL; End;
+  If Mode=5 Then Begin SurL:=Ch[4]^.PCM[I]; SurR:=SurL; End;
+  If Mode=6 Then Begin SurL:=Ch[3]^.PCM[I]; SurR:=Ch[4]^.PCM[I]; End;
+  If Mode=7 Then Begin SurL:=Ch[4]^.PCM[I]; SurR:=Ch[5]^.PCM[I]; End;
+  If Mode>=4 Then Norm:=Norm+SurroundLevel;
+  Left:=(Left+Center*CenterLevel+SurL*SurroundLevel)/Norm;
+  Right:=(Right+Center*CenterLevel+SurR*SurroundLevel)/Norm;
+  For J:=0 To OutChannels-1 Do Begin
+   If J=0 Then X:=Left*32768 Else X:=Right*32768;
+   If X>=32767 Then V:=32767 Else If X<=-32768 Then V:=-32768 Else V:=Round(X);
+   If V<0 Then Inc(V,65536); W^.PCMBytes[At]:=V And 255; W^.PCMBytes[At+1]:=V Shr 8; Inc(At,2);
+  End;
+ End;
+ If Written>2147483600-At Then Bad('Sortie WAV superieure a 2 Go.');
+ WriteBytes(W^.PCMBytes,At); Inc(Written,At);
+End;
+Procedure Decode;
+Var Header:Array[0..6] Of Byte; I,J,V,Split,B:Integer;
+Begin
+ Pos:=0; OldRate:=-1; FrameNumber:=0;
+ While Pos<Limit Do Begin
+  If Limit-Pos<7 Then Bad('En-tete AC-3 tronquee.'); ReadAt(Pos,Header,7);
+  If (Header[0]<>$0B) Or (Header[1]<>$77) Then Bad('Synchronisation AC-3 incorrecte.');
+  SR:=Header[4] Shr 6; V:=Header[4] And 63; BSID:=Header[5] Shr 3;
+  If (SR=3) Or (V>37) Then Bad('Frequence ou taille reservee.');
+  If BSID>10 Then Bad('E-AC-3 non pris en charge.');
+  SRShift:=MaxI(BSID,8)-8; Rate:=Rates[SR] Shr SRShift; FrameSize:=FrameWords[V*3+SR]*2;
+  If FrameSize>Limit-Pos Then Bad('Derniere trame AC-3 tronquee.');
+  ReadAt(Pos,W^.Data,FrameSize); Split:=((FrameSize Div 2) Div 2+(FrameSize Div 2) Div 8)*2;
+  If (CRC(2,Split)<>0) Or (CRC(Split,FrameSize)<>0) Then Bad('CRC AC-3 incorrect.');
+  BP:=48; BL:=FrameSize*8-16; Mode:=Bits(3); FBW:=ChannelCount[Mode]; Channels:=FBW;
+  CenterLevel:=0; SurroundLevel:=0;
+  If Odd(Mode) And (Mode<>1) Then Begin I:=Bits(2); Case I Of 0:CenterLevel:=0.7071067811865475; 2:CenterLevel:=0.5; Else CenterLevel:=0.5946035575013605; End; End;
+  If (Mode And 4)<>0 Then Begin I:=Bits(2); Case I Of 0:SurroundLevel:=0.7071067811865475; 2:SurroundLevel:=0; Else SurroundLevel:=0.5; End; End;
+  If Mode=2 Then V:=Bits(2);
+  LFE:=-1; If Bits(1)<>0 Then Begin Inc(Channels); LFE:=Channels; Ch[LFE]^.Stop:=7; Ch[LFE]^.Start:=0; End;
+  If FBW=1 Then OutChannels:=1 Else OutChannels:=2;
+  If OldRate=-1 Then Begin OldRate:=Rate; OldMode:=Mode; OldLFE:=LFE; OpenWrite(Target); WriteWaveHeader; End
+  Else If (Rate<>OldRate) Or (Mode<>OldMode) Or (LFE<>OldLFE) Then Bad('Changement de configuration AC-3.');
+  J:=0; If Mode=0 Then J:=1;
+  For I:=0 To J Do Begin V:=Bits(5); If Bits(1)<>0 Then V:=Bits(8); If Bits(1)<>0 Then V:=Bits(8); If Bits(1)<>0 Then V:=Bits(7); End;
+  V:=Bits(2); If Bits(1)<>0 Then V:=Bits(14); If Bits(1)<>0 Then V:=Bits(14);
+  If Bits(1)<>0 Then Begin J:=Bits(6)+1; For I:=1 To J Do V:=Bits(8); End;
+  Coupling:=False; FillChar(Phase,SizeOf(Phase),0);
+  For I:=0 To Channels Do Begin Ch[I]^.Segments:=0; Ch[I]^.DeltaMode:=2; Ch[I]^.Coupled:=False; End;
+  For B:=0 To 5 Do Begin BlockNo:=B; DecodeBlock; OutputBlock; End;
+  Inc(Pos,FrameSize); Inc(FrameNumber);
+ End;
+ If FrameNumber=0 Then Bad('Aucune trame AC-3.'); WriteWaveHeader;
+End;
+Function LE32(At:Integer):LongInt;
+Begin If W^.Data[At+3]>=128 Then Bad('Champ WAV trop grand.'); LE32:=LongInt(W^.Data[At])+LongInt(W^.Data[At+1])*256+LongInt(W^.Data[At+2])*65536+LongInt(W^.Data[At+3])*16777216; End;
+Procedure ReadWave;
+Var At,N:LongInt; Kind:String[4]; I,Format:Integer; GotFmt,GotData:Boolean;
+Begin
+ If Limit<44 Then Bad('WAV tronque.'); ReadAt(0,W^.Data,12);
+ If (W^.Data[0]<>82) Or (W^.Data[1]<>73) Or (W^.Data[2]<>70) Or (W^.Data[3]<>70) Or
+  (W^.Data[8]<>87) Or (W^.Data[9]<>65) Or (W^.Data[10]<>86) Or (W^.Data[11]<>69) Then Bad('WAV PCM requis.');
+ If LE32(4)<>Limit-8 Then Bad('Taille WAV incorrecte.');
+ GotFmt:=False; GotData:=False; At:=12;
+ While At<Limit Do Begin
+  If Limit-At<8 Then Bad('Bloc WAV tronque.'); ReadAt(At,W^.Data,8); N:=LE32(4); Inc(At,8);
+  If N>Limit-At Then Bad('Bloc WAV hors limites.'); Kind:=''; For I:=0 To 3 Do Kind:=Kind+Chr(W^.Data[I]);
+  If Kind='fmt ' Then Begin
+   If GotFmt Or (N<16) Then Bad('Format WAV incorrect.'); ReadAt(At,W^.Data,16);
+   Format:=W^.Data[0]+Integer(W^.Data[1])*256; Channels:=W^.Data[2]+Integer(W^.Data[3])*256; Rate:=LE32(4);
+   If (Format<>1) Or (Channels<1) Or (Channels>2) Or (W^.Data[14]<>16) Or (W^.Data[15]<>0) Then Bad('PCM 16 bits mono/stereo requis.');
+   If (LE32(8)<>Rate*Channels*2) Or (W^.Data[12]<>Channels*2) Or (W^.Data[13]<>0) Then Bad('Alignement PCM incorrect.');
+   GotFmt:=True;
+  End Else If Kind='data' Then Begin If GotData Then Bad('Plusieurs blocs PCM.'); DataStart:=At; DataSize:=N; GotData:=True; End;
+  Inc(At,N+(N And 1)); If At>Limit Then Bad('Bourrage WAV absent.');
+ End;
+ If Not GotFmt Or Not GotData Then Bad('WAV incomplet.');
+ SR:=-1; For I:=0 To 2 Do If Rate=Rates[I] Then SR:=I;
+ If SR<0 Then Bad('Encodage AC-3: 32000, 44100 ou 48000 Hz requis; utiliser -ar.');
+ If DataSize Mod (Channels*2)<>0 Then Bad('PCM tronque.'); InputFrames:=DataSize Div (Channels*2); If InputFrames=0 Then Bad('WAV vide.');
+ BitCode:=-1; For I:=0 To 18 Do If BitRates[I]=BitRateK Then BitCode:=I*2;
+ If BitCode<0 Then Bad('Debit AC-3 invalide (32..640 kb/s, valeurs normalisees).');
+ FBW:=Channels; Mode:=Channels; LFE:=-1; SRShift:=0;
+End;
+Procedure AnalyzeFrame;
+Var B,C,I,K,Take,At,E:Integer; V:LongInt; A,C0,C1,C2,Step,Sum,Peak:Double;
+Begin
+ For B:=0 To 5 Do Begin
+  Take:=256; If InputFrames-InputFrame<Take Then Take:=MaxI(0,InputFrames-InputFrame);
+  If Take>0 Then ReadAt(DataStart+InputFrame*Channels*2,W^.PCMBytes,Take*Channels*2);
+  For C:=1 To Channels Do Begin
+   For I:=0 To 255 Do Begin
+    W^.Time[I]:=Ch[C]^.Previous[I]*W^.Win[I]; V:=0;
+    If I<Take Then Begin At:=(I*Channels+C-1)*2; V:=LongInt(W^.PCMBytes[At])+LongInt(W^.PCMBytes[At+1])*256; If V>=32768 Then Dec(V,65536); End;
+    Ch[C]^.Previous[I]:=V/32768.0; W^.Time[256+I]:=Ch[C]^.Previous[I]*W^.Win[255-I];
+   End;
+   For K:=0 To 252 Do Begin
+    A:=APi/256*(K+0.5); C0:=Cos(A*128.5); C1:=Cos(A*129.5); Step:=2*Cos(A); Sum:=W^.Time[0]*C0;
+    For I:=1 To 511 Do Begin Sum:=Sum+W^.Time[I]*C1; C2:=Step*C1-C0; C0:=C1; C1:=C2; End;
+    Ch[C]^.Enc[B,K]:=-Sum/256;
+   End;
+  End;
+  Inc(InputFrame,Take);
+ End;
+ { Exponents are shared by all six blocks. Keep each bin's peak and limit
+   adjacent differences to +/-2, always toward a larger quantizer range. }
+ For C:=1 To Channels Do Begin
+  Ch[C]^.Start:=0; Ch[C]^.Stop:=EncBW*3+73;
+  For K:=0 To Ch[C]^.Stop-1 Do Begin
+   Peak:=0; For B:=0 To 5 Do If Abs(Ch[C]^.Enc[B,K])>Peak Then Peak:=Abs(Ch[C]^.Enc[B,K]);
+   E:=0; While (E<24) And (Peak<0.5) Do Begin Inc(E); Peak:=Peak*2; End; Ch[C]^.Expn[K]:=E;
+  End;
+  If Ch[C]^.Expn[0]>15 Then Ch[C]^.Expn[0]:=15;
+  For K:=1 To Ch[C]^.Stop-1 Do If Ch[C]^.Expn[K]>Ch[C]^.Expn[K-1]+2 Then Ch[C]^.Expn[K]:=Ch[C]^.Expn[K-1]+2;
+  For K:=Ch[C]^.Stop-2 Downto 0 Do If Ch[C]^.Expn[K]>Ch[C]^.Expn[K+1]+2 Then Ch[C]^.Expn[K]:=Ch[C]^.Expn[K+1]+2;
+  Ch[C]^.FastGain:=FastGainTable[4]; Ch[C]^.DeltaMode:=2;
+ End;
+End;
+Function QuantValue(B,C,K:Integer):LongInt;
+Var Q,Levels:Integer; X:Double; V:LongInt;
+Begin
+ Q:=Ch[C]^.BAP[K]; X:=Ch[C]^.Enc[B,K]*Pow2(Ch[C]^.Expn[K]);
+ If Q<=5 Then Begin Levels:=QBits[Q]; V:=Round((X*Levels+Levels-1)/2); If V<0 Then V:=0; If V>=Levels Then V:=Levels-1; End
+ Else Begin Levels:=QBits[Q]; X:=X*Pow2(Levels-1); V:=Round(X); If V<-(LongInt(1) Shl (Levels-1)) Then V:=-(LongInt(1) Shl (Levels-1)); If V>=(LongInt(1) Shl (Levels-1)) Then V:=(LongInt(1) Shl (Levels-1))-1; If V<0 Then Inc(V,LongInt(1) Shl Levels); End;
+ QuantValue:=V;
+End;
+Procedure EncodeMantissas(B:Integer);
+Var C,K,Q,CC,KK,Need,Found,Levels:Integer; V:LongInt;
+ Counts:Array[1..4] Of Integer;
+Begin
+ FillChar(Counts,SizeOf(Counts),0);
+ For C:=1 To Channels Do For K:=0 To Ch[C]^.Stop-1 Do Begin
+  Q:=Ch[C]^.BAP[K]; If Q<>0 Then Begin
+   If (Q=1) Or (Q=2) Or (Q=4) Then Begin
+    If Counts[Q]>0 Then Dec(Counts[Q]) Else Begin
+     If Q=4 Then Need:=2 Else Need:=3; Levels:=QBits[Q]; V:=0; Found:=0; CC:=C; KK:=K;
+     While (CC<=Channels) And (Found<Need) Do Begin
+      If Ch[CC]^.BAP[KK]=Q Then Begin V:=V*Levels+QuantValue(B,CC,KK); Inc(Found); End;
+      Inc(KK); If KK>=Ch[CC]^.Stop Then Begin Inc(CC); KK:=0; End;
+     End;
+     While Found<Need Do Begin V:=V*Levels+(Levels Div 2); Inc(Found); End;
+     Counts[Q]:=Need-1; If Q=1 Then Put(5,V) Else Put(7,V);
+    End;
+   End Else Begin
+    If Q=3 Then Put(3,QuantValue(B,C,K)) Else If Q=5 Then Put(4,QuantValue(B,C,K)) Else Put(QBits[Q],QuantValue(B,C,K));
+   End;
+  End;
+ End;
+End;
+Procedure EncodeBits;
+Var B,C,K,V,E:Integer;
+Begin
+ BP:=0; If Not Counting Then FillChar(W^.Data,SizeOf(W^.Data),0);
+ Put(16,$0B77); Put(16,0); Put(2,SR); Put(6,Code); Put(5,8); Put(3,0); Put(3,Mode);
+ If Mode=2 Then Put(2,0); Put(1,0); Put(5,31); Put(3,0); Put(2,1); Put(3,0);
+ For B:=0 To 5 Do Begin
+  For C:=1 To Channels Do Put(1,0); For C:=1 To Channels Do Put(1,0); Put(1,0);
+  If B=0 Then Begin Put(1,1); Put(1,0); End Else Put(1,0);
+  If Mode=2 Then Begin If B=0 Then Begin Put(1,1); Put(4,0); End Else Put(1,0); End;
+  For C:=1 To Channels Do If B=0 Then Put(2,1) Else Put(2,0);
+  If B=0 Then Begin
+   For C:=1 To Channels Do Put(6,EncBW);
+   For C:=1 To Channels Do Begin
+    E:=Ch[C]^.Expn[0]; Put(4,E); K:=1;
+    While K<Ch[C]^.Stop Do Begin
+     V:=(Integer(Ch[C]^.Expn[K])-E+2)*25;
+     Inc(V,(Integer(Ch[C]^.Expn[K+1])-Ch[C]^.Expn[K]+2)*5);
+     Inc(V,Integer(Ch[C]^.Expn[K+2])-Ch[C]^.Expn[K+1]+2); E:=Ch[C]^.Expn[K+2]; Put(7,V); Inc(K,3);
+    End; Put(2,0);
+   End;
+   Put(1,1); Put(2,2); Put(2,1); Put(2,1); Put(2,2); Put(3,7);
+   Put(1,1); Put(6,EncSNR Div 16); For C:=1 To Channels Do Begin Put(4,EncSNR Mod 16); Put(3,4); End;
+  End Else Begin Put(1,0); Put(1,0); End;
+  Put(1,0); Put(1,0); EncodeMantissas(B);
+ End;
+End;
+Procedure Encode;
+Var Lo,Hi,Mid,Best,C:Integer; Remainder:LongInt;
+Begin
+ ReadWave; OpenWrite(Target); FrameNumber:=0; InputFrame:=0; Remainder:=0;
+ SlowDecay:=SlowDecayTable[2]; FastDecay:=FastDecayTable[1]; SlowGain:=SlowGainTable[1]; DBPerBit:=DBTable[2]; FloorVal:=FloorTable[7];
+ EncBW:=60; If BitRateK Div Channels<80 Then EncBW:=20; If BitRateK Div Channels<48 Then EncBW:=0;
+ Repeat
+  Code:=BitCode;
+  If SR=1 Then Begin
+   Inc(Remainder,LongInt(BitRateK)*96000 Mod 44100); If Remainder>=44100 Then Begin Inc(Code); Dec(Remainder,44100); End;
+  End;
+  FrameSize:=FrameWords[Code*3+SR]*2; BL:=FrameSize*8-18;
+  AnalyzeFrame; Lo:=0; Hi:=1023; Best:=-1; Counting:=True;
+  While Lo<=Hi Do Begin
+   Mid:=(Lo+Hi) Div 2; EncSNR:=Mid;
+   For C:=1 To Channels Do Begin Ch[C]^.SNR:=(Mid-240)*4; Allocate(C); End;
+   EncodeBits;
+   If BP<=BL Then Begin Best:=Mid; Lo:=Mid+1; End Else Hi:=Mid-1;
+  End;
+  If Best<0 Then Bad('Debit insuffisant pour ce nombre de canaux.');
+  EncSNR:=Best; For C:=1 To Channels Do Begin Ch[C]^.SNR:=(Best-240)*4; Allocate(C); End;
+  Counting:=False; EncodeBits; FinishCRC; WriteBytes(W^.Data,FrameSize); Inc(FrameNumber);
+ Until FrameNumber*1536.0>=InputFrames+256.0;
+End;
+Begin
+ New(W); FillChar(W^,SizeOf(W^),0); For C:=0 To 6 Do Begin New(Ch[C]); FillChar(Ch[C]^,SizeOf(TChannel),0); End;
+ For I:=0 To 63 Do Begin W^.NoiseLo[I]:=NoiseInitLo[I]; W^.NoiseHi[I]:=NoiseInitHi[I]; End;
+ NoiseIndex:=0; Written:=0; WindowInit; OpenRead(Source); Limit:=InputSize;
+ If Encoding Then Encode Else Decode;
+ CloseRead; CloseWrite; For C:=0 To 6 Do Dispose(Ch[C]); Dispose(W);
+End;
+
 { Native AAC-LC ADTS decoder. Tables/tools adapted from FFmpeg aactab.c,
   aacdec.c, aacdec_proc_template.c and aacdec_dsp_template.c.
   LGPL-2.1-or-later; see THIRD_PARTY_NOTICES.md. }
@@ -11380,6 +12025,7 @@ Begin
  WriteLn(' .E = Muxage (ecriture)');
  WriteLn(' --');
  WriteLn(' D  4xm             4X Movie (video versions 0..4 vers Y4M)');
+ WriteLn(' DE ac3             AC-3 brut, decodeur et encodeur natifs');
  WriteLn(' D  aac             AAC ADTS (AAC-LC mono/stereo; alias: adts)');
  WriteLn(' D  iff             IFF 8SVX, Fibonacci/exponentiel (alias: 8svx, svx)');
  WriteLn(' D  aiff            AIFF/AIFF-C PCM (alias: aif, aifc)');
@@ -11418,7 +12064,7 @@ Procedure Help;Begin
  WriteLn('Entr'+#130+'es: WAV PCM, MP1/MP3, AIFF PCM, VOC PCM, MOD 4 canaux, ASF/WMA2.');
  WriteLn('         WMA2: 44100/48000 Hz, mono/stereo, blocs fixes, sans r'+#130+'servoir/bruit.');
  WriteLn('         WMV2 non impl'+#130+'ment'+#130+'e. FLV1: profil intra YUV420 seulement.');
- WriteLn('Sorties: WAV PCM16 ou MP3 MPEG-1 32..320 kbit/s (CBR).');
+ WriteLn('Sorties: WAV PCM16, MP3 MPEG-1 32..320k ou AC3 32..640k (CBR).');
  WriteLn('         HLS fMP4 VOD: -i liste.m3u8 -c copy video.mp4');
  WriteLn('MPEG-1 System: -i entree.mpg -c copy sortie.mpg|video.m1v|video.m2v|audio.mp2|audio.mp3');
  WriteLn('Muxage MPEG-1 System: -i audio.mp3 -c copy -f mpeg sortie.mpg');
@@ -11442,7 +12088,7 @@ Procedure Help;Begin
  WriteLn(' -ar HZ                         Fr'+#130+'quence de sortie 4000..192000 (-ar apr'+#138+'s -i)');
  WriteLn(' -aspect N:D|DECIMAL             Ratio affichage (4:3, 16:9); sorties MP4, AVI, Y4M.');
  WriteLn(' -b DEBIT, -b:v DEBIT            Debit video cible, defaut 200k (bits/s; k, M).'); 
- WriteLn(' -b:a 64k                       D'+#130+'bit MP3 CBR (d'+#130+'faut 320k); -ab 64 accepte; -vn; -hide_banner; -y; -n');
+ WriteLn(' -b:a 64k                       D'+#130+'bit MP3/AC3 CBR (d'+#130+'fauts 320k/192k); -ab 64 accepte; -vn; -hide_banner; -y; -n');
  WriteLn(' -bf N                          0..16 images B entre references MPEG (defaut 0).');
  WriteLn(' -b_qfactor F, -b_qoffset O      QP des images B; defauts 1.25 et 1.25.');
  WriteLn(' -bt TOLERANCE                  Tolerance video, defaut 4000k; 0: budget strict.');
@@ -11453,6 +12099,8 @@ Procedure Help;Begin
  WriteLn(' -c copy                        Changement de conteneur, pas de r'+#130+'encodage vid'+#130'o.');
  WriteLn(' -codecs                        Liste des codecs support'+#130+'s');
  WriteLn(' -comment TEXTE                 Commentaire MP3, WAV, AVI, MP4.');
+ WriteLn(' ac3: -i entree.ac3 sortie.wav; -i entree.wav -c:a ac3 -b:a 192k sortie.ac3');
+ WriteLn('      Encodeur mono/stereo 32/44.1/48 kHz; multicanal decode vers stereo, LFE omis.');
  WriteLn(' aac: -i entree.aac sortie.wav (AAC-LC ADTS mono/stereo).');
  WriteLn(' 8svx_fib/exp: -i entree.8svx sortie.wav (mono/stereo, compressions 1/2).');
  WriteLn(' aasc: -i entree.avi -an sortie.y4m (Autodesk RLE natif).');
@@ -11649,6 +12297,7 @@ BEGIN
    WriteLn('D V    8bps            QuickTime 8BPS video (8/24/32 bits)');
    WriteLn('D A    8svx_fib        8SVX fibonacci');
    WriteLn('D A    8svx_exp        8SVX exponential');
+   WriteLn('DEA    ac3             ATSC A/52A (AC-3)');
    WriteLn('D A    aac             Advanced Audio Coding (AAC-LC ADTS mono/stereo)');
    WriteLn('D V D  aasc            Autodesk RLE (AVI AASC/AAS4, 8/16/24 bits)');
    WriteLn('DEV    flv             Flash Video (FLV1/Sorenson Spark, images intra)');
@@ -11769,14 +12418,14 @@ BEGIN
    End Else Begin
     Val(Value,Number,Code);
     { Ancienne syntaxe -ab 64: kbit/s. -b:a garde les bits/s. }
-    If (Code=0) And Not ((Argument='-ab') And (Number>=32) And (Number<=320)) Then Begin
+    If (Code=0) And Not ((Argument='-ab') And (Number>=32) And (Number<=640)) Then Begin
      If Number Mod 1000<>0 Then Code:=1 Else Number:=Number Div 1000;
     End;
    End;
    If Code<>0 Then Fail('Debit audio invalide; exemple -b:a 64k.');
    Case Number Of
-    32,40,48,56,64,80,96,112,128,160,192,224,256,320: RequestedBitRateK:=Number;
-    Else Fail('Debit MP3 requis: 32,40,48,56,64,80,96,112,128,160,192,224,256,320 kbit/s.');
+    32,40,48,56,64,80,96,112,128,160,192,224,256,320,384,448,512,576,640: RequestedBitRateK:=Number;
+    Else Fail('Debit audio normalise requis: MP3 32..320k ou AC3 32..640k.');
    End;
    HasBitrate:=True;
   End
@@ -12010,18 +12659,19 @@ BEGIN
  End;
  If NoAudio Then Fail('-an: aucune piste a ecrire dans une sortie audio seule.');
  If VideoCodec<>'' Then Fail('Codec video incompatible avec une sortie audio seule.');
- If (OutputFormat<>'wav') And (OutputFormat<>'mp3') Then Fail(
- 'Seules les sorties WAV et MP3 sont implementees.');
+ If (OutputFormat<>'wav') And (OutputFormat<>'mp3') And (OutputFormat<>'ac3') Then Fail(
+ 'Sorties audio WAV, MP3 et AC3 prises en charge.');
  If AudioCodec='' Then If OutputFormat='wav' Then AudioCodec:=
- 'pcm_s16le' Else AudioCodec:='mp3';
+ 'pcm_s16le' Else AudioCodec:=OutputFormat;
  If (AudioCodec<>'copy') And Not (((OutputFormat='wav') And (AudioCodec='pcm_s16le')) Or
- ((OutputFormat='mp3') And (AudioCodec='mp3'))) Then Fail(
+ ((OutputFormat='mp3') And (AudioCodec='mp3')) Or ((OutputFormat='ac3') And (AudioCodec='ac3'))) Then Fail(
  'Codec de sortie non pris en charge pour ce conteneur.');
- If HasBitrate And ((OutputFormat<>'mp3') Or (AudioCodec='copy')) Then Fail(
- '-b:a exige un encodage MP3.');
+ If HasBitrate And (((OutputFormat<>'mp3') And (OutputFormat<>'ac3')) Or (AudioCodec='copy')) Then Fail(
+ '-b:a exige un encodage MP3 ou AC3.');
+ If (OutputFormat='mp3') And (RequestedBitRateK>320) Then Fail('MP3: debit maximal 320k.');
  If (AudioCodec='copy') And ((RequestedRate<>0) Or (RequestedChannels<>0) Or (InputFormat
  <>OutputFormat)) Then  Fail(
- '-c:a copy exige le meme conteneur WAV/MP3 et aucune conversion audio.');
+ '-c:a copy exige le meme conteneur audio et aucune conversion audio.');
  If Not HideBanner Then WriteLn('FFMPEG Pascal 1.11 - moteur audio natif du projet');
  Temps[2]:=NewTemporary;
  If AudioCodec='copy' Then CopyFile(InputPath,Temps[2])
@@ -12035,6 +12685,7 @@ BEGIN
     DecodeWMA2Spool(Temps[3],Temps[0]);
    End Else
    If (InputFormat='mp3') Or (InputFormat='mp1') Then DecodeMP3(InputPath,Temps[0]) Else
+   If InputFormat='ac3' Then ProcessAC3(InputPath,Temps[0],False,0) Else
    If InputFormat='aac' Then DecodeAAC(InputPath,Temps[0]) Else
    If InputFormat='iff' Then Decode8SVX(InputPath,Temps[0]) Else
    If InputFormat='aiff' Then DecodeAIFF(InputPath,Temps[0]) Else
@@ -12044,7 +12695,10 @@ BEGIN
    Intermediate:=Temps[0];
   End;
   If OutputFormat='wav' Then NormalizeWave(Intermediate,Temps[2],False)
-   Else
+   Else If OutputFormat='ac3' Then Begin
+    Temps[1]:=NewTemporary; NormalizeWave(Intermediate,Temps[1],False);
+    If Not HasBitrate Then RequestedBitRateK:=192; ProcessAC3(Temps[1],Temps[2],True,RequestedBitRateK);
+   End Else
   Begin
    Temps[1]:=NewTemporary; NormalizeWave(Intermediate,Temps[1],True);
    EncodeMP3(Temps[1],Temps[2],RequestedBitRateK);
