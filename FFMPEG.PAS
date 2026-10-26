@@ -4058,6 +4058,60 @@ Begin
  Fail('Nom temporaire indisponible.'); NewTemporary:='';
 End;
 
+{ ---- Progression : etapes et pourcentage de lecture de l'entree (stderr) ---- }
+Var
+ PgSize,PgMax,PgLast,PgT0: LongInt;
+ PgCalls: Word;
+ PgPct: Integer;
+ PgOpen: Boolean;
+ PgLabel: String[60];
+
+Function PgNow: LongInt;
+Var H,M,S,C: Word;
+Begin
+ GetTime(H,M,S,C); PgNow:=((LongInt(H)*60+M)*60+S)*100+C;
+End;
+
+Procedure PgEndLine;Begin
+ If PgOpen Then Begin WriteLn(StdErr); PgOpen:=False; End;
+End;
+
+Procedure PgStage(Const S: String);Begin
+ If O1QuietMode<>0 Then Exit;
+ PgEndLine; WriteLn(StdErr,'[Etape] ',S); PgLabel:=''; PgPct:=-1;
+End;
+
+Procedure PgShow;
+Var P,El,Eta: LongInt; Line: String; S1,S2: String;
+Begin
+ If (O1QuietMode<>0) Or (PgSize<=0) Then Exit;
+ P:=Round(PgMax/PgSize*100); If P>100 Then P:=100;
+ El:=PgNow-PgLast; If El<0 Then El:=El+8640000;
+ If (El<50) Or (P=PgPct) Then Exit;
+ PgLast:=PgNow; PgPct:=P;
+ Str(P,S1); Str(PgMax div 1048576,S2);
+ Line:=#13+'  Progression: '+S1+' % ('+S2+' / ';
+ Str(PgSize div 1048576,S2); Line:=Line+S2+' Mo lus)   ';
+ Write(StdErr,Line); Flush(StdErr); PgOpen:=True;
+End;
+
+Procedure PgReset;Begin
+ PgEndLine; PgMax:=0; PgPct:=-1; PgLast:=PgNow; PgCalls:=0;
+End;
+
+{ progression par elements (images, paquets...) pour les decodeurs qui chargent tout en memoire }
+Procedure PgItem(Const What: String; Done,Total: LongInt);
+Var P,El: LongInt; S1,S2,S3: String;
+Begin
+ If (O1QuietMode<>0) Or (Total<=0) Then Exit;
+ El:=PgNow-PgLast; If El<0 Then El:=El+8640000;
+ If (El<50) And (Done<Total) Then Exit;
+ PgLast:=PgNow; P:=Round(Done/Total*100);
+ Str(P,S1); Str(Done,S2); Str(Total,S3);
+ Write(StdErr,#13,'  Progression: ',S1,' % (',What,' ',S2,' / ',S3,')   ');
+ Flush(StdErr); PgOpen:=True;
+End;
+
 Procedure OpenRead(Const Name: String);
 Var
  Code: Integer;
@@ -4066,12 +4120,14 @@ Begin
  Assign(ActiveInput,Name); OldMode:=FileMode; FileMode:=0;
  {$I-}Reset(ActiveInput,1); Code:=IOResult;{$I+} FileMode:=OldMode;
  If Code<>0 Then Fail('Lecture impossible: '+Name); InputActive:=True;
+ PgReset; {$I-}PgSize:=FileSize(ActiveInput);{$I+} If IOResult<>0 Then PgSize:=0;
 End;
 
 Procedure CloseRead;
 Var
  Code: Integer;
 Begin
+ PgEndLine;
  {$I-}Close(ActiveInput); Code:=IOResult;{$I+} InputActive:=False;
  If Code<>0 Then Fail('Fermeture entree impossible.');
 End;
@@ -4102,6 +4158,8 @@ Begin
  If Code<>0 Then Fail('Position entree incorrecte.');
  {$I-}BlockRead(ActiveInput,Buffer,Count,Actual); Code:=IOResult;{$I+}
  If (Code<>0) Or (Actual<>Count) Then Fail('Entree tronquee.');
+ If Position+Count>PgMax Then PgMax:=Position+Count;
+ Inc(PgCalls); If PgCalls>=256 Then Begin PgCalls:=0; PgShow; End;
 End;
 
 Procedure WriteBytes(Var Buffer; Count: Word);
@@ -159978,6 +160036,7 @@ Begin
  H4CurDur:=(Int64(1000)*RD+RN Div 2) Div RN;
  For I:=0 To Cnt-1 Do Begin
   H4FeedNalPacket(PEABuffer(@F^[FOff^[I]]),FSz^[I],NalSz,FTs^[I]+FCts^[I]);
+  PgItem('images decodees',I+1,Cnt);
   If NVDone Then Break;
  End;
  H4FinishPicture; H4Bump(True);
@@ -183116,6 +183175,7 @@ End;
   Halt(0);
  End;
 
+PgStage('Analyse du fichier d''entree');
 NVKind:=0;
 If
 (InputFormat='webm') And Not IsHTTP(InputPath) And ((
@@ -183286,7 +183346,8 @@ Or (NVKind=15) Or (NVKind=17) Or (NVKind=22) Or (NVKind=30) Or (NVKind=38) Or (
  If NVSelMode<>0 Then Begin
   If (VideoFrames<>1) And (NVKind<>4) Then Fail(
   'Extraction PNG/BMP avec -frames:v 1 requise.');
-  Temps[2]:=NewTemporary; DecodeNV2(NVKind,Intermediate,Temps[2],NVSelMode);
+  Temps[2]:=NewTemporary; PgStage('Decodage video et extraction de l''image (entree volumineuse: patienter)'); DecodeNV2(NVKind,Intermediate,Temps[2],NVSelMode);
+  PgStage('Ecriture du fichier de sortie');
   Commit(Temps[2]); Temps[2]:=''; WriteLn('Image creee: ',OutputPath); Halt(0);
  End;
  If VideoFrames<>0 Then Fail(
@@ -183296,7 +183357,7 @@ Or (NVKind=15) Or (NVKind=17) Or (NVKind=22) Or (NVKind=30) Or (NVKind=38) Or (
  (VideoCodec='mpeg2video') Or (VideoCodec='ffv1') Or (VideoCodec='flv') Or
   FourMV)
  Then   Fail('Sortie Y4M, PNG, BMP ou encodeur video natif requis.');
- Temps[6]:=NewTemporary; DecodeNV2(NVKind,Intermediate,Temps[6],0);
+ Temps[6]:=NewTemporary; PgStage('Decodage video'); DecodeNV2(NVKind,Intermediate,Temps[6],0);
  Intermediate:=Temps[6];
  InputFormat:='yuv4mpegpipe'; DecodedVideo:=True; NoAudio:=True;
 End;
@@ -184127,6 +184188,7 @@ NonStdBitrate And (OutputFormat<>'aac') And (OutputFormat<>'ac3') And (
 '-c:a copy exige le meme conteneur audio et aucune conversion audio.');
 If Not HideBanner Then WriteLn(
  'FFMPEG Pascal 1.11 - moteur audio natif du projet');
+PgStage('Decodage et encodage audio');
 Temps[2]:=NewTemporary;
  MdLoad;
 
@@ -184448,6 +184510,7 @@ OutputFormat='wav') And (AudioCodec='adpcm_yamaha') Then Begin
   EncodeMP3(Temps[1],Temps[2],RequestedBitRateK);
  End;
 End;
+PgStage('Ecriture du fichier de sortie');
 Commit(Temps[2]); Temps[2]:='';
 WriteLn('Sortie creee: ',OutputPath);
 END.
